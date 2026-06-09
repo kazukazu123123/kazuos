@@ -1,0 +1,7 @@
+/target
+/esp
+/iso_root
+*.log
+*.iso
+ovmf_vars*.tmp.fd
+/tools

@@ -1,0 +1,2 @@
+use core::mem;
+const _: () = assert!(mem::size_of::<super::ProcessState>() == 8);

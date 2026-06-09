@@ -1,0 +1,166 @@
+use crate::drivers::acpi;
+use crate::util::{ind, outd};
+
+const CONFIG_ADDRESS: u16 = 0xCF8;
+const CONFIG_DATA: u16 = 0xCFC;
+
+static mut RSDP: u64 = 0;
+
+#[derive(Clone, Copy)]
+pub struct Device {
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class_code: u8,
+    pub subclass: u8,
+    pub prog_if: u8,
+    pub header_type: u8,
+}
+
+#[derive(Clone, Copy)]
+pub enum ScanKind {
+    Pci,
+    Pcie,
+}
+
+pub fn init(rsdp: u64) {
+    unsafe {
+        RSDP = rsdp;
+    }
+}
+
+pub fn scan(kind: ScanKind, mut f: impl FnMut(Device)) {
+    match kind {
+        ScanKind::Pci => scan_pci(&mut f),
+        ScanKind::Pcie => scan_pcie(&mut f),
+    }
+}
+
+pub fn pcie_available() -> bool {
+    unsafe {
+        let Some((sdt, is_xsdt)) = acpi::parse_rsdp(RSDP) else {
+            return false;
+        };
+        acpi::find_table(sdt, is_xsdt, *b"MCFG").is_some()
+    }
+}
+
+pub fn read_bar(bus: u8, device: u8, function: u8, bar_index: u8) -> u32 {
+    read_u32(bus, device, function, 0x10 + bar_index * 4)
+}
+
+pub fn read_command(bus: u8, device: u8, function: u8) -> u16 {
+    (read_u32(bus, device, function, 0x04) & 0xFFFF) as u16
+}
+
+pub fn write_command(bus: u8, device: u8, function: u8, value: u16) {
+    let address = read_u32(bus, device, function, 0x04) & 0xFFFF_0000;
+    write_u32(bus, device, function, 0x04, address | value as u32);
+}
+
+fn scan_pci(f: &mut impl FnMut(Device)) {
+    for bus in 0..=255u8 {
+        for device in 0..32u8 {
+            for function in 0..8u8 {
+                if let Some(dev) = read_config_device(bus, device, function) {
+                    f(dev);
+                }
+            }
+        }
+    }
+}
+
+fn scan_pcie(f: &mut impl FnMut(Device)) {
+    let Some((sdt, is_xsdt)) = (unsafe { acpi::parse_rsdp(RSDP) }) else {
+        return;
+    };
+    let Some(mcfg_phys) = (unsafe { acpi::find_table(sdt, is_xsdt, *b"MCFG") }) else {
+        return;
+    };
+    let header: acpi::SdtHeader = unsafe { acpi::read_phys(mcfg_phys) };
+    let length = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(header.length)) } as usize;
+    let header_size = core::mem::size_of::<acpi::SdtHeader>();
+    if length < header_size + 8 + 16 {
+        return;
+    }
+    let entries_start = mcfg_phys + header_size as u64 + 8;
+    let entry_count = (length - header_size - 8) / 16;
+    for index in 0..entry_count {
+        let entry = entries_start + index as u64 * 16;
+        let base = unsafe { core::ptr::read_unaligned(entry as *const u64) };
+        let start_bus = unsafe { core::ptr::read_unaligned((entry + 10) as *const u8) };
+        let end_bus = unsafe { core::ptr::read_unaligned((entry + 11) as *const u8) };
+        for bus in start_bus..=end_bus {
+            for device in 0..32u8 {
+                for function in 0..8u8 {
+                    if let Some(dev) = read_ecam_device(base, start_bus, bus, device, function) {
+                        f(dev);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn read_config_device(bus: u8, device: u8, function: u8) -> Option<Device> {
+    let vendor_device = read_u32(bus, device, function, 0x00);
+    let vendor_id = (vendor_device & 0xFFFF) as u16;
+    if vendor_id == 0xFFFF {
+        return None;
+    }
+    Some(build_device(bus, device, function, vendor_device))
+}
+
+fn read_ecam_device(base: u64, start_bus: u8, bus: u8, device: u8, function: u8) -> Option<Device> {
+    let bus_offset = bus.saturating_sub(start_bus) as u64;
+    let addr = base + (bus_offset << 20) + ((device as u64) << 15) + ((function as u64) << 12);
+    let vendor_id = unsafe { core::ptr::read_volatile(addr as *const u16) };
+    if vendor_id == 0xFFFF {
+        return None;
+    }
+    let vendor_device = unsafe { core::ptr::read_volatile(addr as *const u32) };
+    Some(build_device(bus, device, function, vendor_device))
+}
+
+fn build_device(bus: u8, device: u8, function: u8, vendor_device: u32) -> Device {
+    let device_id = (vendor_device >> 16) as u16;
+    let class_reg = read_u32(bus, device, function, 0x08);
+    let header_reg = read_u32(bus, device, function, 0x0C);
+    Device {
+        bus,
+        device,
+        function,
+        vendor_id: (vendor_device & 0xFFFF) as u16,
+        device_id,
+        class_code: (class_reg >> 24) as u8,
+        subclass: (class_reg >> 16) as u8,
+        prog_if: (class_reg >> 8) as u8,
+        header_type: (header_reg >> 16) as u8,
+    }
+}
+
+fn read_u32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    let address = (1u32 << 31)
+        | ((bus as u32) << 16)
+        | ((device as u32) << 11)
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xFC);
+    unsafe {
+        outd(CONFIG_ADDRESS, address);
+        ind(CONFIG_DATA)
+    }
+}
+
+fn write_u32(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    let address = (1u32 << 31)
+        | ((bus as u32) << 16)
+        | ((device as u32) << 11)
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xFC);
+    unsafe {
+        outd(CONFIG_ADDRESS, address);
+        outd(CONFIG_DATA, value);
+    }
+}

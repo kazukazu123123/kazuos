@@ -1,0 +1,845 @@
+use crate::process::ProcessInfo;
+use crate::{console, exec, fd, ipc, process, syscall};
+use alloc;
+
+pub static mut TSC_PER_MS: u64 = 3_000_000;
+
+include!("syscall_numbers.rs");
+
+pub fn init() {
+    syscall::register(syscall_dispatch, 0);
+}
+
+extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> u64 {
+    match number {
+        // Console / Display
+        SYS_CONSOLE_WRITE => {
+            if arg0 != 0 && arg1 > 0 {
+                let src = arg0 as *const u8;
+                let len = arg1 as usize;
+                const CHUNK: usize = 256;
+                let mut buf = [0u8; CHUNK];
+                let mut offset = 0usize;
+                let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+                let fb_owner = crate::drivers::fb_owner::owner();
+                let do_fb = fb_owner.is_none() || fb_owner == Some(caller);
+                while offset < len {
+                    let remain = len - offset;
+                    let n = remain.min(CHUNK);
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(src.add(offset), buf.as_mut_ptr(), n);
+                    }
+                    let chunk = unsafe { core::str::from_utf8_unchecked(&buf[..n]) };
+                    if do_fb { console::screen_print(chunk); }
+                    if crate::init::is_verbose() { crate::serial_print!("{}", chunk); }
+                    offset += n;
+                }
+            }
+            0
+        }
+        SYS_CONSOLE_CLEAR => { console::clear(); 0 }
+        SYS_CURSOR_SAVE => { console::save_cursor_pos(); 0 }
+        SYS_CURSOR_DRAW => {
+            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+            let fb_owner = crate::drivers::fb_owner::owner();
+            if fb_owner.is_none() || fb_owner == Some(caller) {
+                console::draw_saved_cursor(arg0 != 0);
+            }
+            0
+        }
+        SYS_FB_ACQUIRE => {
+            if let Some(pid) = crate::scheduler::current_user_pid() {
+                if let Some(ctx) = process::user_context(pid) {
+                    crate::drivers::fb_owner::acquire(pid, ctx.cr3, arg0 as *mut crate::drivers::fb_owner::FbInfo)
+                } else { u64::MAX }
+            } else { u64::MAX }
+        }
+        SYS_FB_RELEASE => { if let Some(pid) = crate::scheduler::current_user_pid() { crate::drivers::fb_owner::release(pid); } 0 }
+        SYS_CONSOLE_SIZE => {
+            let (cols, rows) = crate::terminal::console::console_size();
+            ((rows as u64) << 32) | (cols as u64)
+        }
+        SYS_FB_QUERY => {
+            let info_ptr = arg0 as *mut crate::drivers::fb_owner::FbInfo;
+            let owner_ptr = arg1 as *mut u64;
+            if let Some(p) = crate::console::fb_params() {
+                if !info_ptr.is_null() {
+                    unsafe {
+                        info_ptr.write(crate::drivers::fb_owner::FbInfo {
+                            base: crate::drivers::fb_owner::USER_FB_VA,
+                            width: p.width,
+                            height: p.height,
+                            stride: p.stride,
+                            format: p.format,
+                        });
+                    }
+                }
+                if !owner_ptr.is_null() {
+                    unsafe { owner_ptr.write(crate::drivers::fb_owner::owner().unwrap_or(u64::MAX)); }
+                }
+                0
+            } else {
+                if !owner_ptr.is_null() {
+                    unsafe { owner_ptr.write(u64::MAX); }
+                }
+                u64::MAX
+            }
+        }
+
+        // Process / Lifecycle
+        SYS_EXIT => { process::exit_current(); syscall::EXIT_TO_KERNEL }
+        SYS_EXEC => sys_exec(arg0, arg1, arg2),
+        SYS_KILL => { process::kill_pid(arg0); 0 }
+        SYS_WAIT => sys_wait(arg0),
+        SYS_PROCESS_INFO => {
+            if arg1 != 0 {
+                match process::info(arg0) {
+                    Some(info) => { unsafe { core::ptr::write_unaligned(arg1 as *mut ProcessInfo, info); } 0 }
+                    None => u64::MAX,
+                }
+            } else {
+                match arg0 {
+                    0 => process::current_pid(),
+                    1 => process::count(),
+                    2 => process::first_pid().unwrap_or(0),
+                    _ => u64::MAX,
+                }
+            }
+        }
+        SYS_PROCESS_NEXT => process::next_pid_after(arg0).unwrap_or(u64::MAX),
+        SYS_NAP_MS => sys_nap_ms(arg0),
+
+        // Memory
+        SYS_MEM_INFO => {
+            if let Some(stats) = crate::pmm::stats() {
+                ((stats.total_kib() as u64) << 32) | stats.used_kib() as u64
+            } else { 0 }
+        }
+        SYS_HEAP_ALLOC => sys_heap_alloc(arg0),
+        SYS_HEAP_FREE => sys_heap_free(arg0),
+
+        // Signals
+        SYS_SIGNAL_CATCH => {
+            if let Some(pid) = crate::scheduler::current_user_pid() { process::sigint_set_catch(pid, arg0 != 0); } 0
+        }
+        SYS_SIGNAL_CHECK => {
+            if let Some(pid) = crate::scheduler::current_user_pid() { if process::sigint_check_and_clear(pid) { 1 } else { 0 } } else { 0 }
+        }
+
+        // IPC
+        SYS_IPC_OPEN => {
+            if arg0 == 0 || arg1 == 0 { u64::MAX }
+            else { let name = unsafe { core::slice::from_raw_parts(arg0 as *const u8, arg1 as usize) }; ipc::open(name) }
+        }
+        SYS_IPC_SEND => {
+            let channel_id = arg0;
+            let buf_ptr    = arg1;
+            let buf_len    = arg2 as usize;
+            if buf_ptr == 0 || buf_len == 0 { return u64::MAX; }
+            let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len) };
+            let sender = crate::scheduler::current_user_pid().unwrap_or(0);
+            match ipc::try_send(channel_id, sender, data) {
+                ipc::SendResult::Ok => 0,
+                ipc::SendResult::Error => u64::MAX,
+                ipc::SendResult::Block => {
+                    if let Some(pid) = crate::scheduler::current_user_pid() {
+                        ipc::add_send_waiter(channel_id, pid);
+                        process::set_wait_target(pid, process::WaitTarget::Ipc(channel_id));
+                        process::set_sleeping(pid);
+                    }
+                    syscall::BLOCK_TO_SCHEDULER
+                }
+            }
+        }
+        SYS_IPC_RECV => {
+            let channel_id = arg0;
+            let buf_ptr    = arg1;
+            let buf_len    = arg2 as usize;
+            if buf_ptr == 0 || buf_len == 0 { return u64::MAX; }
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+            match ipc::try_recv(channel_id, buf) {
+                ipc::RecvResult::Ok(len) => len as u64,
+                ipc::RecvResult::Error   => u64::MAX,
+                ipc::RecvResult::Block   => {
+                    if let Some(pid) = crate::scheduler::current_user_pid() {
+                        ipc::add_recv_waiter(channel_id, pid);
+                        process::set_wait_target(pid, process::WaitTarget::Ipc(channel_id));
+                        process::set_sleeping(pid);
+                    }
+                    syscall::BLOCK_TO_SCHEDULER
+                }
+            }
+        }
+        SYS_IPC_CLOSE => { ipc::close(arg0); 0 }
+
+        // File I/O
+        SYS_OPEN => sys_open(arg0, arg1),
+        SYS_CLOSE => sys_close(arg0),
+        SYS_READ => sys_read(arg0, arg1, arg2),
+        SYS_WRITE => sys_write(arg0, arg1, arg2),
+        SYS_IOCTL => sys_ioctl(arg0, arg1, arg2),
+        SYS_PIPE => sys_pipe(arg0),
+
+        // Hardware / Driver
+        SYS_PCI_INFO => sys_pci_info(arg0, arg1),
+        SYS_IOPORT_REQUEST => {
+            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+            if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
+            let port  = arg0 as u16;
+            let count = arg1 as u16;
+            for i in 0..count { crate::gdt::iopb_allow_port(port + i); }
+            0
+        }
+        SYS_IRQ_WAIT => {
+            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+            if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
+            let irq = arg0 as u8;
+            process::set_wait_target(caller, process::WaitTarget::Irq(irq));
+            process::set_sleeping(caller);
+            syscall::BLOCK_TO_SCHEDULER
+        }
+        SYS_DMA_ALLOC => sys_dma_alloc(arg0, arg1),
+        SYS_DMA_FREE => sys_dma_free(arg0),
+
+        // Keyboard
+        SYS_KEYBOARD_READ => {
+            if let Some(ch) = crate::drivers::keyboard::get_raw() { ch as u64 }
+            else {
+                if let Some(pid) = crate::scheduler::current_user_pid() {
+                    crate::process::set_wait_target(pid, crate::process::WaitTarget::Keyboard);
+                    crate::process::set_sleeping(pid);
+                }
+                syscall::BLOCK_TO_SCHEDULER
+            }
+        }
+        SYS_KEYBOARD_POLL => crate::drivers::keyboard::get_raw().map(|c| c as u64).unwrap_or(0),
+
+        // System / Misc
+        SYS_CPU_INFO => match arg0 {
+            0 => crate::handlers::interrupts::timer_ticks(),
+            1 => process::total_cpu_ticks(),
+            2 => crate::handlers::interrupts::kernel_cpu_ticks(),
+            3 => crate::handlers::interrupts::idle_cpu_ticks(),
+            pid => process::cpu_ticks(pid).unwrap_or(u64::MAX),
+        },
+        SYS_SHUTDOWN => crate::drivers::power::shutdown(),
+        SYS_REBOOT => crate::drivers::power::reboot(),
+        SYS_LS => sys_ls(arg0, arg1),
+
+        _ => u64::MAX,
+    }
+}
+
+fn sys_wait(pid: u64) -> u64 {
+    match process::info(pid) {
+        Some(info) if matches!(info.state, crate::process::ProcessState::Exited) => 1,
+        None => 1, // process already gone = done
+        Some(_) => {
+            // Block until the target process exits.
+            if let Some(caller) = crate::scheduler::current_user_pid() {
+                crate::process::set_wait_target(caller, crate::process::WaitTarget::Pid(pid));
+                crate::process::set_sleeping(caller);
+            }
+            syscall::BLOCK_TO_SCHEDULER
+        }
+    }
+}
+
+fn sys_nap_ms(ms: u64) -> u64 {
+    if ms == 0 {
+        return 0;
+    }
+    let tsc_per_ms = unsafe { TSC_PER_MS };
+    let deadline = crate::util::rdtsc() + tsc_per_ms * ms;
+    if let Some(pid) = crate::scheduler::current_user_pid() {
+        crate::process::set_wait_target(pid, crate::process::WaitTarget::Timer(deadline));
+        crate::process::set_sleeping(pid);
+    }
+    syscall::BLOCK_TO_SCHEDULER
+}
+
+fn sys_ls(ptr: u64, len: u64) -> u64 {
+    if ptr == 0 || len == 0 {
+        return ls_path("/");
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let path = core::str::from_utf8(bytes).unwrap_or("/");
+    ls_path(path)
+}
+
+fn ls_path(path: &str) -> u64 {
+    if path == "/dev" || path == "/dev/" {
+        let mut dev_count = 0usize;
+        crate::devfs::for_each(|name| {
+            let display = name.strip_prefix("/dev/").unwrap_or(name);
+            crate::console::screen_print("dev   ");
+            crate::console::screen_print(display);
+            crate::console::screen_print("\r\n");
+            crate::serial_println!("dev   {}", display);
+            dev_count += 1;
+        });
+        return dev_count as u64;
+    }
+
+    let mut entries = [crate::vfs::DirEntry {
+        path: "",
+        kind: crate::vfs::FileType::File,
+        len: 0,
+    }; 16];
+    let vfs_count = match crate::vfs::read_dir(path, &mut entries) {
+        Ok(count) => {
+            for entry in &entries[..count] {
+                let kind = match entry.kind {
+                    crate::vfs::FileType::File => "file",
+                    crate::vfs::FileType::Directory => "dir ",
+                };
+                crate::console::screen_print(kind);
+                crate::console::screen_print("  ");
+                crate::console::screen_print(entry.path);
+                crate::console::screen_print("\r\n");
+                crate::serial_println!("{} {}", kind, entry.path);
+            }
+            count
+        }
+        Err(_) => return u64::MAX,
+    };
+    if path == "/" {
+        crate::console::screen_print("dir   /dev\r\n");
+        crate::serial_println!("dir   /dev");
+        (vfs_count + 1) as u64
+    } else {
+        vfs_count as u64
+    }
+}
+
+// DMA VA base for user-space driver mappings (distinct from code/stack region).
+const DMA_VA_BASE: u64 = 0x0000_00A0_0000_0000;
+static DMA_VA_BUMP: crate::util::SyncUnsafeCell<u64> =
+    crate::util::SyncUnsafeCell::new(DMA_VA_BASE);
+
+struct DmaAlloc {
+    pid: u64,
+    virt: u64,
+    phys: u64,
+    size: u64,
+}
+
+static DMA_ALLOCS: crate::util::SyncUnsafeCell<alloc::vec::Vec<DmaAlloc>> =
+    crate::util::SyncUnsafeCell::new(alloc::vec::Vec::new());
+
+fn sys_dma_alloc(size: u64, phys_out_ptr: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if process::privilege_level(caller) > process::PrivilegeLevel::Driver {
+        return u64::MAX;
+    }
+    if size == 0 || size > 128 * 1024 * 1024 {
+        return u64::MAX;
+    }
+    let aligned = (size + 4095) & !4095;
+    let layout = match alloc::alloc::Layout::from_size_align(aligned as usize, 4096) {
+        Ok(l) => l,
+        Err(_) => return u64::MAX,
+    };
+    let phys = unsafe { alloc::alloc::alloc_zeroed(layout) } as u64;
+    if phys == 0 {
+        return u64::MAX;
+    }
+    let cr3 = match process::user_cr3(caller) {
+        Some(c) => c,
+        None => return u64::MAX,
+    };
+    let virt = unsafe {
+        let bump = &mut *DMA_VA_BUMP.0.get();
+        let va = *bump;
+        *bump += aligned;
+        va
+    };
+    unsafe {
+        if crate::vmm::map_range(cr3, virt, phys, aligned, crate::vmm::MapFlags::USER_READ_WRITE)
+            .is_err()
+        {
+            return u64::MAX;
+        }
+        if phys_out_ptr != 0 {
+            core::ptr::write_unaligned(phys_out_ptr as *mut u64, phys);
+        }
+        let allocs = &mut *DMA_ALLOCS.0.get();
+        allocs.push(DmaAlloc { pid: caller, virt, phys, size: aligned });
+    }
+    virt
+}
+
+fn sys_dma_free(virt: u64) -> u64 {
+    if virt == 0 {
+        return u64::MAX;
+    }
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    unsafe {
+        let allocs = &mut *DMA_ALLOCS.0.get();
+        let pos = allocs.iter().position(|a| a.virt == virt && a.pid == caller);
+        let Some(pos) = pos else { return u64::MAX; };
+        let alloc = allocs.swap_remove(pos);
+        let cr3 = match process::user_cr3(caller) {
+            Some(c) => c,
+            None => return u64::MAX,
+        };
+        crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
+        let layout = match alloc::alloc::Layout::from_size_align(alloc.size as usize, 4096) {
+            Ok(l) => l,
+            Err(_) => return u64::MAX,
+        };
+        alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
+    }
+    0
+}
+
+/// Heap alloc for user programs.
+/// Virtual-address range analogue of DMA alloc, but:
+///  - not physically contiguous (each page separate)
+///  - no physical address returned
+///  - not gated to driver privilege
+const HEAP_VA_BASE: u64 = 0x0000_00C0_0000_0000;
+static HEAP_VA_BUMP: crate::util::SyncUnsafeCell<u64> =
+    crate::util::SyncUnsafeCell::new(HEAP_VA_BASE);
+
+struct HeapAlloc {
+    pid: u64,
+    virt: u64,
+    phys: u64,
+    size: u64,
+}
+
+static HEAP_ALLOCS: crate::util::SyncUnsafeCell<alloc::vec::Vec<HeapAlloc>> =
+    crate::util::SyncUnsafeCell::new(alloc::vec::Vec::new());
+
+fn sys_heap_alloc(size: u64) -> u64 {
+    if size == 0 || size > 128 * 1024 * 1024 {
+        return u64::MAX;
+    }
+    let aligned = (size + 4095) & !4095;
+    let layout = match alloc::alloc::Layout::from_size_align(aligned as usize, 4096) {
+        Ok(l) => l,
+        Err(_) => return u64::MAX,
+    };
+    let phys = unsafe { alloc::alloc::alloc_zeroed(layout) } as u64;
+    if phys == 0 {
+        return u64::MAX;
+    }
+    let caller = match crate::scheduler::current_user_pid() {
+        Some(pid) => pid,
+        None => return u64::MAX,
+    };
+    let cr3 = match process::user_cr3(caller) {
+        Some(c) => c,
+        None => return u64::MAX,
+    };
+    let virt = unsafe {
+        let bump = &mut *HEAP_VA_BUMP.0.get();
+        let va = *bump;
+        *bump += aligned;
+        va
+    };
+    unsafe {
+        if crate::vmm::map_range(cr3, virt, phys, aligned, crate::vmm::MapFlags::USER_READ_WRITE)
+            .is_err()
+        {
+            return u64::MAX;
+        }
+        let allocs = &mut *HEAP_ALLOCS.0.get();
+        allocs.push(HeapAlloc { pid: caller, virt, phys, size: aligned });
+    }
+    virt
+}
+
+fn sys_heap_free(virt: u64) -> u64 {
+    if virt == 0 {
+        return u64::MAX;
+    }
+    let caller = match crate::scheduler::current_user_pid() {
+        Some(pid) => pid,
+        None => return u64::MAX,
+    };
+    unsafe {
+        let allocs = &mut *HEAP_ALLOCS.0.get();
+        let pos = allocs.iter().position(|a| a.virt == virt && a.pid == caller);
+        let Some(pos) = pos else { return u64::MAX; };
+        let alloc = allocs.swap_remove(pos);
+        let cr3 = match process::user_cr3(caller) {
+            Some(c) => c,
+            None => return u64::MAX,
+        };
+        crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
+        let layout = match alloc::alloc::Layout::from_size_align(alloc.size as usize, 4096) {
+            Ok(l) => l,
+            Err(_) => return u64::MAX,
+        };
+        alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
+    }
+    0
+}
+
+pub fn free_heap_for_pid(pid: u64) {
+    unsafe {
+        let allocs = &mut *HEAP_ALLOCS.0.get();
+        let mut i = 0;
+        while i < allocs.len() {
+            if allocs[i].pid == pid {
+                let alloc = allocs.swap_remove(i);
+                if let Some(cr3) = process::user_cr3(pid) {
+                    crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
+                }
+                if let Ok(layout) = alloc::alloc::Layout::from_size_align(alloc.size as usize, 4096)
+                {
+                    alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+pub fn free_dma_for_pid(pid: u64) {
+    unsafe {
+        let allocs = &mut *DMA_ALLOCS.0.get();
+        let mut i = 0;
+        while i < allocs.len() {
+            if allocs[i].pid == pid {
+                let alloc = allocs.swap_remove(i);
+                if let Some(cr3) = process::user_cr3(pid) {
+                    crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
+                }
+                if let Ok(layout) = alloc::alloc::Layout::from_size_align(alloc.size as usize, 4096)
+                {
+                    alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
+    if ptr == 0 || len == 0 {
+        return u64::MAX;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let path = core::str::from_utf8(bytes).unwrap_or("");
+    let stdin_fd  = (stdio_pack & 0xFFFF) as u16;
+    let stdout_fd = ((stdio_pack >> 16) & 0xFFFF) as u16;
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    let pid = if stdin_fd == 0xFFFF && stdout_fd == 0xFFFF {
+        let pid = exec::spawn_user(path);
+        if pid != 0 {
+            crate::fd::alloc_fd_at(pid, 0, crate::fd::FdEntry::ConsoleIn);
+            crate::fd::alloc_fd_at(pid, 1, crate::fd::FdEntry::ConsoleOut);
+            crate::fd::alloc_fd_at(pid, 2, crate::fd::FdEntry::ConsoleOut);
+        }
+        pid
+    } else {
+        exec::spawn_user_with_fds(path, caller, stdin_fd, stdout_fd)
+    };
+    if pid == 0 && exec::is_driver_kxe(path) {
+        return 1;
+    }
+    pid
+}
+
+fn sys_pipe(out_ptr: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    let Some(pipe_id) = crate::pipe::create() else { return u64::MAX; };
+    let read_fd  = fd::alloc_fd(caller, fd::FdEntry::PipeRead(pipe_id));
+    let write_fd = fd::alloc_fd(caller, fd::FdEntry::PipeWrite(pipe_id));
+    match (read_fd, write_fd) {
+        (Some(r), Some(w)) => {
+            if out_ptr != 0 {
+                unsafe {
+                    core::ptr::write_unaligned(out_ptr as *mut u64, r as u64);
+                    core::ptr::write_unaligned((out_ptr + 8) as *mut u64, w as u64);
+                }
+            }
+            0
+        }
+        _ => u64::MAX,
+    }
+}
+
+fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
+    if path_ptr == 0 || path_len == 0 {
+        return u64::MAX;
+    }
+    let path_bytes =
+        unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => return u64::MAX,
+    };
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    match crate::vfs::lookup(path) {
+        Ok(crate::vfs::VfsNode::Device(ops)) => {
+            let handle = (ops.open)();
+            if handle == u64::MAX {
+                return u64::MAX;
+            }
+            match fd::alloc_fd(caller, fd::FdEntry::Device { ops, handle }) {
+                Some(fd) => fd as u64,
+                None => {
+                    (ops.close)(handle);
+                    u64::MAX
+                }
+            }
+        }
+        Ok(crate::vfs::VfsNode::File { path: p, data }) => {
+            match fd::alloc_fd(
+                caller,
+                fd::FdEntry::File {
+                    path: p,
+                    offset: 0,
+                    len: data.len(),
+                },
+            ) {
+                Some(fd) => fd as u64,
+                None => u64::MAX,
+            }
+        }
+        Ok(crate::vfs::VfsNode::Dir) => u64::MAX,
+        Err(_) => u64::MAX,
+    }
+}
+
+fn sys_close(fd: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if fd::free_fd(caller, fd as usize) {
+        0
+    } else {
+        u64::MAX
+    }
+}
+
+fn sys_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
+    if buf_ptr == 0 || buf_len == 0 {
+        return 0;
+    }
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    match fd::get_fd(caller, fd as usize) {
+        Some(fd::FdEntry::ConsoleIn) => {
+            if let Some(ch) = crate::drivers::keyboard::get_raw() {
+                unsafe { core::ptr::write(buf_ptr as *mut u8, ch); }
+                1
+            } else {
+                if let Some(pid) = crate::scheduler::current_user_pid() {
+                    crate::process::set_wait_target(pid, crate::process::WaitTarget::Keyboard);
+                    crate::process::set_sleeping(pid);
+                }
+                syscall::BLOCK_TO_SCHEDULER
+            }
+        }
+        Some(fd::FdEntry::PipeRead(pipe_id)) => {
+            if crate::pipe::is_empty(pipe_id) {
+                if crate::pipe::writer_closed(pipe_id) {
+                    return 0; // EOF
+                }
+                if let Some(pid) = crate::scheduler::current_user_pid() {
+                    crate::process::set_wait_target(pid, crate::process::WaitTarget::PipeRead {
+                        pipe_id,
+                        buf_ptr,
+                        buf_len,
+                    });
+                    crate::process::set_sleeping(pid);
+                }
+                return syscall::BLOCK_TO_SCHEDULER;
+            }
+            let mut kbuf = alloc::vec![0u8; buf_len as usize];
+            let n = crate::pipe::read(pipe_id, &mut kbuf);
+            unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
+            n as u64
+        }
+        Some(fd::FdEntry::File { path, offset, len }) => {
+            let data = match crate::vfs::read_file(path) {
+                Ok(d) => d,
+                Err(_) => return u64::MAX,
+            };
+            let remaining = len.saturating_sub(offset);
+            if remaining == 0 {
+                return 0;
+            }
+            let to_read = (buf_len as usize).min(remaining);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr().add(offset),
+                    buf_ptr as *mut u8,
+                    to_read,
+                );
+            }
+            let _ = fd::set_fd(
+                caller,
+                fd as usize,
+                fd::FdEntry::File {
+                    path,
+                    offset: offset + to_read,
+                    len,
+                },
+            );
+            to_read as u64
+        }
+        Some(fd::FdEntry::Device { ops, handle }) => {
+            let mut total = 0usize;
+            const CHUNK: usize = 8192;
+            let mut kbuf = [0u8; CHUNK];
+            let dst = buf_ptr as *mut u8;
+            let mut remain = buf_len as usize;
+            while remain > 0 {
+                let n = remain.min(CHUNK);
+                let read = (ops.read)(handle, &mut kbuf[..n]);
+                if read == 0 {
+                    break;
+                }
+                unsafe {
+                    core::ptr::copy_nonoverlapping(kbuf.as_ptr(), dst.add(total), read);
+                }
+                total += read;
+                remain -= read;
+                if read < n {
+                    break;
+                }
+            }
+            total as u64
+        }
+        _ => u64::MAX,
+    }
+}
+
+fn sys_write(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
+    if buf_ptr == 0 || buf_len == 0 {
+        return 0;
+    }
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    match fd::get_fd(caller, fd as usize) {
+        Some(fd::FdEntry::ConsoleOut) => {
+            // same as SYS_CONSOLE_WRITE
+            let src = buf_ptr as *const u8;
+            let len = buf_len as usize;
+            const CHUNK: usize = 256;
+            let mut buf = [0u8; CHUNK];
+            let mut offset = 0usize;
+            let fb_owner = crate::drivers::fb_owner::owner();
+            let do_fb = fb_owner.is_none() || fb_owner == Some(caller);
+            while offset < len {
+                let n = (len - offset).min(CHUNK);
+                unsafe { core::ptr::copy_nonoverlapping(src.add(offset), buf.as_mut_ptr(), n); }
+                let chunk = unsafe { core::str::from_utf8_unchecked(&buf[..n]) };
+                if do_fb { console::screen_print(chunk); }
+                if crate::init::is_verbose() { crate::serial_print!("{}", chunk); }
+                offset += n;
+            }
+            buf_len
+        }
+        Some(fd::FdEntry::PipeWrite(pipe_id)) => {
+            let mut kbuf = alloc::vec![0u8; buf_len as usize];
+            unsafe { core::ptr::copy_nonoverlapping(buf_ptr as *const u8, kbuf.as_mut_ptr(), buf_len as usize); }
+            let n = crate::pipe::write(pipe_id, &kbuf);
+            crate::process::notify_pipe_readers(pipe_id);
+            n as u64
+        }
+        Some(fd::FdEntry::Device { ops, handle }) => {
+            let mut total = 0usize;
+            const CHUNK: usize = 8192;
+            let mut kbuf = [0u8; CHUNK];
+            let src = buf_ptr as *const u8;
+            let mut remain = buf_len as usize;
+            while remain > 0 {
+                let n = remain.min(CHUNK);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src.add(total), kbuf.as_mut_ptr(), n);
+                }
+                let written = (ops.write)(handle, &kbuf[..n]);
+                if written == 0 {
+                    break;
+                }
+                total += written;
+                remain -= written;
+                if written < n {
+                    break;
+                }
+            }
+            total as u64
+        }
+        _ => u64::MAX,
+    }
+}
+
+// Cached PCI device list, populated on first SYS_PCI_INFO call.
+static PCI_CACHE: crate::util::SyncUnsafeCell<alloc::vec::Vec<crate::drivers::pci::Device>> =
+    crate::util::SyncUnsafeCell::new(alloc::vec::Vec::new());
+static PCI_CACHE_READY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[repr(C)]
+pub struct PciDeviceInfo {
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub _pad: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class_code: u8,
+    pub subclass: u8,
+    pub prog_if: u8,
+    pub header_type: u8,
+}
+
+fn sys_pci_info(index: u64, out_ptr: u64) -> u64 {
+    use crate::drivers::pci;
+    use core::sync::atomic::Ordering;
+
+    if !PCI_CACHE_READY.load(Ordering::Acquire) {
+        let cache = unsafe { &mut *PCI_CACHE.0.get() };
+        let kind = if pci::pcie_available() { pci::ScanKind::Pcie } else { pci::ScanKind::Pci };
+        pci::scan(kind, |dev| cache.push(dev));
+        PCI_CACHE_READY.store(true, Ordering::Release);
+    }
+
+    let cache = unsafe { &*PCI_CACHE.0.get() };
+    let idx = index as usize;
+    if idx >= cache.len() {
+        return u64::MAX;
+    }
+    if out_ptr != 0 {
+        let dev = &cache[idx];
+        let info = PciDeviceInfo {
+            bus: dev.bus,
+            device: dev.device,
+            function: dev.function,
+            _pad: 0,
+            vendor_id: dev.vendor_id,
+            device_id: dev.device_id,
+            class_code: dev.class_code,
+            subclass: dev.subclass,
+            prog_if: dev.prog_if,
+            header_type: dev.header_type,
+        };
+        unsafe { core::ptr::write_unaligned(out_ptr as *mut PciDeviceInfo, info); }
+    }
+    cache.len() as u64
+}
+
+fn sys_ioctl(fd: u64, cmd: u64, arg: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    match fd::get_fd(caller, fd as usize) {
+        Some(fd::FdEntry::Device { ops, handle }) => {
+            let r = (ops.ioctl)(handle, cmd, arg);
+            r as u64
+        }
+        _ => u64::MAX,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub static mut KERNEL_RETURN_STACK: u64 = 0;
+
+#[unsafe(no_mangle)]
+pub static mut USER_INTERRUPT_STACK: u64 = 0;
+
+#[unsafe(no_mangle)]
+pub static mut BLOCKING_RSP_TMP: u64 = 0;

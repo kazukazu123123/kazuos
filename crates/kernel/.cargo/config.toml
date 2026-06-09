@@ -1,0 +1,5 @@
+[build]
+target = "../kernel/x86_64-kazuos.json"
+
+[target.x86_64-kazuos]
+rustflags = ["-C", "link-arg=-Tkazuos.ld"]

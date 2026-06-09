@@ -1,0 +1,4 @@
+[workspace]
+members = ["crates/*"]
+exclude = ["crates/user_programs"]
+resolver = "2"

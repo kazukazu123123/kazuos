@@ -1,0 +1,520 @@
+#![no_std]
+#![no_main]
+
+include!("../../crates/kernel/src/syscall_numbers.rs");
+
+const STDIO_DEFAULT: u64 = 0xFFFF_FFFF;
+
+const KEY_UP:   u64 = 0x82;
+const KEY_DOWN: u64 = 0x83;
+
+const MAX_HISTORY: usize = 32;
+static mut HISTORY: [[u8; BUF_SIZE]; MAX_HISTORY] = [[0u8; BUF_SIZE]; MAX_HISTORY];
+static mut HISTORY_LENS: [usize; MAX_HISTORY] = [0usize; MAX_HISTORY];
+static mut HISTORY_COUNT: usize = 0; // total commands ever added (wraps into ring)
+
+const BUF_SIZE: usize = 256;
+const NAME_LEN: usize = 32;
+
+#[repr(C)]
+struct ProcessInfo {
+    pid: u64,
+    state: u64,
+    image_name: [u8; NAME_LEN],
+    start_tsc: u64,
+    entry: u64,
+    stack_top: u64,
+    step: u64,
+    cpu_ticks: u64,
+    memory_bytes: u64,
+}
+
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    let mut buf = [0u8; BUF_SIZE];
+    loop {
+        let len = read_line(&mut buf);
+        if len > 0 {
+            execute(&buf[..len]);
+        }
+    }
+}
+
+fn read_line(buf: &mut [u8]) -> usize {
+    let mut len = 0usize;
+    let mut pos = 0usize;
+    let mut cursor_on = true;
+    let mut blink_ticks = 0u32;
+    // hist_age=0: live input, 1=most recent, 2=second most recent, ...
+    let mut hist_age: usize = 0;
+    let mut saved_buf = [0u8; BUF_SIZE];
+    let mut saved_len = 0usize;
+
+    redraw(buf, len, pos, cursor_on);
+
+    loop {
+        let ch = syscall1(SYS_KEYBOARD_POLL, 0);
+        if ch == 0 {
+            syscall1(SYS_NAP_MS, 50);
+            blink_ticks += 1;
+            if blink_ticks >= 10 {
+                blink_ticks = 0;
+                cursor_on = !cursor_on;
+                redraw(buf, len, pos, cursor_on);
+            }
+            continue;
+        }
+
+        blink_ticks = 0;
+        cursor_on = true;
+
+        match ch {
+            0x0A | 0x0D => {
+                redraw(buf, len, len, false);
+                sys_write(b"\n");
+                // push non-empty command to history
+                if len > 0 {
+                    unsafe {
+                        let slot = HISTORY_COUNT % MAX_HISTORY;
+                        HISTORY[slot][..len].copy_from_slice(&buf[..len]);
+                        HISTORY_LENS[slot] = len;
+                        HISTORY_COUNT += 1;
+                    }
+                }
+                return len;
+            }
+            0x08 | 0x7F => {
+                if pos > 0 {
+                    for i in pos - 1..len - 1 {
+                        buf[i] = buf[i + 1];
+                    }
+                    len -= 1;
+                    pos -= 1;
+                }
+            }
+            0x80 => { // left
+                if pos > 0 { pos -= 1; }
+            }
+            0x81 => { // right
+                if pos < len { pos += 1; }
+            }
+            KEY_UP => {
+                let count = unsafe { HISTORY_COUNT };
+                let max_age = count.min(MAX_HISTORY);
+                if hist_age < max_age {
+                    if hist_age == 0 {
+                        // save current input
+                        saved_buf[..len].copy_from_slice(&buf[..len]);
+                        saved_len = len;
+                    }
+                    hist_age += 1;
+                    unsafe {
+                        let slot = (HISTORY_COUNT - hist_age) % MAX_HISTORY;
+                        len = HISTORY_LENS[slot];
+                        buf[..len].copy_from_slice(&HISTORY[slot][..len]);
+                    }
+                    pos = len;
+                }
+            }
+            KEY_DOWN => {
+                if hist_age > 0 {
+                    hist_age -= 1;
+                    if hist_age == 0 {
+                        // restore saved input
+                        len = saved_len;
+                        buf[..len].copy_from_slice(&saved_buf[..len]);
+                    } else {
+                        unsafe {
+                            let slot = (HISTORY_COUNT - hist_age) % MAX_HISTORY;
+                            len = HISTORY_LENS[slot];
+                            buf[..len].copy_from_slice(&HISTORY[slot][..len]);
+                        }
+                    }
+                    pos = len;
+                }
+            }
+            c if c >= 0x20 && c < 0x7F => {
+                if len < buf.len() - 1 {
+                    for i in (pos..len).rev() {
+                        buf[i + 1] = buf[i];
+                    }
+                    buf[pos] = c as u8;
+                    len += 1;
+                    pos += 1;
+                }
+            }
+            _ => {}
+        }
+
+        redraw(buf, len, pos, cursor_on);
+    }
+}
+
+fn redraw(buf: &[u8], len: usize, pos: usize, cursor_on: bool) {
+    sys_write(b"\r\x1b[K");
+    sys_write(b"KazuOS> ");
+    sys_write(&buf[..pos]);
+    syscall1(SYS_CURSOR_SAVE, 0);
+    sys_write(&buf[pos..len]);
+    if cursor_on {
+        syscall1(SYS_CURSOR_DRAW, 1);
+    }
+}
+
+fn execute(cmd: &[u8]) {
+    let cmd = trim(cmd);
+    if cmd.is_empty() {
+        return;
+    }
+    let (cmd, background) = if cmd.ends_with(b"&") {
+        (trim(&cmd[..cmd.len() - 1]), true)
+    } else {
+        (cmd, false)
+    };
+    if cmd == b"help" {
+        return cmd_help();
+    }
+    if cmd == b"clear" {
+        return cmd_clear();
+    }
+    if cmd == b"mem" {
+        return cmd_mem();
+    }
+    if cmd == b"ps" {
+        return cmd_ps();
+    }
+    if cmd == b"sysinfo" {
+        return cmd_sysinfo();
+    }
+    if cmd == b"shutdown" {
+        return cmd_shutdown();
+    }
+    if cmd == b"reboot" {
+        return cmd_reboot();
+    }
+    if cmd == b"ls" || cmd.starts_with(b"ls ") {
+        return cmd_ls(cmd);
+    }
+    if cmd.starts_with(b"exec ") {
+        return cmd_exec(&cmd[5..]);
+    }
+    // check for pipe: cmd1 | cmd2
+    if let Some(pipe_pos) = find_pipe(cmd) {
+        let cmd1 = trim(&cmd[..pipe_pos]);
+        let cmd2 = trim(&cmd[pipe_pos + 1..]);
+        return cmd_pipe(cmd1, cmd2);
+    }
+    // try /bin/<name>.kxe
+    let pid = exec_bin(cmd, STDIO_DEFAULT);
+    if pid == 1 {
+        sys_write(b"KazuOS: ");
+        sys_write(cmd);
+        sys_write(b": cannot execute driver directly\r\n");
+        return;
+    }
+    if pid != 0 && pid != u64::MAX {
+        if background {
+            sys_write(b"[bg] pid=");
+            write_u64(pid);
+            sys_write(b"\r\n");
+        } else {
+            syscall1(SYS_WAIT, pid);
+        }
+        return;
+    }
+    sys_write(b"KazuOS: unknown command: ");
+    sys_write(cmd);
+    sys_write(b"\r\n");
+}
+
+fn find_pipe(cmd: &[u8]) -> Option<usize> {
+    cmd.iter().position(|&b| b == b'|')
+}
+
+fn exec_bin(cmd: &[u8], stdio_pack: u64) -> u64 {
+    let name = cmd.split(|&b| b == b' ').next().unwrap_or(cmd);
+    // If name contains '/', try as a path first (prepend / if missing)
+    if name.contains(&b'/') {
+        let mut norm_buf = [0u8; 128];
+        let (ptr, len) = if name.starts_with(b"/") {
+            (name.as_ptr() as u64, name.len() as u64)
+        } else {
+            if 1 + name.len() > norm_buf.len() { return u64::MAX; }
+            norm_buf[0] = b'/';
+            norm_buf[1..1 + name.len()].copy_from_slice(name);
+            (norm_buf.as_ptr() as u64, 1 + name.len() as u64)
+        };
+        let pid = syscall4(SYS_EXEC, ptr, len, stdio_pack);
+        if pid != 0 && pid != u64::MAX { return pid; }
+    }
+    // Fallback: try /bin/<name>.kxe
+    let mut path = [0u8; 128];
+    let prefix = b"/bin/";
+    let suffix = b".kxe";
+    let total = prefix.len() + name.len() + suffix.len();
+    if total >= path.len() { return u64::MAX; }
+    path[..prefix.len()].copy_from_slice(prefix);
+    path[prefix.len()..prefix.len() + name.len()].copy_from_slice(name);
+    path[prefix.len() + name.len()..total].copy_from_slice(suffix);
+    syscall4(SYS_EXEC, path.as_ptr() as u64, total as u64, stdio_pack)
+}
+
+fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
+    let mut fds = [0u64; 2]; // [read_fd, write_fd]
+    if syscall1(SYS_PIPE, fds.as_mut_ptr() as u64) != 0 {
+        sys_write(b"pipe failed\r\n");
+        return;
+    }
+    let read_fd  = fds[0];
+    let write_fd = fds[1];
+
+    // spawn cmd1 with stdout = write_fd
+    let stdio1 = 0xFFFF | (write_fd << 16);
+    let pid1 = exec_bin(cmd1, stdio1);
+
+    // shell closes write end so cmd2 sees EOF when cmd1 exits
+    syscall1(SYS_CLOSE, write_fd);
+
+    // spawn cmd2 with stdin = read_fd
+    let stdio2 = read_fd | (0xFFFF << 16);
+    let pid2 = exec_bin(cmd2, stdio2);
+
+    // shell closes read end
+    syscall1(SYS_CLOSE, read_fd);
+
+    if pid2 != 0 && pid2 != 1 && pid2 != u64::MAX {
+        syscall1(SYS_WAIT, pid2);
+    }
+}
+
+fn cmd_help() {
+    sys_write(b"commands: help clear ls mem ps sysinfo shutdown reboot\r\n");
+}
+
+fn cmd_clear() {
+    syscall1(SYS_CONSOLE_CLEAR, 0);
+}
+
+fn cmd_mem() {
+    let info = syscall1(SYS_MEM_INFO, 0);
+    if info == 0 {
+        sys_write(b"PMM unavailable\r\n");
+        return;
+    }
+    let total_kib = info >> 32;
+    let used_kib = info & 0xffffffff;
+    let free_kib = total_kib.saturating_sub(used_kib);
+    sys_write(b"total: ");
+    write_u64(total_kib);
+    sys_write(b" KiB used: ");
+    write_u64(used_kib);
+    sys_write(b" KiB free: ");
+    write_u64(free_kib);
+    sys_write(b" KiB\r\n");
+}
+
+fn cmd_ps() {
+    let mut pid = syscall2(SYS_PROCESS_NEXT, u64::MAX);
+    while pid != u64::MAX {
+        let mut info = ProcessInfo {
+            pid: 0,
+            state: 0,
+            image_name: [0u8; NAME_LEN],
+            start_tsc: 0,
+            entry: 0,
+            stack_top: 0,
+            step: 0,
+            cpu_ticks: 0,
+            memory_bytes: 0,
+        };
+        let r = syscall3(SYS_PROCESS_INFO, pid, &mut info as *mut _ as u64);
+        if r == 0 {
+            let state_name = match info.state {
+                1 => b"ready   ",
+                2 => b"running ",
+                3 => b"sleeping",
+                4 => b"exited  ",
+                _ => b"unknown ",
+            };
+            let name_len = info
+                .image_name
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(NAME_LEN);
+            sys_write(b"pid=");
+            write_u64(info.pid);
+            sys_write(b" state=");
+            sys_write(state_name);
+            sys_write(b" cpu=");
+            write_u64(info.cpu_ticks);
+            sys_write(b" mem=");
+            write_u64(info.memory_bytes / 1024);
+            sys_write(b"KiB name=");
+            sys_write(&info.image_name[..name_len]);
+            sys_write(b"\r\n");
+        }
+        pid = syscall2(SYS_PROCESS_NEXT, pid);
+    }
+}
+
+fn cmd_sysinfo() {
+    cmd_mem();
+    let timer_ticks = syscall1(SYS_CPU_INFO, 0);
+    let count = syscall1(SYS_PROCESS_INFO, 1);
+    sys_write(b"processes: ");
+    write_u64(count);
+    sys_write(b" timer_ticks: ");
+    write_u64(timer_ticks);
+    sys_write(b"\r\n");
+}
+
+fn cmd_ls(cmd: &[u8]) {
+    let path_raw = if cmd.len() > 3 {
+        trim(&cmd[3..])
+    } else {
+        b"/"
+    };
+    let mut norm_buf = [0u8; 256];
+    let path = if path_raw.starts_with(b"/") {
+        path_raw
+    } else {
+        if 1 + path_raw.len() > norm_buf.len() {
+            sys_write(b"ls: path too long\r\n");
+            return;
+        }
+        norm_buf[0] = b'/';
+        norm_buf[1..1 + path_raw.len()].copy_from_slice(path_raw);
+        &norm_buf[..1 + path_raw.len()]
+    };
+    let r = syscall3(SYS_LS, path.as_ptr() as u64, path.len() as u64);
+    if r == u64::MAX {
+        sys_write(b"ls: failed\r\n");
+    } else {
+        write_u64(r);
+        sys_write(b" entries\r\n");
+    }
+}
+
+fn cmd_exec(args: &[u8]) {
+    let path = trim(args);
+    if path.is_empty() {
+        sys_write(b"usage: exec <path>\r\n");
+        return;
+    }
+    let pid = syscall3(SYS_EXEC, path.as_ptr() as u64, path.len() as u64);
+    if pid == 1 {
+        sys_write(b"KazuOS: ");
+        sys_write(path);
+        sys_write(b": cannot execute driver directly\r\n");
+    } else if pid == 0 || pid == u64::MAX {
+        sys_write(b"exec failed: ");
+        sys_write(path);
+        sys_write(b"\r\n");
+    } else {
+        sys_write(b"spawned pid=");
+        write_u64(pid);
+        sys_write(b"\r\n");
+    }
+}
+
+fn cmd_shutdown() -> ! {
+    sys_write(b"Shutting down...\r\n");
+    syscall1(SYS_SHUTDOWN, 0);
+    loop {}
+}
+
+fn cmd_reboot() -> ! {
+    sys_write(b"Rebooting...\r\n");
+    syscall1(SYS_REBOOT, 0);
+    loop {}
+}
+
+fn trim(s: &[u8]) -> &[u8] {
+    let start = s.iter().position(|&b| b != b' ').unwrap_or(s.len());
+    let end = s
+        .iter()
+        .rposition(|&b| b != b' ')
+        .map(|i| i + 1)
+        .unwrap_or(start);
+    &s[start..end]
+}
+
+fn write_u64(mut n: u64) {
+    if n == 0 {
+        sys_write(b"0");
+        return;
+    }
+    let mut digits = [0u8; 20];
+    let mut i = 20;
+    while n > 0 {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    sys_write(&digits[i..]);
+}
+
+fn sys_write(buf: &[u8]) {
+    syscall3(SYS_CONSOLE_WRITE, buf.as_ptr() as u64, buf.len() as u64);
+}
+
+fn syscall1(n: u64, a0: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") n => r,
+            in("rdi") a0,
+            in("rsi") 0u64,
+            in("rdx") 0u64,
+        );
+    }
+    r
+}
+
+fn syscall2(n: u64, a0: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") n => r,
+            in("rdi") a0,
+            in("rsi") 0u64,
+            in("rdx") 0u64,
+        );
+    }
+    r
+}
+
+fn syscall3(n: u64, a0: u64, a1: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") n => r,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") 0u64,
+        );
+    }
+    r
+}
+
+fn syscall4(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") n => r,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+        );
+    }
+    r
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}

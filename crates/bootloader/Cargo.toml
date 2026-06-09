@@ -1,0 +1,9 @@
+[package]
+name = "kazuos-bootloader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+uefi = { version = "0.37.0", features = ["panic_handler", "alloc", "global_allocator"] }
+xmas-elf = "0.10.0"
+kazuos-shared = { path = "../shared" }
