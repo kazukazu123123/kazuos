@@ -15,7 +15,9 @@ pub const SYS_KILL:         u64 = 11;
 pub const SYS_WAIT:         u64 = 12;
 pub const SYS_PROCESS_INFO: u64 = 13;
 pub const SYS_PROCESS_NEXT: u64 = 14;
-pub const SYS_NAP_MS:       u64 = 15;
+pub const SYS_SLEEP:         u64 = 15;
+pub const SLEEP_UNIT_MS:     u64 = 0;
+pub const SLEEP_UNIT_US:     u64 = 1;
 
 // Memory
 pub const SYS_MEM_INFO:   u64 = 16;

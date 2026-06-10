@@ -37,14 +37,14 @@ pub extern "C" fn _start() -> ! {
     let r0 = syscall(SYS_IOPORT_REQUEST, PCI_ADDR as u64, 4, 0);
     let r1 = syscall(SYS_IOPORT_REQUEST, PCI_DATA as u64, 4, 0);
     if r0 == u64::MAX || r1 == u64::MAX {
-        loop { syscall(SYS_NAP_MS, 10000, 0, 0); }
+        loop { syscall(SYS_SLEEP, 10000, SLEEP_UNIT_MS, 0); }
     }
 
     // Find AC97 (class=0x04 subclass=0x01).
     let loc = match pci_find(0x04, 0x01) {
         Some(l) => l,
         None => {
-            loop { syscall(SYS_NAP_MS, 10000, 0, 0); }
+            loop { syscall(SYS_SLEEP, 10000, SLEEP_UNIT_MS, 0); }
         }
     };
 
@@ -53,7 +53,7 @@ pub extern "C" fn _start() -> ! {
     let nabm = (pci_read_bar(bus, dev, func, 1) & !1) as u16;
 
     if nam == 0 || nabm == 0 {
-        loop { syscall(SYS_NAP_MS, 10000, 0, 0); }
+        loop { syscall(SYS_SLEEP, 10000, SLEEP_UNIT_MS, 0); }
     }
 
     // Allow AC97 I/O ports (NAM and NABM, each up to 256 ports wide).
@@ -78,7 +78,7 @@ pub extern "C" fn _start() -> ! {
     let wav_va = syscall(SYS_DMA_ALLOC, MAX_WAV_SIZE as u64, 0, 0);
 
     if bdl_va == u64::MAX || pcm_va == u64::MAX || wav_va == u64::MAX {
-        loop { syscall(SYS_NAP_MS, 10000, 0, 0); }
+        loop { syscall(SYS_SLEEP, 10000, SLEEP_UNIT_MS, 0); }
     }
     let ac97 = Ac97 {
         nam,
@@ -94,7 +94,7 @@ pub extern "C" fn _start() -> ! {
     let ch_name = b"ac97";
     let ch = syscall(SYS_IPC_OPEN, ch_name.as_ptr() as u64, ch_name.len() as u64, 0);
     if ch == u64::MAX {
-        loop { syscall(SYS_NAP_MS, 10000, 0, 0); }
+        loop { syscall(SYS_SLEEP, 10000, SLEEP_UNIT_MS, 0); }
     }
 
     let mut msg = [0u8; IPC_BUF];
@@ -197,7 +197,7 @@ fn play(ac: &Ac97, wav: &WavInfo<'_>) {
     let mut i = 0u32;
     while i < 100 {
         if inb(ac.po + 0x0b) & 0x01 == 0 { break; }
-        syscall(SYS_NAP_MS, 1, 0, 0);
+        syscall(SYS_SLEEP, 1, SLEEP_UNIT_MS, 0);
         i += 1;
     }
     outw(ac.po + 0x06, inw(ac.po + 0x06) & 0x001C);
@@ -255,7 +255,7 @@ fn play(ac: &Ac97, wav: &WavInfo<'_>) {
         } else {
             let sr = inw(ac.po + 0x06);
             if sr & 0x1C != 0 { outw(ac.po + 0x06, sr & 0x1C); }
-            syscall(SYS_NAP_MS, 1, 0, 0);
+            syscall(SYS_SLEEP, 1, SLEEP_UNIT_MS, 0);
             idle_ms += 1;
         }
     }

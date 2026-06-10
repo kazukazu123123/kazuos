@@ -67,7 +67,7 @@ pub extern "C" fn _start() -> ! {
         let key = loop {
             let k = syscall(SYS_KEYBOARD_POLL, 0, 0, 0);
             if k != 0 { break k as u8; }
-            syscall(SYS_NAP_MS, 30, 0, 0);
+            syscall(SYS_SLEEP, 30, SLEEP_UNIT_MS, 0);
         };
 
         match key {

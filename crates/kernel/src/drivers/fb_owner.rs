@@ -65,6 +65,9 @@ pub fn acquire(pid: u64, cr3: u64, out: *mut FbInfo) -> u64 {
             return u64::MAX;
         }
 
+        // Clear framebuffer to black.
+        core::ptr::write_bytes(p.base as *mut u8, 0, fb_bytes);
+
         *OWNER.0.get() = Some(pid);
         write_info(out)
     }

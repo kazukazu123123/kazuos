@@ -10,7 +10,7 @@ pub extern "C" fn _start() -> ! {
     loop {
         let pid = syscall(SYS_EXEC, SHELL_PATH.as_ptr() as u64, SHELL_PATH.len() as u64, 0);
         if pid == 0 || pid == u64::MAX {
-            syscall(SYS_NAP_MS, 1000, 0, 0);
+            syscall(SYS_SLEEP, 1000, SLEEP_UNIT_MS, 0);
             continue;
         }
         loop {
@@ -18,7 +18,7 @@ pub extern "C" fn _start() -> ! {
             if r != 0 {
                 break;
             }
-            syscall(SYS_NAP_MS, 100, 0, 0);
+            syscall(SYS_SLEEP, 100, SLEEP_UNIT_MS, 0);
         }
     }
 }

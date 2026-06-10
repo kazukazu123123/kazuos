@@ -121,7 +121,7 @@ pub extern "C" fn _start() -> ! {
         let mut quit = false;
         let mut i = 0u32;
         while i < 5 {
-            syscall(SYS_NAP_MS, 100, 0, 0);
+            syscall(SYS_SLEEP, 100, SLEEP_UNIT_MS, 0);
             if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) != 0 { quit = true; break; }
             i += 1;
         }

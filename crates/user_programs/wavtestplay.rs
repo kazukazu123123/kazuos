@@ -84,7 +84,7 @@ pub extern "C" fn _start() -> ! {
             while offset < j {
                 let n = write(audio_fd, &out[offset..j]);
                 if n == 0 {
-                    syscall(SYS_NAP_MS, 1, 0, 0);
+                    syscall(SYS_SLEEP, 1, SLEEP_UNIT_MS, 0);
                     continue;
                 }
                 offset += n as usize;
@@ -114,7 +114,7 @@ pub extern "C" fn _start() -> ! {
             while offset < j {
                 let n = write(audio_fd, &out[offset..j]);
                 if n == 0 {
-                    syscall(SYS_NAP_MS, 1, 0, 0);
+                    syscall(SYS_SLEEP, 1, SLEEP_UNIT_MS, 0);
                     continue;
                 }
                 offset += n as usize;
@@ -128,7 +128,7 @@ pub extern "C" fn _start() -> ! {
         while offset < out_buf.len() {
             let n = write(audio_fd, &out_buf[offset..]);
             if n == 0 {
-                syscall(SYS_NAP_MS, 1, 0, 0);
+                syscall(SYS_SLEEP, 1, SLEEP_UNIT_MS, 0);
                 continue;
             }
             offset += n as usize;

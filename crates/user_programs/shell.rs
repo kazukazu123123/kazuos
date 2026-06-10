@@ -55,7 +55,7 @@ fn read_line(buf: &mut [u8]) -> usize {
     loop {
         let ch = syscall1(SYS_KEYBOARD_POLL, 0);
         if ch == 0 {
-            syscall1(SYS_NAP_MS, 50);
+            syscall3(SYS_SLEEP, 50, SLEEP_UNIT_MS);
             blink_ticks += 1;
             if blink_ticks >= 10 {
                 blink_ticks = 0;

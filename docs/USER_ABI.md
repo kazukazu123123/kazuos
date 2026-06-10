@@ -30,7 +30,7 @@ User programs call the kernel with `int 0x80`.
 | `12` | `SYS_WAIT` | `arg0 = pid` | blocks until target exits; returns `1` |
 | `13` | `SYS_PROCESS_INFO` | `arg0 = selector`, `arg1 = buffer` | selector-dependent |
 | `14` | `SYS_PROCESS_NEXT` | `arg0 = previous pid` | next pid, or `u64::MAX` if none |
-| `15` | `SYS_NAP_MS` | `arg0 = milliseconds` | `0` after blocking |
+| `15` | `SYS_SLEEP` | `arg0 = duration`, `arg1 = SLEEP_UNIT_MS` (0) or `SLEEP_UNIT_US` (1) | `0` after blocking |
 | `16` | `SYS_MEM_INFO` | none | `(total_kib << 32) \| used_kib`, or `0` |
 | `17` | `SYS_HEAP_ALLOC` | `arg0 = size` | user VA (page-aligned, zeroed), or `u64::MAX` on error |
 | `18` | `SYS_HEAP_FREE` | `arg0 = VA from SYS_HEAP_ALLOC` | `0` on success; `u64::MAX` on error |

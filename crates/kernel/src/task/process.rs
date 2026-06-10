@@ -110,7 +110,7 @@ pub(crate) struct Process {
     kernel_rsp: u64,
     kernel_stack_base: u64,
     pub(crate) kernel_preempted: bool,
-    // For blocking syscalls (SYS_KEYBOARD_READ, SYS_WAIT, SYS_NAP_MS):
+    // For blocking syscalls (SYS_KEYBOARD_READ, SYS_WAIT, SYS_SLEEP):
     // blocking_rsp points to the saved int-0x80 frame on the process's kernel stack.
     blocking_rsp: u64,
     blocking_retval: u64,

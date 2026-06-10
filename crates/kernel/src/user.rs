@@ -107,7 +107,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             }
         }
         SYS_PROCESS_NEXT => process::next_pid_after(arg0).unwrap_or(u64::MAX),
-        SYS_NAP_MS => sys_nap_ms(arg0),
+        SYS_SLEEP => sys_sleep(arg0, arg1),
 
         // Memory
         SYS_MEM_INFO => {
@@ -245,12 +245,28 @@ fn sys_wait(pid: u64) -> u64 {
     }
 }
 
-fn sys_nap_ms(ms: u64) -> u64 {
-    if ms == 0 {
+fn sys_sleep(duration: u64, unit: u64) -> u64 {
+    if duration == 0 {
         return 0;
     }
     let tsc_per_ms = unsafe { TSC_PER_MS };
-    let deadline = crate::util::rdtsc() + tsc_per_ms * ms;
+    let tsc = match unit {
+        SLEEP_UNIT_US => {
+            let r = tsc_per_ms.checked_mul(duration).map(|v| v / 1000);
+            match r {
+                Some(0) | None => return 0,
+                Some(v) => v,
+            }
+        }
+        _ => {
+            // SLEEP_UNIT_MS
+            match tsc_per_ms.checked_mul(duration) {
+                None => return 0,
+                Some(v) => v,
+            }
+        }
+    };
+    let deadline = crate::util::rdtsc() + tsc;
     if let Some(pid) = crate::scheduler::current_user_pid() {
         crate::process::set_wait_target(pid, crate::process::WaitTarget::Timer(deadline));
         crate::process::set_sleeping(pid);

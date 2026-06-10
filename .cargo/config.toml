@@ -1,0 +1,8 @@
+[target.'cfg(target_os = "none")']
+rustflags = ["-C", "panic=abort"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
