@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::drivers::{ioapic, keyboard, lapic, pic};
+use crate::drivers::{ioapic, keyboard, lapic, mouse, pic};
 use crate::handlers::interrupts;
 use crate::{allocator, console, drivers, idt, platform, pmm, syscall, vmm};
 use kazuos_shared::BootInfo;
@@ -238,6 +238,7 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform) {
         }
 
         keyboard::init();
+        mouse::init();
         core::arch::asm!("sti");
         crate::logln!("Interrupts enabled");
     }

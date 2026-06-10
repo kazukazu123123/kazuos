@@ -1,6 +1,6 @@
 use core::arch::global_asm;
 
-use crate::drivers::{keyboard, lapic, pic};
+use crate::drivers::{keyboard, lapic, mouse, pic};
 use crate::util::rdtsc;
 
 static mut TIMER_TICKS: u64 = 0;
@@ -57,6 +57,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         }
         if KEYBOARD_POLLING {
             keyboard::poll();
+            mouse::poll();
         }
         // Wake any processes sleeping on a timer whose deadline has passed.
         crate::process::wake_timer_sleepers(now);

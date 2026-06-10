@@ -4,10 +4,22 @@
 include!("../../crates/kernel/src/syscall_numbers.rs");
 
 const AUDIO_PATH: &[u8] = b"/dev/audio";
-const WAV_PATH: &[u8] = b"/audio/test.wav";
+const DEFAULT_WAV: &[u8] = b"/audio/test.wav";
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, argv: u64) -> ! {
+    let wav_path = if argv != 0 {
+        let argv_ptr = unsafe { core::ptr::read_unaligned((argv + 8) as *const u64) };
+        if argv_ptr != 0 {
+            let arg1 = unsafe {
+                let mut len = 0usize;
+                while *((argv_ptr + len as u64) as *const u8) != 0 { len += 1; }
+                core::slice::from_raw_parts(argv_ptr as *const u8, len)
+            };
+            arg1
+        } else { DEFAULT_WAV }
+    } else { DEFAULT_WAV };
+
     sys_write(b"wavtestplay: starting\r\n");
     let audio_fd = open(AUDIO_PATH);
     if audio_fd == u64::MAX {
@@ -17,9 +29,9 @@ pub extern "C" fn _start() -> ! {
     }
     sys_write(b"wavtestplay: /dev/audio opened\r\n");
 
-    let file_fd = open(WAV_PATH);
+    let file_fd = open(wav_path);
     if file_fd == u64::MAX {
-        sys_write(b"wavtestplay: failed to open /audio/test.wav\r\n");
+        sys_write(b"wavtestplay: failed to open wav file\r\n");
         close(audio_fd);
         syscall(SYS_EXIT, 0, 0, 0);
         loop {}

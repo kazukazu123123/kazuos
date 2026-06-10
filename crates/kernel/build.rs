@@ -95,6 +95,7 @@ fn main() {
             panic!("objcopy failed for {}", stem);
         }
 
+        let entry = read_elf_entry(&elf);
         let mut code = std::fs::read(&bin_path).expect("failed to read bin");
         // Pad binary to cover BSS (objcopy omits SHT_NOBITS sections)
         if mem_size > code.len() as u64 {
@@ -108,7 +109,7 @@ fn main() {
         }
 
         let flags = if stem.starts_with("drv_") { 1u32 } else { 0u32 };
-        let kxe = build_kxe(&code, flags);
+        let kxe = build_kxe(&code, entry, flags);
 
         let bytes: Vec<String> = kxe.iter().map(|b| format!("0x{:02x}", b)).collect();
         generated.push_str(&format!(
@@ -151,6 +152,14 @@ fn get_sysroot(rustc: &str) -> String {
 }
 
 const R_X86_64_RELATIVE: u64 = 8;
+
+/// Read ELF64 e_entry (the virtual address of the program's entry point).
+fn read_elf_entry(elf: &[u8]) -> u64 {
+    if elf.len() < 32 || &elf[0..4] != b"\x7fELF" || elf[4] != 2 {
+        return 0;
+    }
+    read_u64(&elf[24..32])
+}
 
 /// Return the total virtual memory footprint of all PT_LOAD segments (including BSS).
 fn elf_load_mem_size(elf: &[u8]) -> u64 {
@@ -356,12 +365,12 @@ fn build_kfs(kxe_files: &[(String, Vec<u8>)], wav_data: &[u8]) -> Vec<u8> {
     image
 }
 
-fn build_kxe(code: &[u8], flags: u32) -> Vec<u8> {
+fn build_kxe(code: &[u8], entry: u64, flags: u32) -> Vec<u8> {
     let header_size = 36;
     let code_offset = header_size as u64;
     let mut result = Vec::with_capacity(header_size + code.len());
     result.extend_from_slice(b"KXE\0");
-    result.extend_from_slice(&0u64.to_le_bytes()); // entry = 0
+    result.extend_from_slice(&entry.to_le_bytes());
     result.extend_from_slice(&code_offset.to_le_bytes());
     result.extend_from_slice(&(code.len() as u64).to_le_bytes());
     result.extend_from_slice(&flags.to_le_bytes()); // flags

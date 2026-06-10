@@ -80,7 +80,7 @@ pub(crate) unsafe fn poll() {
     unsafe {
         let status = inb(0x64);
         if status & 0x01 == 0 { return; }
-        if status & 0x20 != 0 { inb(0x60); return; }
+        if status & 0x20 != 0 { return; }
         let sc = inb(0x60);
 
         if sc == 0xE0 { *EXTENDED.0.get() = true; return; }

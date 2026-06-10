@@ -77,6 +77,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
     if pid == 0 {
         panic!("shell spawn failed");
     }
+
     crate::scheduler::enter_next_process();
 }
 

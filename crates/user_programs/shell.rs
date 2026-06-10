@@ -30,7 +30,7 @@ struct ProcessInfo {
 }
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     let mut buf = [0u8; BUF_SIZE];
     loop {
         let len = read_line(&mut buf);
@@ -233,30 +233,67 @@ fn find_pipe(cmd: &[u8]) -> Option<usize> {
 
 fn exec_bin(cmd: &[u8], stdio_pack: u64) -> u64 {
     let name = cmd.split(|&b| b == b' ').next().unwrap_or(cmd);
-    // If name contains '/', try as a path first (prepend / if missing)
+    let args_part = if cmd.len() > name.len() + 1 {
+        trim(&cmd[name.len() + 1..])
+    } else {
+        &[][..]
+    };
+
+    try_exec_path(name, args_part, stdio_pack)
+}
+
+fn try_exec_path(name: &[u8], args_part: &[u8], stdio_pack: u64) -> u64 {
+    let mut buf = [0u8; 128];
+
+    // Try absolute or relative path first
     if name.contains(&b'/') {
-        let mut norm_buf = [0u8; 128];
-        let (ptr, len) = if name.starts_with(b"/") {
-            (name.as_ptr() as u64, name.len() as u64)
+        let path_len = if name.starts_with(b"/") {
+            name.len()
         } else {
-            if 1 + name.len() > norm_buf.len() { return u64::MAX; }
-            norm_buf[0] = b'/';
-            norm_buf[1..1 + name.len()].copy_from_slice(name);
-            (norm_buf.as_ptr() as u64, 1 + name.len() as u64)
+            if 1 + name.len() + 1 + args_part.len() + 1 > buf.len() { return u64::MAX; }
+            buf[0] = b'/';
+            buf[1..1 + name.len()].copy_from_slice(name);
+            1 + name.len()
         };
-        let pid = syscall4(SYS_EXEC, ptr, len, stdio_pack);
+        let total = if name.starts_with(b"/") {
+            let total = name.len() + 1 + args_part.len() + 1;
+            if total > buf.len() { return u64::MAX; }
+            buf[..name.len()].copy_from_slice(name);
+            total
+        } else {
+            1 + name.len() + 1 + args_part.len() + 1
+        };
+        let path_part = if name.starts_with(b"/") { name } else { &buf[..1 + name.len()] };
+        // Copy args after path + null
+        let path_section = path_part.len();
+        if path_section + 1 + args_part.len() + 1 > buf.len() { return u64::MAX; }
+        buf[path_section] = 0;
+        if !args_part.is_empty() {
+            buf[path_section + 1..path_section + 1 + args_part.len()].copy_from_slice(args_part);
+        }
+        buf[path_section + 1 + args_part.len()] = 0;
+        let total = path_section + 1 + args_part.len() + 1;
+        let pid = syscall4(SYS_EXEC, buf.as_ptr() as u64, total as u64, stdio_pack);
+        if pid != 0 && pid != u64::MAX { return pid; }
+    } else {
+        // Fallback: /bin/<name>.kxe
+        let prefix = b"/bin/";
+        let suffix = b".kxe";
+        let path_total = prefix.len() + name.len() + suffix.len();
+        let total = path_total + 1 + args_part.len() + 1;
+        if total > buf.len() { return u64::MAX; }
+        buf[..prefix.len()].copy_from_slice(prefix);
+        buf[prefix.len()..prefix.len() + name.len()].copy_from_slice(name);
+        buf[prefix.len() + name.len()..path_total].copy_from_slice(suffix);
+        buf[path_total] = 0;
+        if !args_part.is_empty() {
+            buf[path_total + 1..path_total + 1 + args_part.len()].copy_from_slice(args_part);
+        }
+        buf[total - 1] = 0;
+        let pid = syscall4(SYS_EXEC, buf.as_ptr() as u64, total as u64, stdio_pack);
         if pid != 0 && pid != u64::MAX { return pid; }
     }
-    // Fallback: try /bin/<name>.kxe
-    let mut path = [0u8; 128];
-    let prefix = b"/bin/";
-    let suffix = b".kxe";
-    let total = prefix.len() + name.len() + suffix.len();
-    if total >= path.len() { return u64::MAX; }
-    path[..prefix.len()].copy_from_slice(prefix);
-    path[prefix.len()..prefix.len() + name.len()].copy_from_slice(name);
-    path[prefix.len() + name.len()..total].copy_from_slice(suffix);
-    syscall4(SYS_EXEC, path.as_ptr() as u64, total as u64, stdio_pack)
+    u64::MAX
 }
 
 fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {

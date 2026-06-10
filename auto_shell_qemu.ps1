@@ -3,6 +3,7 @@ param(
     [int]$AfterWaitSeconds = 6,
     [switch]$NoBuild,
     [switch]$KeepAlive,
+    [switch]$Verbose,
     [string[]]$SendLines = @("ret"),
     [string]$ExpectPattern = $null,
     [string]$WaitPattern = "KazuOS kernel started",
@@ -175,7 +176,7 @@ $TempVars = Join-Path $Root "ovmf_vars_pipeline.tmp.fd"
 if ($OvmfVars) { Copy-Item $OvmfVars $TempVars -Force }
 
 $qemuArgs = @(
-    "-machine", "q35,pcspk-audiodev=snd0",
+    "-machine", "q35,pcspk-audiodev=snd0,i8042=on",
     "-drive", "if=pflash,format=raw,readonly=on,file=$OvmfPath"
 )
 if ($OvmfVars) { $qemuArgs += @("-drive", "if=pflash,format=raw,file=$TempVars") }
@@ -224,8 +225,12 @@ try {
         Write-Host "Warning: early pattern '$EarlyPattern' not found within ${BootTimeoutSeconds}s, trying anyway"
     }
     Start-Sleep -Seconds 1
-    # Press Enter to boot the default OS
-    Send-HmpLines @("sendkey ret")
+    # Select boot option: Down+Enter for verbose, just Enter for default
+    if ($Verbose) {
+        Send-HmpLines @("sendkey down", "sendkey ret")
+    } else {
+        Send-HmpLines @("sendkey ret")
+    }
     Start-Sleep -Milliseconds 500
 
     Write-Host "[4/4] Waiting for shell prompt (pattern: '$WaitPattern')"

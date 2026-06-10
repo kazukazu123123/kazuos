@@ -30,7 +30,7 @@ All user programs are `.rs` files in `crates/user_programs/`. They are compiled 
 include!("../../crates/kernel/src/syscall_numbers.rs");
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     syscall(SYS_CONSOLE_WRITE, "Hello\n".as_ptr() as u64, 6, 0);
     syscall(SYS_EXIT, 0, 0, 0);
     loop {}
@@ -57,7 +57,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 ### Requirements
 
 - `#![no_std]` and `#![no_main]` — no standard library or runtime
-- `_start` as the entry point (set by `link.ld`)
+- `_start(argc: u64, argv: u64)` as the entry point (set by `link.ld`)
 - `include!("../../crates/kernel/src/syscall_numbers.rs")` for syscall constants
 - `#[panic_handler]` — must be present
 
@@ -122,7 +122,7 @@ These syscalls return `u64::MAX` for non-driver processes.
 include!("../../crates/kernel/src/syscall_numbers.rs");
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     // Register an IPC channel for service requests
     let ch = syscall(SYS_IPC_OPEN, "myservice\0".as_ptr() as u64, 9, 0);
     if ch == u64::MAX { loop {} }

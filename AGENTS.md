@@ -24,16 +24,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "auto_shell_qemu.ps1"
 
 The pipeline accepts `-SendLines` (array of shell commands, default `ret`) and `-ExpectPattern` (regex to search serial.log, exits 1 on fail).
 
+Use `-Verbose` to boot with serial output enabled (required for pattern matching on shell output).
+
 Examples:
 ```powershell
 # boot and press Enter
 .\auto_shell_qemu.ps1
 
-# run shell commands (Enter is appended automatically)
-.\auto_shell_qemu.ps1 -SendLines help,mem,ps
+# boot verbose and run shell commands (Enter is appended automatically)
+.\auto_shell_qemu.ps1 -Verbose -SendLines help,mem,ps
 
 # check serial output for a specific pattern
-.\auto_shell_qemu.ps1 -SendLines help,ps -AfterWaitSeconds 6 -ExpectPattern "commands:"
+.\auto_shell_qemu.ps1 -Verbose -SendLines help,ps -AfterWaitSeconds 6 -ExpectPattern "commands:"
 ```
 
 Do not use plain `cargo check` for kernel validation because stable Rust fails on current nightly features.

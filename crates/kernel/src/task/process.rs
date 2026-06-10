@@ -38,6 +38,7 @@ pub enum PrivilegeLevel {
 pub enum WaitTarget {
     None,
     Keyboard,
+    Mouse,
     Pid(u64),
     Timer(u64),
     Ipc(u64), // channel_id
@@ -835,6 +836,24 @@ pub fn set_wait_target(pid: u64, target: WaitTarget) {
         let processes = &mut *PROCESSES.0.get();
         if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
             p.wait_target = target;
+        }
+    }
+}
+
+/// Wake one process sleeping waiting for a mouse event.
+pub fn wakeup_mouse_waiters() {
+    unsafe {
+        let processes = &mut *PROCESSES.0.get();
+        for p in processes.iter_mut() {
+            if matches!(p.state, ProcessState::Sleeping)
+                && matches!(p.wait_target, WaitTarget::Mouse)
+            {
+                let state = crate::drivers::mouse::read_state();
+                restore_ctx_from_blocking_frame(p, state);
+                p.state = ProcessState::Ready;
+                p.wait_target = WaitTarget::None;
+                return;
+            }
         }
     }
 }

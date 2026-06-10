@@ -133,7 +133,7 @@ fn device_names(vendor: u16, device: u16) -> (&'static str, &'static str) {
 }
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     let mut index: u64 = 0;
     loop {
         let mut dev = PciDeviceInfo {

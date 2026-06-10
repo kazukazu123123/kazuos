@@ -3,10 +3,10 @@
 
 include!("../../crates/kernel/src/syscall_numbers.rs");
 
-const SHELL_PATH: &[u8] = b"/bin/shell.kxe";
+const SHELL_PATH: &[u8] = b"/bin/shell.kxe\0";
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     loop {
         let pid = syscall(SYS_EXEC, SHELL_PATH.as_ptr() as u64, SHELL_PATH.len() as u64, 0);
         if pid == 0 || pid == u64::MAX {

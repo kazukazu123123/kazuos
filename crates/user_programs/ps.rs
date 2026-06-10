@@ -25,7 +25,7 @@ const EMPTY_INFO: ProcessInfo = ProcessInfo {
 };
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     let kernel_ticks = syscall(SYS_CPU_INFO, 2, 0, 0);
     let idle_ticks   = syscall(SYS_CPU_INFO, 3, 0, 0);
     let user_ticks   = syscall(SYS_CPU_INFO, 1, 0, 0);

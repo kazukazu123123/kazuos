@@ -22,7 +22,7 @@ const EMPTY_INFO: ProcessInfo = ProcessInfo {
 };
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     let mut prev_ker:   u64 = 0;
     let mut prev_idle:  u64 = 0;
     let mut prev_user:  u64 = 0;

@@ -32,7 +32,7 @@ struct Ac97 {
 }
 
 #[no_mangle]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     // Allow PCI config ports.
     let r0 = syscall(SYS_IOPORT_REQUEST, PCI_ADDR as u64, 4, 0);
     let r1 = syscall(SYS_IOPORT_REQUEST, PCI_DATA as u64, 4, 0);

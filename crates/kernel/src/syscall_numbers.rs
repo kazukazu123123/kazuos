@@ -49,12 +49,14 @@ pub const SYS_IRQ_WAIT:       u64 = 33;
 pub const SYS_DMA_ALLOC:      u64 = 34;
 pub const SYS_DMA_FREE:       u64 = 35;
 
-// Keyboard
+// Keyboard / Mouse
 pub const SYS_KEYBOARD_READ: u64 = 36;
 pub const SYS_KEYBOARD_POLL: u64 = 37;
+pub const SYS_MOUSE_READ:    u64 = 38;
+pub const SYS_MOUSE_POLL:    u64 = 39;
 
 // System / Misc
-pub const SYS_CPU_INFO:  u64 = 38;
-pub const SYS_SHUTDOWN:  u64 = 39;
-pub const SYS_REBOOT:    u64 = 40;
-pub const SYS_LS:        u64 = 41;
+pub const SYS_CPU_INFO:  u64 = 40;
+pub const SYS_SHUTDOWN:  u64 = 41;
+pub const SYS_REBOOT:    u64 = 42;
+pub const SYS_LS:        u64 = 43;

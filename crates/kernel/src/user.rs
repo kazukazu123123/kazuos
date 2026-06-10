@@ -214,6 +214,20 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
         SYS_KEYBOARD_POLL => crate::drivers::keyboard::get_raw().map(|c| c as u64).unwrap_or(0),
 
+        // Mouse
+        SYS_MOUSE_READ => {
+            let state = crate::drivers::mouse::read_state();
+            if state != 0 { state }
+            else {
+                if let Some(pid) = crate::scheduler::current_user_pid() {
+                    crate::process::set_wait_target(pid, crate::process::WaitTarget::Mouse);
+                    crate::process::set_sleeping(pid);
+                }
+                syscall::BLOCK_TO_SCHEDULER
+            }
+        }
+        SYS_MOUSE_POLL => crate::drivers::mouse::read_state(),
+
         // System / Misc
         SYS_CPU_INFO => match arg0 {
             0 => crate::handlers::interrupts::timer_ticks(),
@@ -541,12 +555,34 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
         return u64::MAX;
     }
     let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    let path = core::str::from_utf8(bytes).unwrap_or("");
+    // New format: "path\0arg1\0arg2\0\0" — null-separated path and args.
+    // Old format: just path bytes (no null) — no args.
+    let path_end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    let path = core::str::from_utf8(&bytes[..path_end]).unwrap_or("");
+    let args = if path_end < bytes.len() - 1 {
+        // Parse args after the path's null terminator
+        let mut arg_list = alloc::vec::Vec::new();
+        let mut pos = path_end + 1;
+        while pos < bytes.len() && bytes[pos] != 0 {
+            let arg_start = pos;
+            while pos < bytes.len() && bytes[pos] != 0 {
+                pos += 1;
+            }
+            arg_list.push(&bytes[arg_start..pos]);
+            if pos < bytes.len() {
+                pos += 1; // skip null
+            }
+        }
+        arg_list
+    } else {
+        alloc::vec::Vec::new()
+    };
+
     let stdin_fd  = (stdio_pack & 0xFFFF) as u16;
     let stdout_fd = ((stdio_pack >> 16) & 0xFFFF) as u16;
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     let pid = if stdin_fd == 0xFFFF && stdout_fd == 0xFFFF {
-        let pid = exec::spawn_user(path);
+        let pid = exec::spawn_user_with_args(path, &args);
         if pid != 0 {
             crate::fd::alloc_fd_at(pid, 0, crate::fd::FdEntry::ConsoleIn);
             crate::fd::alloc_fd_at(pid, 1, crate::fd::FdEntry::ConsoleOut);
@@ -554,7 +590,7 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
         }
         pid
     } else {
-        exec::spawn_user_with_fds(path, caller, stdin_fd, stdout_fd)
+        exec::spawn_user_with_fds_and_args(path, &args, caller, stdin_fd, stdout_fd)
     };
     if pid == 0 && exec::is_driver_kxe(path) {
         return 1;

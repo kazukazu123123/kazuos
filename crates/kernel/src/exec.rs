@@ -20,7 +20,7 @@ struct KxeHeader {
 }
 
 fn spawn_init() -> u64 {
-    spawn_process("/bin/init.kxe", crate::process::PrivilegeLevel::System)
+    spawn_process("/bin/init.kxe", &[], crate::process::PrivilegeLevel::System)
 }
 
 fn init_exit_handler() {
@@ -46,19 +46,23 @@ pub fn load_init(tsc_per_ms: u64) -> ! {
 }
 
 pub fn spawn(path: &str) -> u64 {
-    spawn_process(path, crate::process::PrivilegeLevel::System)
+    spawn_process(path, &[], crate::process::PrivilegeLevel::System)
 }
 
 /// Spawn from user space with explicit stdin/stdout fds (inherited from caller's fd table).
 /// stdin_fd / stdout_fd = 0xFFFF means use console default.
 pub fn spawn_user_with_fds(path: &str, caller_pid: u64, stdin_fd: u16, stdout_fd: u16) -> u64 {
+    spawn_user_with_fds_and_args(path, &[], caller_pid, stdin_fd, stdout_fd)
+}
+
+pub fn spawn_user_with_fds_and_args(path: &str, args: &[&[u8]], caller_pid: u64, stdin_fd: u16, stdout_fd: u16) -> u64 {
     let image = match crate::vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
     };
     let Some(kxe) = parse_kxe(&image) else { return 0; };
     if kxe.flags & KXE_FLAG_DRIVER != 0 { return 0; }
-    let pid = spawn_kxe(path, kxe, crate::process::PrivilegeLevel::User);
+    let pid = spawn_kxe(path, kxe, args, crate::process::PrivilegeLevel::User);
     if pid == 0 { return 0; }
 
     // fd 2 always = ConsoleOut
@@ -85,6 +89,10 @@ pub fn spawn_user_with_fds(path: &str, caller_pid: u64, stdin_fd: u16, stdout_fd
 
 /// Spawn from user space. Rejects driver binaries.
 pub fn spawn_user(path: &str) -> u64 {
+    spawn_user_with_args(path, &[])
+}
+
+pub fn spawn_user_with_args(path: &str, args: &[&[u8]]) -> u64 {
     let image = match vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
@@ -95,11 +103,11 @@ pub fn spawn_user(path: &str) -> u64 {
     if kxe.flags & KXE_FLAG_DRIVER != 0 {
         return 0;
     }
-    spawn_kxe(path, kxe, crate::process::PrivilegeLevel::User)
+    spawn_kxe(path, kxe, args, crate::process::PrivilegeLevel::User)
 }
 
 pub fn spawn_driver(path: &str) -> u64 {
-    spawn_process(path, crate::process::PrivilegeLevel::Driver)
+    spawn_process(path, &[], crate::process::PrivilegeLevel::Driver)
 }
 
 pub fn is_driver_kxe(path: &str) -> bool {
@@ -113,7 +121,7 @@ pub fn is_driver_kxe(path: &str) -> bool {
     kxe.flags & KXE_FLAG_DRIVER != 0
 }
 
-fn spawn_process(path: &str, privilege: crate::process::PrivilegeLevel) -> u64 {
+fn spawn_process(path: &str, args: &[&[u8]], privilege: crate::process::PrivilegeLevel) -> u64 {
     let image = match vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
@@ -121,7 +129,7 @@ fn spawn_process(path: &str, privilege: crate::process::PrivilegeLevel) -> u64 {
     let Some(kxe) = parse_kxe(&image) else {
         return 0;
     };
-    spawn_kxe(path, kxe, privilege)
+    spawn_kxe(path, kxe, args, privilege)
 }
 
 struct KxeImage<'a> {
@@ -154,19 +162,20 @@ fn parse_kxe(image: &[u8]) -> Option<KxeImage<'_>> {
 fn spawn_kxe(
     path: &str,
     image: KxeImage<'_>,
+    args: &[&[u8]],
     privilege: crate::process::PrivilegeLevel,
 ) -> u64 {
-    let Some(cr3) = create_process_space(image.entry, image.code) else {
+    let Some((cr3, initial_rsp)) = create_process_space(image.entry, image.code, args) else {
         return 0;
     };
-    let pid = process::spawn_user_process(path, image.entry, USER_STACK_TOP, cr3, privilege);
+    let pid = process::spawn_user_process(path, image.entry, initial_rsp, cr3, privilege);
     if pid != 0 {
         process::set_memory_bytes(pid, image.code.len() as u64 + USER_STACK_SIZE);
     }
     pid
 }
 
-fn create_process_space(entry: u64, code: &[u8]) -> Option<u64> {
+fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64, u64)> {
     unsafe {
         let cr3 = crate::vmm::create_address_space().ok()?;
         let code_size = code.len() as u64;
@@ -194,8 +203,57 @@ fn create_process_space(entry: u64, code: &[u8]) -> Option<u64> {
             crate::vmm::MapFlags::USER_READ_WRITE.no_execute(),
         )
         .ok()?;
-        Some(cr3)
+        let initial_rsp = push_args_onto_stack(stack_phys, stack_base, args);
+        Some((cr3, initial_rsp))
     }
+}
+
+/// Push argc/argv onto the user stack (SysV ABI convention).
+/// stack_phys is the kernel-VA of the allocated stack memory.
+/// stack_base is the user-VA of the stack bottom.
+/// Stack layout:
+///   [RSP]     -> argc (u64)
+///   [RSP+8]   -> argv[0] (pointer to first arg string)
+///   ...
+///   [RSP+argc*8] -> 0 (null terminator)
+///   [RSP+(argc+1)*8] -> "arg0\0arg1\0..."
+///
+/// Returns the new RSP value (user VA).
+unsafe fn push_args_onto_stack(stack_phys: u64, stack_base: u64, args: &[&[u8]]) -> u64 {
+    let argc = args.len() as u64;
+    if argc == 0 {
+        return USER_STACK_TOP;
+    }
+    let mut total_string_bytes: usize = 0;
+    for arg in args {
+        total_string_bytes += arg.len() + 1;
+    }
+    let argv_array_size = (argc as usize + 1) * 8;
+    let total_size = argv_array_size + total_string_bytes;
+    let args_base = USER_STACK_TOP - total_size as u64;
+
+    // Convert user VA to kernel VA via stack offset
+    let stack_offset = args_base - stack_base;
+    let kva = stack_phys + stack_offset;
+
+    let ptrs_base = kva as *mut u64;
+    let mut string_pos = kva + argv_array_size as u64;
+
+    for i in 0..argc as usize {
+        let arg = args[i];
+        unsafe { ptrs_base.add(1 + i).write(string_pos); }
+        if !arg.is_empty() {
+            unsafe { core::ptr::copy_nonoverlapping(arg.as_ptr(), string_pos as *mut u8, arg.len()); }
+        }
+        unsafe { (string_pos as *mut u8).add(arg.len()).write(0u8); }
+        string_pos += arg.len() as u64 + 1;
+    }
+    unsafe {
+        ptrs_base.add(1 + argc as usize).write(0);
+        ptrs_base.write(argc);
+    }
+
+    args_base
 }
 
 fn alloc_page_range(size: usize) -> Option<u64> {
