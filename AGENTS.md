@@ -192,7 +192,6 @@ Responsibilities:
 - process address space setup (`create_process_space`)
 - code/stack mapping for user processes
 - `spawn()` for initramfs paths
-- `is_driver_kxe()` — checks KXE flags for driver detection (returned via `SYS_EXEC`)
 
 ### `user_programs.rs`
 
@@ -204,9 +203,7 @@ Responsibilities:
 - `INIT_KXE`, `STRESS_EXIT_KXE` minimal test binaries
 - auto-generated `*_KXE` blobs (built from `crates/user_programs/*.rs` via `build.rs`)
 
-The `build.rs` compiles all `.rs` files in `crates/user_programs/` (except `syscall_numbers.rs`) to ELF, parses `.rela.dyn` for `R_X86_64_RELATIVE` relocations, applies `USER_BASE` fixup, builds KXE blobs with driver flags, and emits `user_programs_generated.rs` into `OUT_DIR`. It also builds `initrd.kfs` containing all binaries.
-
-`drv_`-prefixed source files get `flags=1` in the KXE header, detected by the kernel via `is_driver_kxe()`.
+The `build.rs` compiles all `.rs` files in `crates/user_programs/` (except `syscall_numbers.rs`) to ELF, parses `.rela.dyn` for `R_X86_64_RELATIVE` relocations, applies `USER_BASE` fixup, builds KXE blobs, and emits `user_programs_generated.rs` into `OUT_DIR`. It also builds `initrd.kfs` containing all binaries.
 
 ### `vfs.rs`
 

@@ -66,7 +66,7 @@ pub fn load(path: &str) -> u64 {
             let len = name.len().min(MAX_NAME);
             entry.name[..len].copy_from_slice(name[..len].as_bytes());
             *slot = Some(entry);
-            crate::logln!("kmod: loaded '{}' pid={} id={}", name, pid, id);
+            crate::log_info!("kmod: loaded '{}' pid={} id={}", name, pid, id);
             return id as u64;
         }
     }
@@ -81,7 +81,7 @@ pub fn unload(id: u32) -> bool {
             if e.id == id {
                 e.status = ModuleStatus::Unloading;
                 crate::process::send_module_exit(e.pid);
-                crate::logln!("kmod: unloading id={} pid={}", id, e.pid);
+                crate::log_info!("kmod: unloading id={} pid={}", id, e.pid);
                 return true;
             }
         }
@@ -94,7 +94,7 @@ pub fn on_process_exit(pid: u64) {
     for slot in t.entries.iter_mut() {
         if let Some(e) = slot {
             if e.pid == pid {
-                crate::logln!(
+                crate::log_info!(
                     "kmod: module '{}' exited",
                     core::str::from_utf8(&e.name[..e.name_len as usize]).unwrap_or("?")
                 );

@@ -1,6 +1,4 @@
-pub mod ac97;
 pub mod acpi;
-pub mod es1371;
 pub mod beep;
 pub mod fb_owner;
 pub mod framebuffer;

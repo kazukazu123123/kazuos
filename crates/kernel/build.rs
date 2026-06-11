@@ -112,7 +112,7 @@ fn main() {
             }
         }
 
-        let flags = if stem.starts_with("drv_") { 1u32 } else { 0u32 };
+        let flags = 0u32;
         let kxe = build_kxe(&code, entry, flags);
 
         let bytes: Vec<String> = kxe.iter().map(|b| format!("0x{:02x}", b)).collect();
@@ -225,9 +225,6 @@ fn main() {
     std::fs::write(&gen_path, generated).expect("failed to write user_programs_generated.rs");
 
     let workspace_root = Path::new(&manifest_dir).parent().unwrap().parent().unwrap();
-    let wav_path = workspace_root.join("test.wav");
-    println!("cargo:rerun-if-changed={}", wav_path.display());
-    let wav_data = std::fs::read(&wav_path).unwrap_or_default();
 
     // Load modules.list if present in user_modules dir.
     let modules_list_data = if user_modules_dir.exists() {
@@ -238,7 +235,7 @@ fn main() {
         Vec::new()
     };
 
-    let kfs = build_kfs(&kxe_files, &kkm_files, &modules_list_data, &wav_data);
+    let kfs = build_kfs(&kxe_files, &kkm_files, &modules_list_data);
     let initrd_path = workspace_root.join("target").join("initrd.kfs");
     std::fs::create_dir_all(initrd_path.parent().unwrap()).ok();
     std::fs::write(&initrd_path, &kfs).expect("failed to write initrd.kfs");
@@ -404,7 +401,6 @@ fn build_kfs(
     kxe_files: &[(String, Vec<u8>)],
     kkm_files: &[(String, Vec<u8>)],
     modules_list: &[u8],
-    wav_data: &[u8],
 ) -> Vec<u8> {
     const MAGIC: &[u8; 4] = b"KFS\0";
     const VERSION: u32 = 1;
@@ -429,10 +425,6 @@ fn build_kfs(
             data: kxe.clone(),
             flags: FLAG_FILE,
         });
-    }
-    sources.push(Entry { path: "/audio", data: vec![], flags: FLAG_DIR });
-    if !wav_data.is_empty() {
-        sources.push(Entry { path: "/audio/test.wav", data: wav_data.to_vec(), flags: FLAG_FILE });
     }
     sources.push(Entry { path: "/modules", data: vec![], flags: FLAG_DIR });
     for (stem, kkm) in kkm_files {

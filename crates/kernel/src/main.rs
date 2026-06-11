@@ -6,7 +6,6 @@ extern crate alloc;
 
 pub mod allocator;
 pub mod kmod;
-pub mod audio;
 pub mod beep_songs;
 pub mod boot;
 pub mod console;
@@ -70,7 +69,6 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
     if let Err(error) = vfs::init(initramfs) {
         panic!("initramfs invalid: {:?}", error);
     }
-    register_audio_device();
     // Disable interrupts while spawning processes so the timer cannot preempt the
     // kernel before all processes are fully configured. This MUST cover module
     // loading too: a module (e.g. ps2mouse.kkm) entered via the timer path before
@@ -84,48 +82,6 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
     }
 
     crate::scheduler::enter_next_process();
-}
-
-fn register_audio_device() {
-    use drivers::pci::{Device, ScanKind};
-
-    let mut ac97: Option<Device> = None;
-    let mut es1371: Option<Device> = None;
-
-    drivers::pci::scan(ScanKind::Pci, |d| {
-        if d.class_code == 0x04 && d.subclass == 0x01 {
-            match d.vendor_id {
-                0x1274 => {
-                    if es1371.is_none() {
-                        es1371 = Some(d);
-                    }
-                }
-                _ => {
-                    if ac97.is_none() {
-                        ac97 = Some(d);
-                    }
-                }
-            }
-        }
-    });
-
-    if let Some(dev) = ac97 {
-        crate::serial_println!(
-            "AC97 audio device found: {:04x}:{:04x}",
-            dev.vendor_id,
-            dev.device_id
-        );
-        devfs::register("/dev/audio", &drivers::ac97::AUDIO_OPS);
-    } else if let Some(dev) = es1371 {
-        crate::serial_println!(
-            "ES1371 audio device found: {:04x}:{:04x}",
-            dev.vendor_id,
-            dev.device_id
-        );
-        devfs::register("/dev/audio", &drivers::es1371::AUDIO_OPS);
-    } else {
-        crate::serial_println!("No audio device found");
-    }
 }
 
 #[panic_handler]

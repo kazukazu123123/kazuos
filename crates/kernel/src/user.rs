@@ -612,9 +612,6 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
     } else {
         exec::spawn_user_with_fds_and_args(path, &args, caller, stdin_fd, stdout_fd)
     };
-    if pid == 0 && exec::is_driver_kxe(path) {
-        return 1;
-    }
     pid
 }
 
