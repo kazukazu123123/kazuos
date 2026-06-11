@@ -307,6 +307,21 @@ pub fn sys_pci_bar_map(bdf: u32, bar_index: u8) -> u64 {
     r
 }
 
+/// Unmap a PCI BAR previously mapped with sys_pci_bar_map. Returns 0 on success.
+pub fn sys_pci_bar_unmap(va: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_PCI_BAR_UNMAP => r,
+            in("rdi") va,
+            in("rsi") 0u64,
+            in("rdx") 0u64,
+        );
+    }
+    r
+}
+
 /// Open (or create) a named IPC channel. Returns channel id, or u64::MAX on error.
 pub fn sys_ipc_open(name: &[u8]) -> u64 {
     let r: u64;

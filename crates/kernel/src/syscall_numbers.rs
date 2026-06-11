@@ -49,20 +49,23 @@ pub const SYS_IOPORT_REQUEST: u64 = 32;
 pub const SYS_IRQ_WAIT:       u64 = 33;
 pub const SYS_DMA_ALLOC:      u64 = 34;
 pub const SYS_DMA_FREE:       u64 = 35;
-pub const SYS_PCI_BAR_MAP:    u64 = 36;
+
+// PCI
+pub const SYS_PCI_BAR_MAP:   u64 = 36;
+pub const SYS_PCI_BAR_UNMAP: u64 = 37;
 
 // Keyboard
-pub const SYS_KEYBOARD_READ: u64 = 37;
-pub const SYS_KEYBOARD_POLL: u64 = 38;
+pub const SYS_KEYBOARD_READ: u64 = 38;
+pub const SYS_KEYBOARD_POLL: u64 = 39;
 
 // System / Misc
-pub const SYS_CPU_INFO:  u64 = 39;
-pub const SYS_SHUTDOWN:  u64 = 40;
-pub const SYS_REBOOT:    u64 = 41;
-pub const SYS_LS:        u64 = 42;
+pub const SYS_CPU_INFO:  u64 = 40;
+pub const SYS_SHUTDOWN:  u64 = 41;
+pub const SYS_REBOOT:    u64 = 42;
+pub const SYS_LS:        u64 = 43;
 
 // Kernel modules
-pub const SYS_MODULE_LOAD:   u64 = 43;
-pub const SYS_MODULE_UNLOAD: u64 = 44;
-pub const SYS_MODULE_LIST:   u64 = 45;
-pub const SYS_MODULE_INFO:   u64 = 46;
+pub const SYS_MODULE_LOAD:   u64 = 44;
+pub const SYS_MODULE_UNLOAD: u64 = 45;
+pub const SYS_MODULE_LIST:   u64 = 46;
+pub const SYS_MODULE_INFO:   u64 = 47;

@@ -208,6 +208,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_DMA_ALLOC => sys_dma_alloc(arg0, arg1),
         SYS_DMA_FREE => sys_dma_free(arg0),
         SYS_PCI_BAR_MAP => sys_pci_bar_map(arg0, arg1),
+        SYS_PCI_BAR_UNMAP => sys_pci_bar_unmap(arg0),
 
         // Keyboard
         SYS_KEYBOARD_READ => {
@@ -383,6 +384,15 @@ struct DmaAlloc {
 static DMA_ALLOCS: crate::util::SyncUnsafeCell<alloc::vec::Vec<DmaAlloc>> =
     crate::util::SyncUnsafeCell::new(alloc::vec::Vec::new());
 
+struct PciMmioAlloc {
+    pid: u64,
+    virt: u64,
+    size: u64,
+}
+
+static PCI_MMIO_ALLOCS: crate::util::SyncUnsafeCell<alloc::vec::Vec<PciMmioAlloc>> =
+    crate::util::SyncUnsafeCell::new(alloc::vec::Vec::new());
+
 fn sys_dma_alloc(size: u64, phys_out_ptr: u64) -> u64 {
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     if process::privilege_level(caller) > process::PrivilegeLevel::Driver {
@@ -490,8 +500,33 @@ fn sys_pci_bar_map(bdf: u64, bar_index: u64) -> u64 {
         {
             return u64::MAX;
         }
+        let allocs = &mut *PCI_MMIO_ALLOCS.0.get();
+        allocs.push(PciMmioAlloc {
+            pid: caller,
+            virt,
+            size: aligned_size,
+        });
     }
     virt
+}
+
+fn sys_pci_bar_unmap(virt: u64) -> u64 {
+    if virt == 0 {
+        return u64::MAX;
+    }
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    unsafe {
+        let allocs = &mut *PCI_MMIO_ALLOCS.0.get();
+        let pos = allocs.iter().position(|a| a.virt == virt && a.pid == caller);
+        let Some(pos) = pos else { return u64::MAX; };
+        let alloc = allocs.swap_remove(pos);
+        let cr3 = match process::user_cr3(caller) {
+            Some(c) => c,
+            None => return u64::MAX,
+        };
+        crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
+    }
+    0
 }
 
 /// Heap alloc for user programs.

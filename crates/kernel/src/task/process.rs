@@ -345,6 +345,13 @@ pub fn exit_current() {
             crate::fd::close_all(pid);
             crate::user::free_dma_for_pid(pid);
             crate::user::free_heap_for_pid(pid);
+            if let Some(cr3) = user_cr3(pid) {
+                crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
+                core::arch::asm!("cli", options(nomem, nostack));
+                crate::vmm::free_user_address_space(cr3);
+                core::arch::asm!("sti", options(nomem, nostack));
+                crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
+            }
             processes.retain(|p| p.pid != pid);
             wakeup_pid_waiters(pid);
         }
@@ -431,6 +438,13 @@ pub fn kill_pid(pid: u64) {
             crate::fd::close_all(pid);
             crate::user::free_dma_for_pid(pid);
             crate::user::free_heap_for_pid(pid);
+            if let Some(cr3) = user_cr3(pid) {
+                crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
+                core::arch::asm!("cli", options(nomem, nostack));
+                crate::vmm::free_user_address_space(cr3);
+                core::arch::asm!("sti", options(nomem, nostack));
+                crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
+            }
             processes.retain(|p| p.pid != pid);
             wakeup_pid_waiters(pid);
         }

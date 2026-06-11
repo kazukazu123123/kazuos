@@ -402,15 +402,25 @@ Map a PCI MMIO BAR into the calling driver's address space.
 
 Returns the user-space virtual address on success, or `u64::MAX` on error. Driver-only. I/O BARs are not supported.
 
+#### `SYS_PCI_BAR_UNMAP` (37)
+
+Unmap a PCI BAR previously mapped by `SYS_PCI_BAR_MAP`.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | user VA returned by `SYS_PCI_BAR_MAP` |
+
+Returns `0` on success, or `u64::MAX` on error. Driver-only.
+
 ### Keyboard
 
-#### `SYS_KEYBOARD_READ` (37)
+#### `SYS_KEYBOARD_READ` (38)
 
 Read a keypress. Blocks until a key is available.
 
 Returns the key byte. Extended keys: `0x80`=Left, `0x81`=Right, `0x82`=Up, `0x83`=Down.
 
-#### `SYS_KEYBOARD_POLL` (38)
+#### `SYS_KEYBOARD_POLL` (39)
 
 Non-blocking key check.
 
@@ -418,7 +428,7 @@ Returns key byte if available, or 0 if no key is pending.
 
 ### System / Misc
 
-#### `SYS_CPU_INFO` (39)
+#### `SYS_CPU_INFO` (40)
 
 | arg0 | Returns |
 | --- | --- |
@@ -428,15 +438,15 @@ Returns key byte if available, or 0 if no key is pending.
 | 3 | idle CPU ticks |
 | any PID | CPU ticks for that PID, or `u64::MAX` if not found |
 
-#### `SYS_SHUTDOWN` (40)
+#### `SYS_SHUTDOWN` (41)
 
 Shut down the system. Does not return.
 
-#### `SYS_REBOOT` (41)
+#### `SYS_REBOOT` (42)
 
 Reboot the system. Does not return.
 
-#### `SYS_LS` (42)
+#### `SYS_LS` (43)
 
 List directory contents.
 
@@ -449,7 +459,7 @@ Returns entry count, or `u64::MAX` on error.
 
 ### Kernel modules
 
-#### `SYS_MODULE_LOAD` (43)
+#### `SYS_MODULE_LOAD` (44)
 
 Load a kernel module by path.
 
@@ -460,7 +470,7 @@ Load a kernel module by path.
 
 Returns module id on success, or `u64::MAX` on error.
 
-#### `SYS_MODULE_UNLOAD` (44)
+#### `SYS_MODULE_UNLOAD` (45)
 
 Unload a kernel module by id.
 
@@ -470,7 +480,7 @@ Unload a kernel module by id.
 
 Returns `0` on success, `u64::MAX` on error.
 
-#### `SYS_MODULE_LIST` (45)
+#### `SYS_MODULE_LIST` (46)
 
 List loaded modules.
 
@@ -481,7 +491,7 @@ List loaded modules.
 
 Returns entry count.
 
-#### `SYS_MODULE_INFO` (46)
+#### `SYS_MODULE_INFO` (47)
 
 Query info for a specific module.
 
