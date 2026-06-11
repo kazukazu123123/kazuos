@@ -37,12 +37,21 @@ fn table() -> &'static mut ModuleTable {
 }
 
 pub fn load(path: &str) -> u64 {
+    let name = extract_name(path);
+    let t = table();
+    // Reject duplicate module names.
+    for slot in t.entries.iter() {
+        if let Some(e) = slot {
+            let len = e.name_len as usize;
+            if len == name.len() && &e.name[..len] == name.as_bytes() {
+                return u64::MAX;
+            }
+        }
+    }
     let pid = crate::exec::spawn_module(path);
     if pid == 0 {
         return u64::MAX;
     }
-    let name = extract_name(path);
-    let t = table();
     for slot in t.entries.iter_mut() {
         if slot.is_none() {
             let id = t.next_id;

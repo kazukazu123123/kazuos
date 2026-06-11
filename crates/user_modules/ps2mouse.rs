@@ -126,6 +126,24 @@ pub fn kkm_run() {
 
 pub fn kkm_exit() {
     mouse_cmd(0xF5); // disable streaming
+
+    // Drain any remaining mouse bytes from the PS/2 controller.
+    let mut i = 0u32;
+    while i < 16 {
+        let status = inb(0x64);
+        if status & 0x01 == 0 { break; }
+        if status & 0x20 != 0 {
+            inb(0x60); // discard mouse data
+        } else {
+            break; // keyboard data — stop draining
+        }
+        i += 1;
+    }
+
+    // Disable PS/2 auxiliary port so the controller stops routing mouse data.
+    ps2_wait_write();
+    outb(0x64, 0xA7);
+
     let ch = unsafe { IPC_CH };
     if ch != 0 && ch != u64::MAX {
         syscall(SYS_IPC_CLOSE, ch, 0, 0);

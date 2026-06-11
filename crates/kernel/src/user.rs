@@ -3,6 +3,7 @@ use crate::{console, exec, fd, ipc, process, syscall};
 use alloc;
 
 pub static mut TSC_PER_MS: u64 = 3_000_000;
+pub static mut EXITING_PID_TMP: u64 = 0;
 
 include!("syscall_numbers.rs");
 
@@ -87,7 +88,13 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
 
         // Process / Lifecycle
-        SYS_EXIT => { process::exit_current(); syscall::EXIT_TO_KERNEL }
+        SYS_EXIT => {
+            if let Some(pid) = crate::scheduler::current_user_pid() {
+                unsafe { crate::user::EXITING_PID_TMP = pid; }
+            }
+            process::exit_current();
+            syscall::EXIT_TO_KERNEL
+        }
         SYS_EXEC => sys_exec(arg0, arg1, arg2),
         SYS_KILL => { process::kill_pid(arg0); 0 }
         SYS_WAIT => sys_wait(arg0),
@@ -229,7 +236,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         // Kernel modules
         SYS_MODULE_LOAD => {
             let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-            if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
+            if process::privilege_level(caller) > process::PrivilegeLevel::User { return u64::MAX - 1; }
             if arg0 == 0 || arg1 == 0 { return u64::MAX; }
             let path_bytes = unsafe { core::slice::from_raw_parts(arg0 as *const u8, arg1 as usize) };
             match core::str::from_utf8(path_bytes) {
@@ -239,7 +246,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
         SYS_MODULE_UNLOAD => {
             let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-            if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
+            if process::privilege_level(caller) > process::PrivilegeLevel::User { return u64::MAX - 1; }
             if crate::kmod::unload(arg0 as u32) { 0 } else { u64::MAX }
         }
         SYS_MODULE_LIST => crate::kmod::list(arg0, arg1),

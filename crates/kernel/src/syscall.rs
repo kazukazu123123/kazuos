@@ -142,7 +142,8 @@ extern "C" fn syscall_return_to_kernel() -> ! {
             in("ax") crate::gdt::KERNEL_DATA,
             options(nostack, preserves_flags),
         );
-        let exiting_pid = crate::scheduler::current_user_pid().unwrap_or(0);
+        let exiting_pid = crate::user::EXITING_PID_TMP;
+        crate::user::EXITING_PID_TMP = 0;
         crate::scheduler::set_current_user_pid(None);
         if exiting_pid != 0 {
             crate::kmod::on_process_exit(exiting_pid);

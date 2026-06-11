@@ -304,21 +304,19 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut msg = [0u8; 5];
 
     loop {
-        // Non-blocking keyboard check
-        let k = syscall(SYS_KEYBOARD_POLL, 0, 0, 0);
-        if k != 0 && k != u64::MAX {
-            let ch = (k & 0xFF) as u8;
-            if ch == b'q' || ch == b'Q' { break; }
-        }
-
-        // Signal check
+        // Ctrl+C check
         if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) != 0 { break; }
 
-        // Receive mouse event (non-blocking via IPC_RECV with len check)
+        // Receive mouse event (blocking)
         let n = syscall(SYS_IPC_RECV, ipc, msg.as_mut_ptr() as u64, 5);
-        if n == u64::MAX || n < 5 {
-            // No message yet; yield to avoid busy-loop
-            sys_sleep(1);
+        if n == u64::MAX {
+            continue;
+        }
+        if n == 0 {
+            // Woken without data (e.g. by signal) — check at top of loop
+            continue;
+        }
+        if n < 5 {
             continue;
         }
 

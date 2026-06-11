@@ -361,6 +361,11 @@ pub fn send_sigint(pid: u64) {
             }
             if p.sigint_catch {
                 p.sigint_pending = true;
+                if matches!(p.state, ProcessState::Sleeping) && p.blocking_rsp != 0 {
+                    restore_ctx_from_blocking_frame(p, 0);
+                    p.state = ProcessState::Ready;
+                    p.wait_target = WaitTarget::None;
+                }
                 true
             } else {
                 false

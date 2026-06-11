@@ -47,11 +47,17 @@ fn cmd_list() {
 }
 
 fn cmd_load(path: &[u8]) {
-    let id = sys_module_load(path);
-    if id == u64::MAX {
+    let mut full_path = alloc::vec::Vec::new();
+    full_path.extend_from_slice(b"/modules/");
+    full_path.extend_from_slice(path);
+    full_path.extend_from_slice(b".kkm");
+    let r = sys_module_load(&full_path);
+    if r == u64::MAX - 1 {
+        println!("Error: permission denied.");
+    } else if r == u64::MAX {
         println!("Error: failed to load module.");
     } else {
-        println!("Module loaded: id={}", id);
+        println!("Module loaded: id={}", r);
     }
 }
 
@@ -61,8 +67,11 @@ fn cmd_unload(id_str: &[u8]) {
         if b < b'0' || b > b'9' { break; }
         id = id * 10 + (b - b'0') as u64;
     }
-    if sys_module_unload(id) {
+    let r = sys_module_unload(id);
+    if r == 0 {
         println!("Module {} unloading.", id);
+    } else if r == u64::MAX - 1 {
+        println!("Error: permission denied.");
     } else {
         println!("Error: module {} not found.", id);
     }
@@ -96,7 +105,7 @@ fn sys_module_load(path: &[u8]) -> u64 {
     r
 }
 
-fn sys_module_unload(id: u64) -> bool {
+fn sys_module_unload(id: u64) -> u64 {
     let r: u64;
     unsafe {
         core::arch::asm!(
@@ -107,7 +116,7 @@ fn sys_module_unload(id: u64) -> bool {
             in("rdx") 0u64,
         );
     }
-    r != u64::MAX
+    r
 }
 
 fn cmd_help() {
