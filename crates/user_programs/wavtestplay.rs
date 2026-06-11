@@ -5,7 +5,7 @@ include!("../../crates/user_rt/runtime.rs");
 const AUDIO_PATH: &[u8] = b"/dev/audio";
 const DEFAULT_WAV: &[u8] = b"/audio/test.wav";
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, argv: u64) -> ! {
     let wav_path = if argv != 0 {
         let argv_ptr = unsafe { core::ptr::read_unaligned((argv + 8) as *const u64) };

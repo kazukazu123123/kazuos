@@ -120,7 +120,7 @@ fn cmd_help() {
     println!("  help             Show this help");
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
     let args = parse_args(argc, argv);
 

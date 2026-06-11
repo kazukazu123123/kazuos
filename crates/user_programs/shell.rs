@@ -28,7 +28,7 @@ struct ProcessInfo {
     memory_bytes: u64,
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut buf = [0u8; BUF_SIZE];
     loop {
@@ -74,10 +74,12 @@ fn read_line(buf: &mut [u8]) -> usize {
                 // push non-empty command to history
                 if len > 0 {
                     unsafe {
-                        let slot = HISTORY_COUNT % MAX_HISTORY;
-                        HISTORY[slot][..len].copy_from_slice(&buf[..len]);
-                        HISTORY_LENS[slot] = len;
-                        HISTORY_COUNT += 1;
+                        let count = *core::ptr::addr_of_mut!(HISTORY_COUNT);
+                        let slot = count % MAX_HISTORY;
+                        let dst = core::ptr::addr_of_mut!(HISTORY[slot]).cast::<u8>();
+                        core::ptr::copy_nonoverlapping(buf.as_ptr(), dst, len);
+                        *core::ptr::addr_of_mut!(HISTORY_LENS[slot]) = len;
+                        *core::ptr::addr_of_mut!(HISTORY_COUNT) = count + 1;
                     }
                 }
                 return len;
@@ -98,7 +100,7 @@ fn read_line(buf: &mut [u8]) -> usize {
                 if pos < len { pos += 1; }
             }
             KEY_UP => {
-                let count = unsafe { HISTORY_COUNT };
+                let count = unsafe { *core::ptr::addr_of!(HISTORY_COUNT) };
                 let max_age = count.min(MAX_HISTORY);
                 if hist_age < max_age {
                     if hist_age == 0 {
@@ -108,9 +110,11 @@ fn read_line(buf: &mut [u8]) -> usize {
                     }
                     hist_age += 1;
                     unsafe {
-                        let slot = (HISTORY_COUNT - hist_age) % MAX_HISTORY;
-                        len = HISTORY_LENS[slot];
-                        buf[..len].copy_from_slice(&HISTORY[slot][..len]);
+                        let count = *core::ptr::addr_of!(HISTORY_COUNT);
+                        let slot = (count - hist_age) % MAX_HISTORY;
+                        len = *core::ptr::addr_of!(HISTORY_LENS[slot]);
+                        let src = core::ptr::addr_of!(HISTORY[slot]).cast::<u8>();
+                        core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), len);
                     }
                     pos = len;
                 }
@@ -124,9 +128,11 @@ fn read_line(buf: &mut [u8]) -> usize {
                         buf[..len].copy_from_slice(&saved_buf[..len]);
                     } else {
                         unsafe {
-                            let slot = (HISTORY_COUNT - hist_age) % MAX_HISTORY;
-                            len = HISTORY_LENS[slot];
-                            buf[..len].copy_from_slice(&HISTORY[slot][..len]);
+                            let count = *core::ptr::addr_of!(HISTORY_COUNT);
+                            let slot = (count - hist_age) % MAX_HISTORY;
+                            len = *core::ptr::addr_of!(HISTORY_LENS[slot]);
+                            let src = core::ptr::addr_of!(HISTORY[slot]).cast::<u8>();
+                            core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), len);
                         }
                     }
                     pos = len;
@@ -244,54 +250,50 @@ fn exec_bin(cmd: &[u8], stdio_pack: u64) -> u64 {
 fn try_exec_path(name: &[u8], args_part: &[u8], stdio_pack: u64) -> u64 {
     let mut buf = [0u8; 128];
 
-    // Try absolute or relative path first
+    // Build path in buf
+    let path_section;
     if name.contains(&b'/') {
-        let path_len = if name.starts_with(b"/") {
-            name.len()
+        if name.starts_with(b"/") {
+            if name.len() + 1 > buf.len() { return u64::MAX; }
+            buf[..name.len()].copy_from_slice(name);
+            path_section = name.len();
         } else {
-            if 1 + name.len() + 1 + args_part.len() + 1 > buf.len() { return u64::MAX; }
+            if 1 + name.len() + 1 > buf.len() { return u64::MAX; }
             buf[0] = b'/';
             buf[1..1 + name.len()].copy_from_slice(name);
-            1 + name.len()
-        };
-        let total = if name.starts_with(b"/") {
-            let total = name.len() + 1 + args_part.len() + 1;
-            if total > buf.len() { return u64::MAX; }
-            buf[..name.len()].copy_from_slice(name);
-            total
-        } else {
-            1 + name.len() + 1 + args_part.len() + 1
-        };
-        let path_part = if name.starts_with(b"/") { name } else { &buf[..1 + name.len()] };
-        // Copy args after path + null
-        let path_section = path_part.len();
-        if path_section + 1 + args_part.len() + 1 > buf.len() { return u64::MAX; }
-        buf[path_section] = 0;
-        if !args_part.is_empty() {
-            buf[path_section + 1..path_section + 1 + args_part.len()].copy_from_slice(args_part);
+            path_section = 1 + name.len();
         }
-        buf[path_section + 1 + args_part.len()] = 0;
-        let total = path_section + 1 + args_part.len() + 1;
-        let pid = syscall4(SYS_EXEC, buf.as_ptr() as u64, total as u64, stdio_pack);
-        if pid != 0 && pid != u64::MAX { return pid; }
     } else {
-        // Fallback: /bin/<name>.kxe
         let prefix = b"/bin/";
         let suffix = b".kxe";
         let path_total = prefix.len() + name.len() + suffix.len();
-        let total = path_total + 1 + args_part.len() + 1;
-        if total > buf.len() { return u64::MAX; }
+        if path_total + 1 > buf.len() { return u64::MAX; }
         buf[..prefix.len()].copy_from_slice(prefix);
         buf[prefix.len()..prefix.len() + name.len()].copy_from_slice(name);
         buf[prefix.len() + name.len()..path_total].copy_from_slice(suffix);
-        buf[path_total] = 0;
-        if !args_part.is_empty() {
-            buf[path_total + 1..path_total + 1 + args_part.len()].copy_from_slice(args_part);
-        }
-        buf[total - 1] = 0;
-        let pid = syscall4(SYS_EXEC, buf.as_ptr() as u64, total as u64, stdio_pack);
-        if pid != 0 && pid != u64::MAX { return pid; }
+        path_section = path_total;
     }
+
+    // Null-terminate path
+    buf[path_section] = 0;
+
+    // Write args as null-separated tokens
+    let mut pos = path_section + 1;
+    if !args_part.is_empty() {
+        for arg in args_part.split(|&b| b == b' ') {
+            let arg = trim(arg);
+            if arg.is_empty() { continue; }
+            if pos + arg.len() + 1 > buf.len() { return u64::MAX; }
+            buf[pos..pos + arg.len()].copy_from_slice(arg);
+            pos += arg.len();
+            buf[pos] = 0;
+            pos += 1;
+        }
+    }
+
+    let total = if pos > path_section + 1 { pos } else { path_section + 1 };
+    let pid = syscall4(SYS_EXEC, buf.as_ptr() as u64, total as u64, stdio_pack);
+    if pid != 0 && pid != u64::MAX { return pid; }
     u64::MAX
 }
 

@@ -12,35 +12,35 @@ static mut INPUT_LEN: usize = 0;
 static mut LINE_STARTS: [u32; 4096] = [0u32; 4096];
 static mut LINE_COUNT: usize = 0;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     // Read all of stdin
     unsafe {
         let mut total = 0usize;
         loop {
             if total >= BUF_SIZE { break; }
-            let n = syscall(SYS_READ, 0, INPUT_BUF.as_mut_ptr().add(total) as u64, (BUF_SIZE - total) as u64);
+            let n = syscall(SYS_READ, 0, core::ptr::addr_of_mut!(INPUT_BUF).cast::<u8>().add(total) as u64, (BUF_SIZE - total) as u64);
             if n == 0 || n == u64::MAX { break; }
             total += n as usize;
         }
-        INPUT_LEN = total;
+        *core::ptr::addr_of_mut!(INPUT_LEN) = total;
     }
 
     // Build line index
     unsafe {
-        let data = &INPUT_BUF[..INPUT_LEN];
+        let data = core::slice::from_raw_parts(core::ptr::addr_of!(INPUT_BUF).cast::<u8>(), INPUT_LEN);
         let mut lc = 0usize;
-        LINE_STARTS[0] = 0;
+        *core::ptr::addr_of_mut!(LINE_STARTS[0]) = 0;
         lc = 1;
         let mut i = 0usize;
-        while i < data.len() && lc < LINE_STARTS.len() {
+        while i < data.len() && lc < 4096 {
             if data[i] == b'\n' && i + 1 < data.len() {
-                LINE_STARTS[lc] = (i + 1) as u32;
+                *core::ptr::addr_of_mut!(LINE_STARTS[lc]) = (i + 1) as u32;
                 lc += 1;
             }
             i += 1;
         }
-        LINE_COUNT = lc;
+        *core::ptr::addr_of_mut!(LINE_COUNT) = lc;
     }
 
     let total_lines = unsafe { LINE_COUNT };
@@ -118,8 +118,8 @@ fn redraw(top: usize, total_lines: usize, rows: usize) {
 
 fn print_line(line_idx: usize) {
     unsafe {
-        let start = LINE_STARTS[line_idx] as usize;
-        let data = &INPUT_BUF[..INPUT_LEN];
+        let start = (*core::ptr::addr_of!(LINE_STARTS).cast::<u32>().add(line_idx)) as usize;
+        let data = core::slice::from_raw_parts(core::ptr::addr_of!(INPUT_BUF).cast::<u8>(), INPUT_LEN);
         let end = data[start..].iter().position(|&b| b == b'\n')
             .map(|p| start + p)
             .unwrap_or(INPUT_LEN);

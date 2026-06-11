@@ -30,7 +30,7 @@ struct Ac97 {
     wav_va:  u64, // large read buffer (not DMA, just mapped memory)
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     // Allow PCI config ports.
     let r0 = syscall(SYS_IOPORT_REQUEST, PCI_ADDR as u64, 4, 0);

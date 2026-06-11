@@ -21,7 +21,7 @@ const EMPTY_INFO: ProcessInfo = ProcessInfo {
     cpu_ticks: 0, memory_bytes: 0,
 };
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut prev_ker:   u64 = 0;
     let mut prev_idle:  u64 = 0;

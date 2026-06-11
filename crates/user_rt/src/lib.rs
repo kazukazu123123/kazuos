@@ -38,9 +38,9 @@ macro_rules! println {
     }};
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn _start(argc: u64, argv: u64) -> ! {
-    extern "C" {
+    unsafe extern "C" {
         fn user_main(argc: u64, argv: u64) -> !;
     }
     unsafe { user_main(argc, argv) }

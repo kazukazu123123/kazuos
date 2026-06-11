@@ -4,7 +4,7 @@ include!("../../crates/user_rt/runtime.rs");
 
 const SHELL_PATH: &[u8] = b"/bin/shell.kxe\0";
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     loop {
         let pid = syscall(SYS_EXEC, SHELL_PATH.as_ptr() as u64, SHELL_PATH.len() as u64, 0);

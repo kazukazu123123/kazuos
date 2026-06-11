@@ -131,7 +131,7 @@ fn device_names(vendor: u16, device: u16) -> (&'static str, &'static str) {
     ("Unknown vendor", "Unknown device")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut index: u64 = 0;
     loop {

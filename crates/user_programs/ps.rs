@@ -24,7 +24,7 @@ const EMPTY_INFO: ProcessInfo = ProcessInfo {
     cpu_ticks: 0, memory_bytes: 0,
 };
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let kernel_ticks = syscall(SYS_CPU_INFO, 2, 0, 0);
     let idle_ticks   = syscall(SYS_CPU_INFO, 3, 0, 0);

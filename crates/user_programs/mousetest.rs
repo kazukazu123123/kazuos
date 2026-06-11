@@ -155,38 +155,36 @@ static mut SAVED: SavedLines = SavedLines::new();
 
 fn save_cross(info: &FbInfo, cx: u32, cy: u32) {
     unsafe {
-        let s = &mut SAVED;
+        let s = core::ptr::addr_of_mut!(SAVED);
         let half = CROSS_HALF as u32;
-        // The cross spans 2*half+1 pixels per arm — save every one, including the
-        // far end, or the last pixel is never restored and leaves a stray dot.
         let span = 2 * half as usize + 1;
         for i in 0..span {
             let px = cx.saturating_sub(half) + i as u32;
-            s.hbuf[i] = get_pixel(info, px, cy);
+            (*s).hbuf[i] = get_pixel(info, px, cy);
         }
         for i in 0..span {
             let py = cy.saturating_sub(half) + i as u32;
-            s.vbuf[i] = get_pixel(info, cx, py);
+            (*s).vbuf[i] = get_pixel(info, cx, py);
         }
-        s.x = cx;
-        s.y = cy;
-        s.valid = true;
+        (*s).x = cx;
+        (*s).y = cy;
+        (*s).valid = true;
     }
 }
 
 fn restore_cross(info: &FbInfo) {
     unsafe {
-        let s = &SAVED;
-        if !s.valid { return; }
+        let s = core::ptr::addr_of!(SAVED);
+        if !(*s).valid { return; }
         let half = CROSS_HALF as u32;
         let span = 2 * half as usize + 1;
         for i in 0..span {
-            let px = s.x.saturating_sub(half) + i as u32;
-            put_pixel(info, px, s.y, s.hbuf[i]);
+            let px = (*s).x.saturating_sub(half) + i as u32;
+            put_pixel(info, px, (*s).y, (*s).hbuf[i]);
         }
         for i in 0..span {
-            let py = s.y.saturating_sub(half) + i as u32;
-            put_pixel(info, s.x, py, s.vbuf[i]);
+            let py = (*s).y.saturating_sub(half) + i as u32;
+            put_pixel(info, (*s).x, py, (*s).vbuf[i]);
         }
     }
 }
@@ -267,7 +265,7 @@ fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut info = FbInfo { base: 0, width: 0, height: 0, stride: 0, format: 0 };
 

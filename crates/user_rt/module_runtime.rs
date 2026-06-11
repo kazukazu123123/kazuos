@@ -50,7 +50,7 @@ pub struct KkmInfo {
 ///   kkm_init()  — hardware initialisation, returns false on failure
 ///   kkm_run()   — main event loop, returns when a stop signal is received
 ///   kkm_exit()  — cleanup
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
     // Enable signal catching so kmod::unload() can reach us.
     sys_signal_catch(true);
