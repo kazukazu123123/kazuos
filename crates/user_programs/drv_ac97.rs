@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
-
-include!("../../crates/kernel/src/syscall_numbers.rs");
+include!("../../crates/user_rt/runtime.rs");
 
 // PCI config ports
 const PCI_ADDR: u16 = 0xCF8;
@@ -32,7 +31,7 @@ struct Ac97 {
 }
 
 #[no_mangle]
-pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
+pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     // Allow PCI config ports.
     let r0 = syscall(SYS_IOPORT_REQUEST, PCI_ADDR as u64, 4, 0);
     let r1 = syscall(SYS_IOPORT_REQUEST, PCI_DATA as u64, 4, 0);
@@ -421,5 +420,4 @@ fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     r
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+

@@ -18,6 +18,7 @@ pub const SYS_PROCESS_NEXT: u64 = 14;
 pub const SYS_SLEEP:         u64 = 15;
 pub const SLEEP_UNIT_MS:     u64 = 0;
 pub const SLEEP_UNIT_US:     u64 = 1;
+pub const SLEEP_UNIT_TICK:   u64 = 2;
 
 // Memory
 pub const SYS_MEM_INFO:   u64 = 16;
@@ -60,3 +61,9 @@ pub const SYS_CPU_INFO:  u64 = 40;
 pub const SYS_SHUTDOWN:  u64 = 41;
 pub const SYS_REBOOT:    u64 = 42;
 pub const SYS_LS:        u64 = 43;
+
+// Kernel modules
+pub const SYS_MODULE_LOAD:   u64 = 44;
+pub const SYS_MODULE_UNLOAD: u64 = 45;
+pub const SYS_MODULE_LIST:   u64 = 46;
+pub const SYS_MODULE_INFO:   u64 = 47;

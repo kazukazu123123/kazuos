@@ -75,7 +75,7 @@ impl Idt {
     }
 }
 
-pub(crate) unsafe fn init(keyboard: u64, timer: u64, syscall: u64) {
+pub(crate) unsafe fn init(keyboard: u64, timer: u64, syscall: u64, mouse: u64) {
     unsafe {
         let idt = &mut *IDT.0.get();
         for vector in 0u8..=31 {
@@ -88,6 +88,7 @@ pub(crate) unsafe fn init(keyboard: u64, timer: u64, syscall: u64) {
             }
         }
         idt.set_handler(0x21, keyboard);
+        idt.set_handler(0x2C, mouse);
         idt.set_handler(0x30, timer);
         idt.set_user_handler(0x80, syscall);
         idt.load();

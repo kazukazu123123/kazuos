@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::drivers::{ioapic, keyboard, lapic, mouse, pic};
+use crate::drivers::{ioapic, keyboard, lapic, pic};
 use crate::handlers::interrupts;
 use crate::{allocator, console, drivers, idt, platform, pmm, syscall, vmm};
 use kazuos_shared::BootInfo;
@@ -132,6 +132,7 @@ fn init_idt() {
             interrupts::keyboard_handler_addr(),
             interrupts::timer_handler_addr(),
             syscall::handler_addr(),
+            interrupts::mouse_handler_addr(),
         );
     }
     crate::logln!("IDT loaded successfully");
@@ -207,12 +208,17 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform) {
                     flags = o.flags;
                 }
                 ioapic.set_irq_ext(irq, 0x21, config.bsp_apic_id, flags);
+                // IRQ12 (PS/2 mouse) at vector 0x2C
+                ioapic.set_irq_ext(12, 0x2C, config.bsp_apic_id, 0);
                 if !platform.keyboard_polling {
                     ioapic.unmask_irq(irq);
+                    ioapic.unmask_irq(12);
                     interrupts::set_use_ioapic(true);
                     crate::logln!("IOAPIC keyboard IRQ{} enabled", irq);
+                    crate::logln!("IOAPIC mouse IRQ12 enabled");
                 } else {
                     ioapic.mask_irq(irq);
+                    ioapic.mask_irq(12);
                     crate::logln!("IOAPIC present, keyboard polling mode");
                 }
             } else if !platform.keyboard_polling {
@@ -238,7 +244,6 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform) {
         }
 
         keyboard::init();
-        mouse::init();
         core::arch::asm!("sti");
         crate::logln!("Interrupts enabled");
     }

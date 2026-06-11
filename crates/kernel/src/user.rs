@@ -214,20 +214,6 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
         SYS_KEYBOARD_POLL => crate::drivers::keyboard::get_raw().map(|c| c as u64).unwrap_or(0),
 
-        // Mouse
-        SYS_MOUSE_READ => {
-            let state = crate::drivers::mouse::read_state();
-            if state != 0 { state }
-            else {
-                if let Some(pid) = crate::scheduler::current_user_pid() {
-                    crate::process::set_wait_target(pid, crate::process::WaitTarget::Mouse);
-                    crate::process::set_sleeping(pid);
-                }
-                syscall::BLOCK_TO_SCHEDULER
-            }
-        }
-        SYS_MOUSE_POLL => crate::drivers::mouse::read_state(),
-
         // System / Misc
         SYS_CPU_INFO => match arg0 {
             0 => crate::handlers::interrupts::timer_ticks(),
@@ -239,6 +225,25 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_SHUTDOWN => crate::drivers::power::shutdown(),
         SYS_REBOOT => crate::drivers::power::reboot(),
         SYS_LS => sys_ls(arg0, arg1),
+
+        // Kernel modules
+        SYS_MODULE_LOAD => {
+            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+            if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
+            if arg0 == 0 || arg1 == 0 { return u64::MAX; }
+            let path_bytes = unsafe { core::slice::from_raw_parts(arg0 as *const u8, arg1 as usize) };
+            match core::str::from_utf8(path_bytes) {
+                Ok(path) => crate::kmod::load(path),
+                Err(_) => u64::MAX,
+            }
+        }
+        SYS_MODULE_UNLOAD => {
+            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+            if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
+            if crate::kmod::unload(arg0 as u32) { 0 } else { u64::MAX }
+        }
+        SYS_MODULE_LIST => crate::kmod::list(arg0, arg1),
+        SYS_MODULE_INFO => crate::kmod::info(arg0 as u32, arg1),
 
         _ => u64::MAX,
     }
@@ -262,6 +267,14 @@ fn sys_wait(pid: u64) -> u64 {
 fn sys_sleep(duration: u64, unit: u64) -> u64 {
     if duration == 0 {
         return 0;
+    }
+    // SLEEP_UNIT_TICK: block until the next timer interrupt fires.
+    if unit == SLEEP_UNIT_TICK {
+        if let Some(pid) = crate::scheduler::current_user_pid() {
+            crate::process::set_wait_target(pid, crate::process::WaitTarget::Tick);
+            crate::process::set_sleeping(pid);
+        }
+        return syscall::BLOCK_TO_SCHEDULER;
     }
     let tsc_per_ms = unsafe { TSC_PER_MS };
     let tsc = match unit {

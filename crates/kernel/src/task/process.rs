@@ -38,9 +38,9 @@ pub enum PrivilegeLevel {
 pub enum WaitTarget {
     None,
     Keyboard,
-    Mouse,
     Pid(u64),
     Timer(u64),
+    Tick,
     Ipc(u64), // channel_id
     Irq(u8),
     PipeRead { pipe_id: u64, buf_ptr: u64, buf_len: u64 },
@@ -198,6 +198,8 @@ pub fn spawn_user_process(
     user_stack_top: u64,
     cr3: u64,
     privilege: PrivilegeLevel,
+    argc: u64,
+    argv: u64,
 ) -> u64 {
     let pid = spawn_kernel_task(image_name, entry, 0, privilege);
     if pid == 0 {
@@ -210,6 +212,10 @@ pub fn spawn_user_process(
             rsp: user_stack_top,
             cr3,
             user_stack_top,
+            // SysV passes argc/argv on the stack, but our _start is a normal extern "C"
+            // function reading them from rdi/rsi — so deliver them there too.
+            rdi: argc,
+            rsi: argv,
             ..EMPTY_USER_CONTEXT
         },
     );
@@ -363,6 +369,24 @@ pub fn send_sigint(pid: u64) {
     };
     if catch == Some(false) {
         kill_pid(pid);
+    }
+}
+
+/// Signal a kernel module to exit gracefully. Unlike send_sigint, this bypasses
+/// the driver immunity so kmod::unload() can reach module processes. It also
+/// wakes the process if it is blocked in a sleep or IRQ-wait so it can check
+/// the pending signal without waiting for the next event.
+pub fn send_module_exit(pid: u64) {
+    unsafe {
+        let processes = &mut *PROCESSES.0.get();
+        if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
+            p.sigint_pending = true;
+            if matches!(p.state, ProcessState::Sleeping) {
+                restore_ctx_from_blocking_frame(p, 0);
+                p.state = ProcessState::Ready;
+                p.wait_target = WaitTarget::None;
+            }
+        }
     }
 }
 
@@ -840,23 +864,6 @@ pub fn set_wait_target(pid: u64, target: WaitTarget) {
     }
 }
 
-/// Wake one process sleeping waiting for a mouse event.
-pub fn wakeup_mouse_waiters() {
-    unsafe {
-        let processes = &mut *PROCESSES.0.get();
-        for p in processes.iter_mut() {
-            if matches!(p.state, ProcessState::Sleeping)
-                && matches!(p.wait_target, WaitTarget::Mouse)
-            {
-                let state = crate::drivers::mouse::read_state();
-                restore_ctx_from_blocking_frame(p, state);
-                p.state = ProcessState::Ready;
-                p.wait_target = WaitTarget::None;
-                return;
-            }
-        }
-    }
-}
 
 /// Wake one process sleeping waiting for a keyboard key; returns 1 if a waiter was found.
 /// When a waiter is found the key is delivered directly (no buffer) to avoid double delivery.
@@ -960,6 +967,22 @@ pub fn wake_timer_sleepers(now_tsc: u64) {
                         p.wait_target = WaitTarget::None;
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Wake all processes sleeping with WaitTarget::Tick. Called on every timer tick.
+pub fn wake_tick_sleepers() {
+    unsafe {
+        let processes = &mut *PROCESSES.0.get();
+        for p in processes.iter_mut() {
+            if matches!(p.state, ProcessState::Sleeping)
+                && matches!(p.wait_target, WaitTarget::Tick)
+            {
+                restore_ctx_from_blocking_frame(p, 0);
+                p.state = ProcessState::Ready;
+                p.wait_target = WaitTarget::None;
             }
         }
     }

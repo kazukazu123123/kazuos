@@ -5,6 +5,7 @@
 extern crate alloc;
 
 pub mod allocator;
+pub mod kmod;
 pub mod audio;
 pub mod beep_songs;
 pub mod boot;
@@ -70,9 +71,13 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
         panic!("initramfs invalid: {:?}", error);
     }
     register_audio_device();
-    // Disable interrupts while spawning processes so the timer cannot preempt
-    // the kernel before all processes are fully configured (privilege levels etc.).
+    // Disable interrupts while spawning processes so the timer cannot preempt the
+    // kernel before all processes are fully configured. This MUST cover module
+    // loading too: a module (e.g. ps2mouse.kkm) entered via the timer path before
+    // enter_next_process() runs would make its first blocking syscall with
+    // KERNEL_RETURN_STACK still 0 → rsp=0 → double fault.
     unsafe { core::arch::asm!("cli"); }
+    kmod::load_from_list("/modules/modules.list");
     let pid = exec::spawn("/bin/shell.kxe");
     if pid == 0 {
         panic!("shell spawn failed");

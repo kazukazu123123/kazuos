@@ -1,6 +1,6 @@
 use core::arch::global_asm;
 
-use crate::drivers::{keyboard, lapic, mouse, pic};
+use crate::drivers::{keyboard, lapic, pic};
 use crate::util::rdtsc;
 
 static mut TIMER_TICKS: u64 = 0;
@@ -57,10 +57,11 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         }
         if KEYBOARD_POLLING {
             keyboard::poll();
-            mouse::poll();
         }
         // Wake any processes sleeping on a timer whose deadline has passed.
         crate::process::wake_timer_sleepers(now);
+        // Wake any processes waiting for the next tick (SLEEP_UNIT_TICK).
+        crate::process::wake_tick_sleepers();
 
         let current_pid = if cs_ring == 3 {
             crate::scheduler::current_user_pid().unwrap_or(0)
@@ -151,6 +152,18 @@ pub extern "C" fn keyboard_handler_inner() {
             lapic::eoi();
         } else {
             pic::eoi(1);
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mouse_irq_handler_inner() {
+    unsafe {
+        crate::process::wakeup_irq_waiter(12);
+        if USE_IOAPIC {
+            lapic::eoi();
+        } else {
+            pic::eoi(12);
         }
     }
 }
@@ -247,10 +260,55 @@ unsafe extern "C" {
     fn keyboard_handler_asm();
 }
 
+global_asm!(
+    ".global mouse_irq_handler_asm",
+    "mouse_irq_handler_asm:",
+    "    push rax",
+    "    push rcx",
+    "    push rdx",
+    "    push rsi",
+    "    push rdi",
+    "    push r8",
+    "    push r9",
+    "    push r10",
+    "    push r11",
+    "    push rbx",
+    "    push rbp",
+    "    push r12",
+    "    push r13",
+    "    push r14",
+    "    push r15",
+    "    call mouse_irq_handler_inner",
+    "    pop r15",
+    "    pop r14",
+    "    pop r13",
+    "    pop r12",
+    "    pop rbp",
+    "    pop rbx",
+    "    pop r11",
+    "    pop r10",
+    "    pop r9",
+    "    pop r8",
+    "    pop rdi",
+    "    pop rsi",
+    "    pop rdx",
+    "    pop rcx",
+    "    pop rax",
+    "    iretq",
+);
+
+unsafe extern "C" {
+    fn mouse_irq_handler_asm();
+}
+
 pub fn timer_handler_addr() -> u64 {
     timer_handler_asm as *const () as usize as u64
 }
 
 pub fn keyboard_handler_addr() -> u64 {
     keyboard_handler_asm as *const () as usize as u64
+}
+
+pub fn mouse_handler_addr() -> u64 {
+    mouse_irq_handler_asm as *const () as usize as u64
 }

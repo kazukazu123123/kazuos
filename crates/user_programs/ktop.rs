@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
+include!("../../crates/user_rt/runtime.rs");
 // v2: blocking-syscall aware
-include!("../../crates/kernel/src/syscall_numbers.rs");
 
 const NAME_LEN:  usize = 32;
 const MAX_PROCS: usize = 32;
@@ -22,7 +22,7 @@ const EMPTY_INFO: ProcessInfo = ProcessInfo {
 };
 
 #[no_mangle]
-pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
+pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut prev_ker:   u64 = 0;
     let mut prev_idle:  u64 = 0;
     let mut prev_user:  u64 = 0;
@@ -219,5 +219,4 @@ fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     r
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+

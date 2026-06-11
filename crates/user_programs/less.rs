@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
-
-include!("../../crates/kernel/src/syscall_numbers.rs");
+include!("../../crates/user_rt/runtime.rs");
 
 // keyboard.rs extended key codes
 const KEY_UP:    u8 = 0x82;
@@ -14,7 +13,7 @@ static mut LINE_STARTS: [u32; 4096] = [0u32; 4096];
 static mut LINE_COUNT: usize = 0;
 
 #[no_mangle]
-pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
+pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     // Read all of stdin
     unsafe {
         let mut total = 0usize;
@@ -154,5 +153,4 @@ fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     r
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+

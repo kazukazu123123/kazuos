@@ -1,4 +1,4 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/user_programs"]
+exclude = ["crates/user_programs", "crates/user_rt", "crates/user_modules"]
 resolver = "2"

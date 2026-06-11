@@ -9,6 +9,10 @@ fn main() {
         .parent()
         .unwrap()
         .join("user_programs");
+    let user_modules_dir = Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .join("user_modules");
     let link_ld = user_programs_dir.join("link.ld");
 
     if !link_ld.exists() {
@@ -127,6 +131,94 @@ fn main() {
         println!("cargo:rerun-if-changed={}", rs_file.display());
     }
 
+    // Compile kernel modules (user_modules/*.rs) → /modules/*.kkm in KFS.
+    let mut kkm_files: Vec<(String, Vec<u8>)> = Vec::new();
+    if user_modules_dir.exists() {
+        let mut mod_entries: Vec<_> = std::fs::read_dir(&user_modules_dir)
+            .expect("failed to read user_modules dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s == "rs")
+                    .unwrap_or(false)
+            })
+            .collect();
+        mod_entries.sort_by_key(|e| e.file_name());
+
+        for entry in &mod_entries {
+            let rs_file = entry.path();
+            let stem = rs_file.file_stem().unwrap().to_str().unwrap().to_string();
+
+            let elf_path = Path::new(&out_dir).join(format!("kkm_{}.elf", stem));
+            let bin_path = Path::new(&out_dir).join(format!("kkm_{}.bin", stem));
+
+            let status = Command::new(&rustc)
+                .args([
+                    "--edition",
+                    "2021",
+                    "--crate-type",
+                    "bin",
+                    "--target",
+                    "x86_64-unknown-none",
+                    "-L",
+                    &libdir,
+                    "-C",
+                    "panic=abort",
+                    "-C",
+                    &format!("link-arg=-T{}", link_ld.display()),
+                    "-C",
+                    "opt-level=3",
+                    "-o",
+                    &elf_path.to_string_lossy(),
+                ])
+                .arg(&rs_file)
+                .status()
+                .expect("failed to run rustc");
+
+            if !status.success() {
+                panic!("{}.rs (module) compilation failed", stem);
+            }
+
+            let elf = std::fs::read(&elf_path).expect("failed to read elf");
+            let relocs = find_relocations(&elf, 0x8000000000);
+            let mem_size = elf_load_mem_size(&elf);
+
+            let status = Command::new(&objcopy)
+                .args([
+                    "-O",
+                    "binary",
+                    &elf_path.to_string_lossy(),
+                    &bin_path.to_string_lossy(),
+                ])
+                .status()
+                .expect("failed to run objcopy");
+
+            if !status.success() {
+                panic!("objcopy failed for module {}", stem);
+            }
+
+            let entry_addr = read_elf_entry(&elf);
+            let mut code = std::fs::read(&bin_path).expect("failed to read bin");
+            if mem_size > code.len() as u64 {
+                code.resize(mem_size as usize, 0);
+            }
+            for &(offset, value) in &relocs {
+                if offset + 8 <= code.len() as u64 {
+                    let start = offset as usize;
+                    code[start..start + 8].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+
+            // KXE_FLAG_MODULE = 2
+            let kxe = build_kxe(&code, entry_addr, 2u32);
+            kkm_files.push((stem, kxe));
+
+            println!("cargo:rerun-if-changed={}", rs_file.display());
+        }
+    }
+
     println!("cargo:rerun-if-changed={}", link_ld.display());
 
     let gen_path = Path::new(&out_dir).join("user_programs_generated.rs");
@@ -137,7 +229,16 @@ fn main() {
     println!("cargo:rerun-if-changed={}", wav_path.display());
     let wav_data = std::fs::read(&wav_path).unwrap_or_default();
 
-    let kfs = build_kfs(&kxe_files, &wav_data);
+    // Load modules.list if present in user_modules dir.
+    let modules_list_data = if user_modules_dir.exists() {
+        let p = user_modules_dir.join("modules.list");
+        println!("cargo:rerun-if-changed={}", p.display());
+        std::fs::read(&p).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let kfs = build_kfs(&kxe_files, &kkm_files, &modules_list_data, &wav_data);
     let initrd_path = workspace_root.join("target").join("initrd.kfs");
     std::fs::create_dir_all(initrd_path.parent().unwrap()).ok();
     std::fs::write(&initrd_path, &kfs).expect("failed to write initrd.kfs");
@@ -299,7 +400,12 @@ fn find_objcopy() -> String {
     panic!("objcopy not found. Please install llvm-objcopy or GNU objcopy.");
 }
 
-fn build_kfs(kxe_files: &[(String, Vec<u8>)], wav_data: &[u8]) -> Vec<u8> {
+fn build_kfs(
+    kxe_files: &[(String, Vec<u8>)],
+    kkm_files: &[(String, Vec<u8>)],
+    modules_list: &[u8],
+    wav_data: &[u8],
+) -> Vec<u8> {
     const MAGIC: &[u8; 4] = b"KFS\0";
     const VERSION: u32 = 1;
     const HEADER_SIZE: usize = 28;
@@ -327,6 +433,21 @@ fn build_kfs(kxe_files: &[(String, Vec<u8>)], wav_data: &[u8]) -> Vec<u8> {
     sources.push(Entry { path: "/audio", data: vec![], flags: FLAG_DIR });
     if !wav_data.is_empty() {
         sources.push(Entry { path: "/audio/test.wav", data: wav_data.to_vec(), flags: FLAG_FILE });
+    }
+    sources.push(Entry { path: "/modules", data: vec![], flags: FLAG_DIR });
+    for (stem, kkm) in kkm_files {
+        sources.push(Entry {
+            path: Box::leak(format!("/modules/{}.kkm", stem).into_boxed_str()),
+            data: kkm.clone(),
+            flags: FLAG_FILE,
+        });
+    }
+    if !modules_list.is_empty() {
+        sources.push(Entry {
+            path: "/modules/modules.list",
+            data: modules_list.to_vec(),
+            flags: FLAG_FILE,
+        });
     }
 
     let paths_size: usize = sources.iter().map(|e| e.path.len()).sum();

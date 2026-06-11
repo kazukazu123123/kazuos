@@ -80,8 +80,12 @@ pub fn try_send(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
         return SendResult::Error;
     }
     let c = &mut ch[idx];
-    if c.queue.len() >= MAX_QUEUE {
-        return SendResult::Block;
+    // Drop the oldest message instead of blocking the sender when the queue is full.
+    // A hardware event publisher (e.g. ps2mouse.kkm) must never block: if it did, it
+    // would stop draining the shared PS/2 controller, which then backs up with mouse
+    // data and wedges the keyboard too. Stale relative-movement events are safe to drop.
+    while c.queue.len() >= MAX_QUEUE {
+        c.queue.pop_front();
     }
     let _ = sender;
     c.queue.push_back(Message { data: data.to_vec() });

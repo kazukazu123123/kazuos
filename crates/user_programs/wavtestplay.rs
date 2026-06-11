@@ -1,13 +1,12 @@
 #![no_std]
 #![no_main]
-
-include!("../../crates/kernel/src/syscall_numbers.rs");
+include!("../../crates/user_rt/runtime.rs");
 
 const AUDIO_PATH: &[u8] = b"/dev/audio";
 const DEFAULT_WAV: &[u8] = b"/audio/test.wav";
 
 #[no_mangle]
-pub extern "C" fn _start(_argc: u64, argv: u64) -> ! {
+pub extern "C" fn user_main(_argc: u64, argv: u64) -> ! {
     let wav_path = if argv != 0 {
         let argv_ptr = unsafe { core::ptr::read_unaligned((argv + 8) as *const u64) };
         if argv_ptr != 0 {
@@ -260,7 +259,4 @@ fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     r
 }
 
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
+

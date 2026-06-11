@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
-
-include!("../../crates/kernel/src/syscall_numbers.rs");
+include!("../../crates/user_rt/runtime.rs");
 
 const STDIO_DEFAULT: u64 = 0xFFFF_FFFF;
 
@@ -30,7 +29,7 @@ struct ProcessInfo {
 }
 
 #[no_mangle]
-pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
+pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut buf = [0u8; BUF_SIZE];
     loop {
         let len = read_line(&mut buf);
@@ -551,7 +550,4 @@ fn syscall4(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     r
 }
 
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
+

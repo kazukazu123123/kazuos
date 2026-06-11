@@ -8,6 +8,7 @@ const USER_STACK_TOP: u64 = 0x0000_0080_8000_0000;
 const USER_STACK_SIZE: u64 = 0x4000;
 
 pub const KXE_FLAG_DRIVER: u32 = 1;
+pub const KXE_FLAG_MODULE: u32 = 2;
 
 #[repr(C, packed)]
 struct KxeHeader {
@@ -110,6 +111,16 @@ pub fn spawn_driver(path: &str) -> u64 {
     spawn_process(path, &[], crate::process::PrivilegeLevel::Driver)
 }
 
+pub fn spawn_module(path: &str) -> u64 {
+    let image = match vfs::read_file(path) {
+        Ok(data) => data,
+        Err(_) => return 0,
+    };
+    let Some(kxe) = parse_kxe(&image) else { return 0; };
+    if kxe.flags & KXE_FLAG_MODULE == 0 { return 0; }
+    spawn_kxe(path, kxe, &[], crate::process::PrivilegeLevel::Driver)
+}
+
 pub fn is_driver_kxe(path: &str) -> bool {
     let image = match vfs::read_file(path) {
         Ok(data) => data,
@@ -165,17 +176,17 @@ fn spawn_kxe(
     args: &[&[u8]],
     privilege: crate::process::PrivilegeLevel,
 ) -> u64 {
-    let Some((cr3, initial_rsp)) = create_process_space(image.entry, image.code, args) else {
+    let Some((cr3, initial_rsp, argc, argv)) = create_process_space(image.entry, image.code, args) else {
         return 0;
     };
-    let pid = process::spawn_user_process(path, image.entry, initial_rsp, cr3, privilege);
+    let pid = process::spawn_user_process(path, image.entry, initial_rsp, cr3, privilege, argc, argv);
     if pid != 0 {
         process::set_memory_bytes(pid, image.code.len() as u64 + USER_STACK_SIZE);
     }
     pid
 }
 
-fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64, u64)> {
+fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64, u64, u64, u64)> {
     unsafe {
         let cr3 = crate::vmm::create_address_space().ok()?;
         let code_size = code.len() as u64;
@@ -203,8 +214,8 @@ fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64,
             crate::vmm::MapFlags::USER_READ_WRITE.no_execute(),
         )
         .ok()?;
-        let initial_rsp = push_args_onto_stack(stack_phys, stack_base, args);
-        Some((cr3, initial_rsp))
+        let (initial_rsp, argc, argv) = push_args_onto_stack(stack_phys, stack_base, args);
+        Some((cr3, initial_rsp, argc, argv))
     }
 }
 
@@ -219,41 +230,54 @@ fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64,
 ///   [RSP+(argc+1)*8] -> "arg0\0arg1\0..."
 ///
 /// Returns the new RSP value (user VA).
-unsafe fn push_args_onto_stack(stack_phys: u64, stack_base: u64, args: &[&[u8]]) -> u64 {
+/// Returns (initial_rsp, argc, argv_ptr) — all user-space VAs.
+/// initial_rsp points at argc (SysV layout); argv_ptr points at argv[0].
+unsafe fn push_args_onto_stack(stack_phys: u64, stack_base: u64, args: &[&[u8]]) -> (u64, u64, u64) {
     let argc = args.len() as u64;
     if argc == 0 {
-        return USER_STACK_TOP;
+        return (USER_STACK_TOP, 0, 0);
     }
     let mut total_string_bytes: usize = 0;
     for arg in args {
         total_string_bytes += arg.len() + 1;
     }
-    let argv_array_size = (argc as usize + 1) * 8;
+    // Pointer-array slots: [0]=argc, [1..=argc]=argv pointers, [argc+1]=null terminator.
+    // That is argc+2 slots. Under-reserving here makes the null-terminator write land on
+    // the first string byte, truncating argv[0] to an empty string.
+    let argv_array_size = (argc as usize + 2) * 8;
     let total_size = argv_array_size + total_string_bytes;
-    let args_base = USER_STACK_TOP - total_size as u64;
+    // The user entry point is a normal compiled function; it must be entered with
+    // a 16-byte-aligned RSP (matching the no-args case, which lands on USER_STACK_TOP).
+    // A misaligned stack makes generated SSE code (movaps) fault, cascading to a
+    // double fault in the kernel — so align args_base down to a 16-byte boundary.
+    let args_base = (USER_STACK_TOP - total_size as u64) & !0xF;
 
     // Convert user VA to kernel VA via stack offset
     let stack_offset = args_base - stack_base;
     let kva = stack_phys + stack_offset;
 
     let ptrs_base = kva as *mut u64;
-    let mut string_pos = kva + argv_array_size as u64;
+    // String region: kva-based pointer for writing, user-VA for the argv entries.
+    let mut string_kva = kva + argv_array_size as u64;
+    let mut string_uva = args_base + argv_array_size as u64;
 
     for i in 0..argc as usize {
         let arg = args[i];
-        unsafe { ptrs_base.add(1 + i).write(string_pos); }
+        // argv[i] must hold a USER-space VA, not the kernel VA we write through.
+        unsafe { ptrs_base.add(1 + i).write(string_uva); }
         if !arg.is_empty() {
-            unsafe { core::ptr::copy_nonoverlapping(arg.as_ptr(), string_pos as *mut u8, arg.len()); }
+            unsafe { core::ptr::copy_nonoverlapping(arg.as_ptr(), string_kva as *mut u8, arg.len()); }
         }
-        unsafe { (string_pos as *mut u8).add(arg.len()).write(0u8); }
-        string_pos += arg.len() as u64 + 1;
+        unsafe { (string_kva as *mut u8).add(arg.len()).write(0u8); }
+        string_kva += arg.len() as u64 + 1;
+        string_uva += arg.len() as u64 + 1;
     }
     unsafe {
         ptrs_base.add(1 + argc as usize).write(0);
         ptrs_base.write(argc);
     }
 
-    args_base
+    (args_base, argc, args_base + 8)
 }
 
 fn alloc_page_range(size: usize) -> Option<u64> {
