@@ -57,7 +57,7 @@ fn main() {
         let status = Command::new(&rustc)
             .args([
                 "--edition",
-                "2021",
+                "2024",
                 "--crate-type",
                 "bin",
                 "--target",
@@ -157,7 +157,7 @@ fn main() {
             let status = Command::new(&rustc)
                 .args([
                     "--edition",
-                    "2021",
+                    "2024",
                     "--crate-type",
                     "bin",
                     "--target",
