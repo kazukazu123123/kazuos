@@ -51,14 +51,17 @@ User programs call the kernel with `int 0x80`.
 | `33` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks (driver only) |
 | `34` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA; `u64::MAX` on error (driver only) |
 | `35` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
-| `36` | `SYS_KEYBOARD_READ` | none | key byte (blocking). Arrow keys: `0x80`=Left, `0x81`=Right |
-| `37` | `SYS_KEYBOARD_POLL` | none | key byte if available, or `0` (non-blocking) |
-| `38` | `SYS_MOUSE_READ` | none | packed mouse state (blocking); bit0=1 if data available, bits7-1=buttons, bits23-8=dx (i16), bits39-24=dy (i16), bits51-40=x (u12), bits63-52=y (u12) |
-| `39` | `SYS_MOUSE_POLL` | none | packed mouse state or 0 if no new data (non-blocking) |
-| `40` | `SYS_CPU_INFO` | `arg0 = selector` | selector-dependent |
-| `41` | `SYS_SHUTDOWN` | none | does not return |
-| `42` | `SYS_REBOOT` | none | does not return |
-| `43` | `SYS_LS` | `arg0 = path ptr or 0 for /`, `arg1 = path len` | entry count, or `u64::MAX` on error |
+| `36` | `SYS_PCI_BAR_MAP` | `arg0 = BDF ((bus << 16) \| (dev << 8) \| func)`, `arg1 = BAR index (0-5)` | user VA on success; `u64::MAX` on error (driver only) |
+| `37` | `SYS_KEYBOARD_READ` | none | key byte (blocking). Arrow keys: `0x80`=Left, `0x81`=Right |
+| `38` | `SYS_KEYBOARD_POLL` | none | key byte if available, or `0` (non-blocking) |
+| `39` | `SYS_CPU_INFO` | `arg0 = selector` | selector-dependent |
+| `40` | `SYS_SHUTDOWN` | none | does not return |
+| `41` | `SYS_REBOOT` | none | does not return |
+| `42` | `SYS_LS` | `arg0 = path ptr or 0 for /`, `arg1 = path len` | entry count, or `u64::MAX` on error |
+| `43` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
+| `44` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
+| `45` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count |
+| `46` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
 
 ## `SYS_PROCESS_INFO` selectors
 

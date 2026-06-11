@@ -5,6 +5,8 @@ const PAGE_SIZE: u64 = 4096;
 const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
 const USER: u64 = 1 << 2;
+const PWT: u64 = 1 << 3;
+const PCD: u64 = 1 << 4;
 const NO_EXECUTE: u64 = 1 << 63;
 const ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
@@ -25,6 +27,7 @@ impl MapFlags {
     pub const READ_WRITE: Self = Self(WRITABLE);
     pub const USER_READ: Self = Self(USER);
     pub const USER_READ_WRITE: Self = Self(USER | WRITABLE);
+    pub const USER_MMIO: Self = Self(USER | WRITABLE | PWT | PCD);
 
     pub const fn no_execute(self) -> Self {
         Self(self.0 | NO_EXECUTE)

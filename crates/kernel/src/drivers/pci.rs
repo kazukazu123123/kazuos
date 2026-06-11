@@ -51,6 +51,78 @@ pub fn read_bar(bus: u8, device: u8, function: u8, bar_index: u8) -> u32 {
     read_u32(bus, device, function, 0x10 + bar_index * 4)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarType {
+    Io,
+    Mmio32,
+    Mmio64,
+}
+
+pub fn bar_type(bar: u32) -> BarType {
+    if bar & 0x1 == 0x1 {
+        BarType::Io
+    } else {
+        match (bar >> 1) & 0x3 {
+            0x2 => BarType::Mmio64,
+            _ => BarType::Mmio32,
+        }
+    }
+}
+
+/// Returns the physical base address for a PCI BAR, or None if the BAR is invalid.
+pub fn bar_phys_addr(bus: u8, device: u8, function: u8, bar_index: u8) -> Option<u64> {
+    let low = read_u32(bus, device, function, 0x10 + bar_index * 4);
+    if low == 0 {
+        return None;
+    }
+    match bar_type(low) {
+        BarType::Io => Some((low & 0xFFFFFFFC) as u64),
+        BarType::Mmio32 => Some((low & 0xFFFFFFF0) as u64),
+        BarType::Mmio64 => {
+            let high = read_u32(bus, device, function, 0x10 + (bar_index + 1) * 4);
+            Some(((high as u64) << 32) | ((low & 0xFFFFFFF0) as u64))
+        }
+    }
+}
+
+/// Decode the size of a PCI BAR by writing all-ones and reading back the mask.
+/// Returns 0 if the BAR is unimplemented or decoding fails.
+pub fn bar_size(bus: u8, device: u8, function: u8, bar_index: u8) -> u64 {
+    let offset = 0x10 + bar_index * 4;
+    let original = read_u32(bus, device, function, offset);
+    if original == 0 {
+        return 0;
+    }
+    let ty = bar_type(original);
+    let mask = if ty == BarType::Io {
+        0xFFFFFFFC
+    } else {
+        0xFFFFFFF0
+    };
+    write_u32(bus, device, function, offset, 0xFFFFFFFF);
+    let decoded = read_u32(bus, device, function, offset);
+    write_u32(bus, device, function, offset, original);
+    let size_low = (!(decoded & mask)).wrapping_add(1) as u64;
+    if size_low == 0 {
+        return 0;
+    }
+    if ty == BarType::Mmio64 {
+        let offset_high = offset + 4;
+        let original_high = read_u32(bus, device, function, offset_high);
+        write_u32(bus, device, function, offset_high, 0xFFFFFFFF);
+        let decoded_high = read_u32(bus, device, function, offset_high);
+        write_u32(bus, device, function, offset_high, original_high);
+        let size_high = (!(decoded_high as u64)).wrapping_add(1);
+        if size_high != 0 {
+            (size_high << 32) | size_low
+        } else {
+            size_low
+        }
+    } else {
+        size_low
+    }
+}
+
 pub fn read_command(bus: u8, device: u8, function: u8) -> u16 {
     (read_u32(bus, device, function, 0x04) & 0xFFFF) as u16
 }

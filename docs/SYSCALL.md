@@ -389,15 +389,28 @@ Free DMA memory.
 
 Returns 0 on success, `u64::MAX` on error. Driver-only.
 
+### PCI
+
+#### `SYS_PCI_BAR_MAP` (36)
+
+Map a PCI MMIO BAR into the calling driver's address space.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | BDF encoded as `(bus << 16) \| (device << 8) \| function` |
+| `arg1` | BAR index (`0`–`5`) |
+
+Returns the user-space virtual address on success, or `u64::MAX` on error. Driver-only. I/O BARs are not supported.
+
 ### Keyboard
 
-#### `SYS_KEYBOARD_READ` (36)
+#### `SYS_KEYBOARD_READ` (37)
 
 Read a keypress. Blocks until a key is available.
 
 Returns the key byte. Extended keys: `0x80`=Left, `0x81`=Right, `0x82`=Up, `0x83`=Down.
 
-#### `SYS_KEYBOARD_POLL` (37)
+#### `SYS_KEYBOARD_POLL` (38)
 
 Non-blocking key check.
 
@@ -405,7 +418,7 @@ Returns key byte if available, or 0 if no key is pending.
 
 ### System / Misc
 
-#### `SYS_CPU_INFO` (38)
+#### `SYS_CPU_INFO` (39)
 
 | arg0 | Returns |
 | --- | --- |
@@ -415,15 +428,15 @@ Returns key byte if available, or 0 if no key is pending.
 | 3 | idle CPU ticks |
 | any PID | CPU ticks for that PID, or `u64::MAX` if not found |
 
-#### `SYS_SHUTDOWN` (39)
+#### `SYS_SHUTDOWN` (40)
 
 Shut down the system. Does not return.
 
-#### `SYS_REBOOT` (40)
+#### `SYS_REBOOT` (41)
 
 Reboot the system. Does not return.
 
-#### `SYS_LS` (41)
+#### `SYS_LS` (42)
 
 List directory contents.
 
@@ -433,6 +446,51 @@ List directory contents.
 | arg1 | path length |
 
 Returns entry count, or `u64::MAX` on error.
+
+### Kernel modules
+
+#### `SYS_MODULE_LOAD` (43)
+
+Load a kernel module by path.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | path pointer |
+| `arg1` | path length |
+
+Returns module id on success, or `u64::MAX` on error.
+
+#### `SYS_MODULE_UNLOAD` (44)
+
+Unload a kernel module by id.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | module id |
+
+Returns `0` on success, `u64::MAX` on error.
+
+#### `SYS_MODULE_LIST` (45)
+
+List loaded modules.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | buffer pointer (48-byte entries) |
+| `arg1` | buffer length |
+
+Returns entry count.
+
+#### `SYS_MODULE_INFO` (46)
+
+Query info for a specific module.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | module id |
+| `arg1` | buffer pointer (48 bytes) |
+
+Returns `0` on success, `u64::MAX` on error.
 
 ## CPU Accounting
 

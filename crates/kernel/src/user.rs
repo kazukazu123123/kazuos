@@ -207,6 +207,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
         SYS_DMA_ALLOC => sys_dma_alloc(arg0, arg1),
         SYS_DMA_FREE => sys_dma_free(arg0),
+        SYS_PCI_BAR_MAP => sys_pci_bar_map(arg0, arg1),
 
         // Keyboard
         SYS_KEYBOARD_READ => {
@@ -367,6 +368,11 @@ const DMA_VA_BASE: u64 = 0x0000_00A0_0000_0000;
 static DMA_VA_BUMP: crate::util::SyncUnsafeCell<u64> =
     crate::util::SyncUnsafeCell::new(DMA_VA_BASE);
 
+// PCI MMIO VA base for user-space driver BAR mappings.
+const PCI_MMIO_VA_BASE: u64 = 0x0000_00E0_0000_0000;
+static PCI_MMIO_VA_BUMP: crate::util::SyncUnsafeCell<u64> =
+    crate::util::SyncUnsafeCell::new(PCI_MMIO_VA_BASE);
+
 struct DmaAlloc {
     pid: u64,
     virt: u64,
@@ -441,6 +447,51 @@ fn sys_dma_free(virt: u64) -> u64 {
         alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
     }
     0
+}
+
+fn sys_pci_bar_map(bdf: u64, bar_index: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if process::privilege_level(caller) > process::PrivilegeLevel::Driver {
+        return u64::MAX;
+    }
+    let bus = ((bdf >> 16) & 0xFF) as u8;
+    let device = ((bdf >> 8) & 0xFF) as u8;
+    let function = (bdf & 0xFF) as u8;
+    let bar_idx = bar_index as u8;
+    if bar_idx > 5 {
+        return u64::MAX;
+    }
+    let bar_val = crate::drivers::pci::read_bar(bus, device, function, bar_idx);
+    if bar_val & 0x1 != 0 {
+        // I/O BAR not supported by this syscall
+        return u64::MAX;
+    }
+    let Some(phys) = crate::drivers::pci::bar_phys_addr(bus, device, function, bar_idx) else {
+        return u64::MAX;
+    };
+    let size = crate::drivers::pci::bar_size(bus, device, function, bar_idx);
+    if size == 0 {
+        return u64::MAX;
+    }
+    let aligned_size = (size + 4095) & !4095;
+    let cr3 = match process::user_cr3(caller) {
+        Some(c) => c,
+        None => return u64::MAX,
+    };
+    let virt = unsafe {
+        let bump = &mut *PCI_MMIO_VA_BUMP.0.get();
+        let va = *bump;
+        *bump += aligned_size;
+        va
+    };
+    unsafe {
+        if crate::vmm::map_range(cr3, virt, phys, aligned_size, crate::vmm::MapFlags::USER_MMIO)
+            .is_err()
+        {
+            return u64::MAX;
+        }
+    }
+    virt
 }
 
 /// Heap alloc for user programs.

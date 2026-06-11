@@ -292,6 +292,21 @@ pub fn sys_module_info(id: u64, buf: &mut [u8]) -> bool {
     r != u64::MAX
 }
 
+/// Map a PCI BAR into the caller's address space. Returns user VA or u64::MAX.
+pub fn sys_pci_bar_map(bdf: u32, bar_index: u8) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_PCI_BAR_MAP => r,
+            in("rdi") bdf as u64,
+            in("rsi") bar_index as u64,
+            in("rdx") 0u64,
+        );
+    }
+    r
+}
+
 /// Open (or create) a named IPC channel. Returns channel id, or u64::MAX on error.
 pub fn sys_ipc_open(name: &[u8]) -> u64 {
     let r: u64;
