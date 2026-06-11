@@ -211,8 +211,8 @@ fn main() {
                 }
             }
 
-            // KXE_FLAG_MODULE = 2
-            let kxe = build_kxe(&code, entry_addr, 2u32);
+            // KXE_FLAG_MODULE = 1
+            let kxe = build_kxe(&code, entry_addr, 1u32);
             kkm_files.push((stem, kxe));
 
             println!("cargo:rerun-if-changed={}", rs_file.display());
