@@ -220,14 +220,15 @@ unsafe fn alloc_table() -> Result<u64, MapError> {
     }
 }
 
-unsafe fn dealloc_table(table: u64) {
-    crate::pmm::free_frame(table & ADDR_MASK);
-}
-
-/// Free the user portion (PML4 entries 1..255) of an address space, including all
-/// page tables allocated by map_page. Kernel-shared entries 0 and 256..511 are left
-/// untouched. The physical pages mapped by PTEs are not freed here; callers must
-/// release heap/DMA/PCI-MMIO pages separately.
+/// Unmap the user portion (PML4 entries 1..255) of an address space.
+/// Kernel-shared entries 0 and 256..511 are left untouched, and the physical
+/// pages mapped by PTEs are not freed here; callers must release heap/DMA/PCI-MMIO
+/// pages separately.
+///
+/// Note: page tables are allocated by map_page from the kernel heap (bump allocator),
+/// so the table frames themselves cannot be reclaimed. We only clear the user PML4
+/// entries; calling pmm::free_frame here would corrupt the PMM bitmap because those
+/// frames were never allocated from the PMM.
 pub unsafe fn free_user_address_space(cr3: u64) {
     unsafe {
         let pml4_phys = cr3 & ADDR_MASK;
@@ -237,30 +238,8 @@ pub unsafe fn free_user_address_space(cr3: u64) {
         let pml4 = pml4_phys as *mut u64;
         // Entries 1..255 are user-space mappings allocated by map_page.
         for pml4_i in 1..256usize {
-            let pml4_entry = pml4.add(pml4_i).read_volatile();
-            if pml4_entry & PRESENT == 0 {
-                continue;
-            }
-            let pdpt = (pml4_entry & ADDR_MASK) as *mut u64;
-            for pdpt_i in 0..512usize {
-                let pdpt_entry = pdpt.add(pdpt_i).read_volatile();
-                if pdpt_entry & PRESENT == 0 {
-                    continue;
-                }
-                let pd = (pdpt_entry & ADDR_MASK) as *mut u64;
-                for pd_i in 0..512usize {
-                    let pd_entry = pd.add(pd_i).read_volatile();
-                    if pd_entry & PRESENT == 0 {
-                        continue;
-                    }
-                    let pt = (pd_entry & ADDR_MASK) as *mut u64;
-                    dealloc_table(pt as u64);
-                }
-                dealloc_table(pd as u64);
-            }
-            dealloc_table(pdpt as u64);
             pml4.add(pml4_i).write_volatile(0);
         }
-        dealloc_table(pml4_phys);
+        // The PML4 itself is heap-allocated; do not free to PMM.
     }
 }

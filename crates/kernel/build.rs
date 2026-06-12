@@ -19,6 +19,19 @@ fn main() {
         panic!("link.ld not found at {}", link_ld.display());
     }
 
+    // Files included by user programs/modules via include!(). Changes must trigger a rebuild
+    // of the embedded initrd so syscall numbers and runtime wrappers stay in sync with the kernel.
+    let workspace_root = Path::new(&manifest_dir).parent().unwrap();
+    let syscall_numbers = workspace_root
+        .join("kernel")
+        .join("src")
+        .join("syscall_numbers.rs");
+    let user_rt_runtime = workspace_root.join("user_rt").join("runtime.rs");
+    let user_rt_module_runtime = workspace_root.join("user_rt").join("module_runtime.rs");
+    println!("cargo:rerun-if-changed={}", syscall_numbers.display());
+    println!("cargo:rerun-if-changed={}", user_rt_runtime.display());
+    println!("cargo:rerun-if-changed={}", user_rt_module_runtime.display());
+
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let sysroot = get_sysroot(&rustc);
     let libdir = format!("{}/lib/rustlib/x86_64-unknown-none/lib", sysroot);
