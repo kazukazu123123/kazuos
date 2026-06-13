@@ -6,7 +6,6 @@ extern crate alloc;
 
 pub mod allocator;
 pub mod kmod;
-pub mod beep_songs;
 pub mod boot;
 pub mod console;
 pub mod debug;
