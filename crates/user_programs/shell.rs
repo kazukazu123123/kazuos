@@ -191,6 +191,9 @@ fn execute(cmd: &[u8]) {
     if cmd == b"sysinfo" {
         return cmd_sysinfo();
     }
+    if cmd == b"smpinfo" {
+        return cmd_smpinfo();
+    }
     if cmd == b"shutdown" {
         return cmd_shutdown();
     }
@@ -326,7 +329,7 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
 }
 
 fn cmd_help() {
-    sys_write(b"commands: help clear ls mem ps sysinfo shutdown reboot\r\n");
+    sys_write(b"commands: help clear ls mem ps sysinfo smpinfo shutdown reboot\r\n");
 }
 
 fn cmd_clear() {
@@ -352,47 +355,59 @@ fn cmd_mem() {
 }
 
 fn cmd_ps() {
-    let mut pid = syscall2(SYS_PROCESS_NEXT, u64::MAX);
+    // Print kernel placeholder (pid 0) first so it is always visible.
+    print_process_info(0, b"kernel");
+
+    let mut pid = syscall2(SYS_PROCESS_NEXT, 0);
     while pid != u64::MAX {
-        let mut info = ProcessInfo {
-            pid: 0,
-            state: 0,
-            image_name: [0u8; NAME_LEN],
-            start_tsc: 0,
-            entry: 0,
-            stack_top: 0,
-            step: 0,
-            cpu_ticks: 0,
-            memory_bytes: 0,
-        };
-        let r = syscall3(SYS_PROCESS_INFO, pid, &mut info as *mut _ as u64);
-        if r == 0 {
-            let state_name = match info.state {
-                1 => b"ready   ",
-                2 => b"running ",
-                3 => b"sleeping",
-                4 => b"exited  ",
-                _ => b"unknown ",
-            };
-            let name_len = info
-                .image_name
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(NAME_LEN);
-            sys_write(b"pid=");
-            write_u64(info.pid);
-            sys_write(b" state=");
-            sys_write(state_name);
-            sys_write(b" cpu=");
-            write_u64(info.cpu_ticks);
-            sys_write(b" mem=");
-            write_u64(info.memory_bytes / 1024);
-            sys_write(b"KiB name=");
-            sys_write(&info.image_name[..name_len]);
-            sys_write(b"\r\n");
-        }
+        print_process_info(pid, &[]);
         pid = syscall2(SYS_PROCESS_NEXT, pid);
     }
+}
+
+fn print_process_info(pid: u64, force_name: &[u8]) {
+    let mut info = ProcessInfo {
+        pid: 0,
+        state: 0,
+        image_name: [0u8; NAME_LEN],
+        start_tsc: 0,
+        entry: 0,
+        stack_top: 0,
+        step: 0,
+        cpu_ticks: 0,
+        memory_bytes: 0,
+    };
+    let r = syscall3(SYS_PROCESS_INFO, pid, &mut info as *mut _ as u64);
+    if r != 0 {
+        return;
+    }
+    let state_name = match info.state {
+        1 => b"ready   ",
+        2 => b"running ",
+        3 => b"sleeping",
+        4 => b"exited  ",
+        _ => b"unknown ",
+    };
+    let name_len = info
+        .image_name
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(NAME_LEN);
+    sys_write(b"pid=");
+    write_u64(info.pid);
+    sys_write(b" state=");
+    sys_write(state_name);
+    sys_write(b" cpu=");
+    write_u64(info.cpu_ticks);
+    sys_write(b" mem=");
+    write_u64(info.memory_bytes / 1024);
+    sys_write(b"KiB name=");
+    if force_name.is_empty() {
+        sys_write(&info.image_name[..name_len]);
+    } else {
+        sys_write(force_name);
+    }
+    sys_write(b"\r\n");
 }
 
 fn cmd_sysinfo() {
@@ -404,6 +419,27 @@ fn cmd_sysinfo() {
     sys_write(b" timer_ticks: ");
     write_u64(timer_ticks);
     sys_write(b"\r\n");
+}
+
+fn cmd_smpinfo() {
+    let cpu_count = syscall1(SYS_CPU_INFO, 4);
+    let bsp_apic = syscall1(SYS_CPU_INFO, 5);
+    let current_index = syscall1(SYS_CPU_INFO, 6);
+    sys_write(b"cpus: ");
+    write_u64(cpu_count);
+    sys_write(b" bsp_apic_id: ");
+    write_u64(bsp_apic);
+    sys_write(b" current_cpu: ");
+    write_u64(current_index);
+    sys_write(b"\r\n");
+    for i in 0..cpu_count {
+        let apic_id = syscall3(SYS_CPU_INFO, 7, i);
+        sys_write(b"  cpu[");
+        write_u64(i);
+        sys_write(b"] apic_id=");
+        write_u64(apic_id);
+        sys_write(b"\r\n");
+    }
 }
 
 fn cmd_ls(cmd: &[u8]) {

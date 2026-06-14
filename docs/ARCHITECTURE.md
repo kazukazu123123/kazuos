@@ -218,6 +218,7 @@ Current commands:
 - `mem`
 - `ps` (spawns `/bin/ps.kxe` via `SYS_EXEC`)
 - `sysinfo`
+- `smpinfo`
 - `exec <path>`
 - `shutdown`
 - `reboot`
@@ -226,6 +227,25 @@ Planned commands:
 
 - `cat`
 - background execution with `&`
+
+### SMP
+
+Located in `crates/kernel/src/smp.rs`.
+
+Current status:
+
+- MADT parsing enumerates local APIC IDs and detects CPU count
+- BSP sends INIT-SIPI-SIPI to start APs via the local APIC ICR
+- 16→32→64-bit trampoline copied to physical `0x8000` prepares each AP
+- APs load the kernel IDT and enter a halt loop in `ap_main`
+- Per-CPU `CpuData` array tracks `cpu_index`, `apic_id`, `current_tid`, and `idle` state
+- `smpinfo` shell command reports CPU topology via `SYS_CPU_INFO`
+
+Limitations:
+
+- Only the BSP currently runs the scheduler; APs idle
+- APs do not yet enable interrupts or run their own LAPIC timer
+- Per-CPU TSS/RSP0 and per-CPU scheduling are future work
 
 ### Drivers
 

@@ -1,4 +1,4 @@
-use crate::util::SyncUnsafeCell;
+use crate::util::{IrqGuard, SpinLock, SyncUnsafeCell};
 use core::arch::asm;
 
 const BUF_SIZE: usize = 1024;
@@ -10,7 +10,27 @@ static SHIFT:    SyncUnsafeCell<bool>            = SyncUnsafeCell::new(false);
 static CTRL:     SyncUnsafeCell<bool>            = SyncUnsafeCell::new(false);
 static EXTENDED: SyncUnsafeCell<bool>            = SyncUnsafeCell::new(false);
 
+static LOCK: SpinLock = SpinLock::new();
+
+struct KeyboardGuard {
+    _irq: IrqGuard,
+}
+
+impl KeyboardGuard {
+    fn new() -> Self {
+        LOCK.lock();
+        Self { _irq: IrqGuard::new() }
+    }
+}
+
+impl Drop for KeyboardGuard {
+    fn drop(&mut self) {
+        LOCK.unlock();
+    }
+}
+
 pub fn inject_keys(keys: &[u8]) {
+    let _guard = KeyboardGuard::new();
     for &ch in keys {
         unsafe { push_byte(ch); }
     }
@@ -63,6 +83,7 @@ static SCANCODE_SHIFT: [u8; 128] = sc128([
 ]);
 
 pub(crate) unsafe fn init() {
+    let _guard = KeyboardGuard::new();
     unsafe {
         let mut i = 0u8;
         while inb(0x64) & 0x01 != 0 && i < 32 { inb(0x60); i += 1; }
@@ -77,6 +98,7 @@ pub(crate) unsafe fn init() {
 }
 
 pub(crate) unsafe fn poll() {
+    let _guard = KeyboardGuard::new();
     unsafe {
         let status = inb(0x64);
         if status & 0x01 == 0 { return; }
@@ -133,6 +155,7 @@ unsafe fn push_byte(ch: u8) {
 }
 
 pub fn get_key() -> Option<Key> {
+    let _guard = KeyboardGuard::new();
     unsafe {
         if *HEAD.0.get() == *TAIL.0.get() { return None; }
         let ch = (*BUF.0.get())[*TAIL.0.get()];
@@ -153,6 +176,7 @@ pub fn get() -> Option<char> {
 }
 
 pub fn get_raw() -> Option<u8> {
+    let _guard = KeyboardGuard::new();
     unsafe {
         if *HEAD.0.get() == *TAIL.0.get() { return None; }
         let ch = (*BUF.0.get())[*TAIL.0.get()];

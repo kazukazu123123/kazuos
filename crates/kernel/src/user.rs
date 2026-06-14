@@ -174,7 +174,9 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             if let Some(pid) = crate::scheduler::current_user_pid() { process::sigint_set_catch(pid, arg0 != 0); } 0
         }
         SYS_SIGNAL_CHECK => {
-            if let Some(pid) = crate::scheduler::current_user_pid() { if process::sigint_check_and_clear(pid) { 1 } else { 0 } } else { 0 }
+            if let Some(pid) = crate::scheduler::current_user_pid() {
+                if process::sigint_check_and_clear(pid) { 1 } else { 0 }
+            } else { 0 }
         }
 
         // IPC
