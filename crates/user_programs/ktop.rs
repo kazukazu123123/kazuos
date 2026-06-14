@@ -119,7 +119,13 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         sys_write(b"  PID  STATE    %CPU     MEM     NAME\r\n");
 
         // kernel row (delta-based)
-        write_row(0, b"Running", ker_p10, 0, b"kernel");
+        let mut kinfo = EMPTY_INFO;
+        let k_mem = if syscall(SYS_PROCESS_INFO, 0, &mut kinfo as *mut _ as u64, 0) == 0 {
+            kinfo.memory_bytes / 1024
+        } else {
+            0
+        };
+        write_row(0, b"Running", ker_p10, k_mem, b"kernel");
 
         // user processes
         let mut cur_pids:  [u64; MAX_PROCS] = [0; MAX_PROCS];
