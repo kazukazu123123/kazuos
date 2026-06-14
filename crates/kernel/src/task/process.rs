@@ -730,136 +730,72 @@ pub fn apply_blocking_return_if_pending(pid: u64) -> bool {
 }
 
 pub fn set_wait_target(pid: u64, target: WaitTarget) {
-    unsafe {
-        let processes = &mut *PROCESSES.0.get();
-        if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
-            p.wait_target = target;
+    crate::task::thread::with_threads_lock(|| {
+        if let Some(tid) = main_tid(pid) {
+            thread::set_wait_target(tid, target);
         }
-    }
+    })
 }
 
+pub fn main_tid(pid: u64) -> Option<u64> {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (*PROCESSES.0.get())
+            .iter()
+            .find(|p| p.pid == pid)
+            .and_then(|p| p.main_tid)
+    })
+}
 
-/// Wake one process sleeping waiting for a keyboard key; returns 1 if a waiter was found.
-/// When a waiter is found the key is delivered directly (no buffer) to avoid double delivery.
 pub fn wakeup_key_waiters(key: u8) -> usize {
-    unsafe {
-        let processes = &mut *PROCESSES.0.get();
-        for p in processes.iter_mut() {
-            if matches!(p.state, ProcessState::Sleeping)
-                && matches!(p.wait_target, WaitTarget::Keyboard)
-            {
-                restore_ctx_from_blocking_frame(p, key as u64);
-                p.state = ProcessState::Ready;
-                p.wait_target = WaitTarget::None;
-                return 1;
-            }
-        }
-        0
-    }
+    crate::task::thread::with_threads_lock(|| thread::wakeup_key_waiters(key))
 }
 
-/// Wake all processes sleeping waiting for `exited_pid` to finish.
 pub fn wakeup_pid_waiters(exited_pid: u64) {
-    unsafe {
-        let processes = &mut *PROCESSES.0.get();
-        for p in processes.iter_mut() {
-            if matches!(p.state, ProcessState::Sleeping)
-                && matches!(p.wait_target, WaitTarget::Pid(target_pid) if target_pid == exited_pid)
-            {
-                restore_ctx_from_blocking_frame(p, 1);
-                p.state = ProcessState::Ready;
-                p.wait_target = WaitTarget::None;
-            }
-        }
-    }
+    crate::task::thread::with_threads_lock(|| thread::wakeup_pid_waiters(exited_pid))
 }
 
-/// Wake a specific process sleeping on IPC.
 pub fn wakeup_ipc_waiter(pid: u64, retval: u64) {
-    unsafe {
+    crate::task::thread::with_threads_lock(|| {
+        if let Some(tid) = main_tid(pid) {
+            thread::wakeup_ipc_waiter(tid, retval);
+        }
+    })
+}
+
+pub fn wakeup_irq_waiter(irq: u8) -> bool {
+    crate::task::thread::with_threads_lock(|| thread::wakeup_irq_waiter(irq))
+}
+
+pub fn notify_pipe_readers(pipe_id: u64) {
+    crate::task::thread::with_threads_lock(|| thread::notify_pipe_readers(pipe_id))
+}
+
+pub fn wakeup_audio_waiters() {
+    crate::task::thread::with_threads_lock(|| thread::wakeup_audio_waiters())
+}
+
+pub fn wake_timer_sleepers(now_tsc: u64) {
+    crate::task::thread::with_threads_lock(|| thread::wake_timer_sleepers(now_tsc))
+}
+
+pub fn wake_tick_sleepers() {
+    crate::task::thread::with_threads_lock(|| thread::wake_tick_sleepers())
+}
+
+pub fn add_thread_to_process(pid: u64, tid: u64) {
+    crate::task::thread::with_threads_lock(|| unsafe {
         let processes = &mut *PROCESSES.0.get();
         if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
-            if matches!(p.state, ProcessState::Sleeping)
-                && matches!(p.wait_target, WaitTarget::Ipc(_))
-            {
-                restore_ctx_from_blocking_frame(p, retval);
-                p.state = ProcessState::Ready;
-                p.wait_target = WaitTarget::None;
-            }
+            p.threads.push(tid);
         }
-    }
+    })
 }
 
-/// Wake the process sleeping on the given IRQ number. Returns true if a waiter was found.
-pub fn wakeup_irq_waiter(irq: u8) -> bool {
-    unsafe {
+pub fn remove_thread_from_process(pid: u64, tid: u64) {
+    crate::task::thread::with_threads_lock(|| unsafe {
         let processes = &mut *PROCESSES.0.get();
-        for p in processes.iter_mut() {
-            if matches!(p.state, ProcessState::Sleeping)
-                && matches!(p.wait_target, WaitTarget::Irq(n) if n == irq)
-            {
-                restore_ctx_from_blocking_frame(p, 0);
-                p.state = ProcessState::Ready;
-                p.wait_target = WaitTarget::None;
-                return true;
-            }
+        if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
+            p.threads.retain(|&t| t != tid);
         }
-        false
-    }
+    })
 }
-
-/// Wake all processes sleeping waiting to read from a pipe.
-/// Performs the actual read so the syscall returns the correct byte count.
-pub fn notify_pipe_readers(pipe_id: u64) {
-    unsafe {
-        let processes = &mut *PROCESSES.0.get();
-        for p in processes.iter_mut() {
-            if matches!(p.state, ProcessState::Sleeping) {
-                if let WaitTarget::PipeRead { pipe_id: id, buf_ptr, buf_len } = p.wait_target {
-                    if id == pipe_id {
-                        let n = crate::pipe::read_raw(pipe_id, buf_ptr, buf_len as usize);
-                        restore_ctx_from_blocking_frame(p, n as u64);
-                        p.state = ProcessState::Ready;
-                        p.wait_target = WaitTarget::None;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Wake any Timer-sleeping processes whose deadline has passed.
-pub fn wake_timer_sleepers(now_tsc: u64) {
-    unsafe {
-        let processes = &mut *PROCESSES.0.get();
-        for p in processes.iter_mut() {
-            if matches!(p.state, ProcessState::Sleeping) {
-                if let WaitTarget::Timer(deadline) = p.wait_target {
-                    if now_tsc >= deadline {
-                        restore_ctx_from_blocking_frame(p, 0);
-                        p.state = ProcessState::Ready;
-                        p.wait_target = WaitTarget::None;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Wake all processes sleeping with WaitTarget::Tick. Called on every timer tick.
-pub fn wake_tick_sleepers() {
-    unsafe {
-        let processes = &mut *PROCESSES.0.get();
-        for p in processes.iter_mut() {
-            if matches!(p.state, ProcessState::Sleeping)
-                && matches!(p.wait_target, WaitTarget::Tick)
-            {
-                restore_ctx_from_blocking_frame(p, 0);
-                p.state = ProcessState::Ready;
-                p.wait_target = WaitTarget::None;
-            }
-        }
-    }
-}
-
-

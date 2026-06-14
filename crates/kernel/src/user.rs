@@ -83,6 +83,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
         SYS_CONSOLE_CLEAR => { console::clear(); 0 }
         SYS_CURSOR_SAVE => { console::save_cursor_pos(); 0 }
+        SYS_CURSOR_RESTORE => { console::restore_cursor_pos(); 0 }
         SYS_CURSOR_DRAW => {
             let caller = crate::scheduler::current_user_pid().unwrap_or(0);
             let fb_owner = crate::drivers::fb_owner::owner();
@@ -1034,6 +1035,9 @@ fn sys_ioctl(fd: u64, cmd: u64, arg: u64) -> u64 {
     match fd::get_fd(caller, fd as usize) {
         Some(fd::FdEntry::Device { ops, handle }) => {
             let r = (ops.ioctl)(handle, cmd, arg);
+            if r == syscall::BLOCK_TO_SCHEDULER as i64 {
+                return syscall::BLOCK_TO_SCHEDULER;
+            }
             r as u64
         }
         _ => u64::MAX,

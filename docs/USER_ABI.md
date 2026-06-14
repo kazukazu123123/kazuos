@@ -20,49 +20,50 @@ User programs call the kernel with `int 0x80`.
 | `2` | `SYS_CONSOLE_CLEAR` | none | `0` |
 | `3` | `SYS_CURSOR_SAVE` | none | `0` |
 | `4` | `SYS_CURSOR_DRAW` | `arg0 = visible (0/1)` | `0` |
-| `5` | `SYS_FB_ACQUIRE` | `arg0 = *mut FbInfo` | `0` on success; `u64::MAX` if framebuffer already held |
-| `6` | `SYS_FB_RELEASE` | none | `0` |
-| `7` | `SYS_CONSOLE_SIZE` | none | `(rows << 32) \| cols` |
-| `8` | `SYS_FB_QUERY` | `arg0 = *mut FbInfo`, `arg1 = *mut u64 owner_pid` | `0` on success; `u64::MAX` if no framebuffer |
-| `9` | `SYS_EXIT` | none | does not return normally |
-| `10` | `SYS_EXEC` | `arg0 = path pointer`, `arg1 = path byte length` | new pid, or `0`/`u64::MAX`/`1` (driver) on error |
-| `11` | `SYS_KILL` | `arg0 = pid` | `0` |
-| `12` | `SYS_WAIT` | `arg0 = pid` | blocks until target exits; returns `1` |
-| `13` | `SYS_PROCESS_INFO` | `arg0 = selector`, `arg1 = buffer` | selector-dependent |
-| `14` | `SYS_PROCESS_NEXT` | `arg0 = previous pid` | next pid, or `u64::MAX` if none |
-| `15` | `SYS_SLEEP` | `arg0 = duration`, `arg1 = SLEEP_UNIT_MS` (0) or `SLEEP_UNIT_US` (1) | `0` after blocking |
-| `16` | `SYS_MEM_INFO` | none | `(total_kib << 32) \| used_kib`, or `0` |
-| `17` | `SYS_HEAP_ALLOC` | `arg0 = size` | user VA (page-aligned, zeroed), or `u64::MAX` on error |
-| `18` | `SYS_HEAP_FREE` | `arg0 = VA from SYS_HEAP_ALLOC` | `0` on success; `u64::MAX` on error |
-| `19` | `SYS_SIGNAL_CATCH` | `arg0 = 1 to catch, 0 to reset` | `0` |
-| `20` | `SYS_SIGNAL_CHECK` | none | `1` if Ctrl+C since last check, else `0` |
-| `21` | `SYS_IPC_OPEN` | `arg0 = name ptr`, `arg1 = name len` | channel id (1-based), or `u64::MAX` on error |
-| `22` | `SYS_IPC_SEND` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | `0` on success; blocks if full; `u64::MAX` on error |
-| `23` | `SYS_IPC_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written; blocks; `u64::MAX` on error |
-| `24` | `SYS_IPC_CLOSE` | `arg0 = channel id` | `0` |
-| `25` | `SYS_OPEN` | `arg0 = path ptr`, `arg1 = path len` | fd (1-based), or `u64::MAX` on error |
-| `26` | `SYS_CLOSE` | `arg0 = fd` | `0` |
-| `27` | `SYS_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, or `u64::MAX` on error |
-| `28` | `SYS_WRITE` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, or `u64::MAX` on error |
-| `29` | `SYS_IOCTL` | `arg0 = fd`, `arg1 = request`, `arg2 = arg` | device-specific, or `u64::MAX` |
-| `30` | `SYS_PIPE` | `arg0 = *mut [u64; 2]` | `0` on success; `u64::MAX` on error |
-| `31` | `SYS_PCI_INFO` | `arg0 = index`, `arg1 = *mut PciDeviceInfo` | count, or `u64::MAX` on error |
-| `32` | `SYS_IOPORT_REQUEST` | `arg0 = port`, `arg1 = count` | `0` (driver only) |
-| `33` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks (driver only) |
-| `34` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA; `u64::MAX` on error (driver only) |
-| `35` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
-| `36` | `SYS_PCI_BAR_MAP` | `arg0 = BDF ((bus << 16) \| (dev << 8) \| func)`, `arg1 = BAR index (0-5)` | user VA on success; `u64::MAX` on error (driver only) |
-| `37` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
-| `38` | `SYS_KEYBOARD_READ` | none | key byte (blocking). Arrow keys: `0x80`=Left, `0x81`=Right |
-| `39` | `SYS_KEYBOARD_POLL` | none | key byte if available, or `0` (non-blocking) |
-| `40` | `SYS_CPU_INFO` | `arg0 = selector` | selector-dependent |
-| `41` | `SYS_SHUTDOWN` | none | does not return |
-| `42` | `SYS_REBOOT` | none | does not return |
-| `43` | `SYS_LS` | `arg0 = path ptr or 0 for /`, `arg1 = path len` | entry count, or `u64::MAX` on error |
-| `44` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
-| `45` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
-| `46` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count |
-| `47` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
+| `5` | `SYS_CURSOR_RESTORE` | none | `0` |
+| `6` | `SYS_FB_ACQUIRE` | `arg0 = *mut FbInfo` | `0` on success; `u64::MAX` if framebuffer already held |
+| `7` | `SYS_FB_RELEASE` | none | `0` |
+| `8` | `SYS_CONSOLE_SIZE` | none | `(rows << 32) \| cols` |
+| `9` | `SYS_FB_QUERY` | `arg0 = *mut FbInfo`, `arg1 = *mut u64 owner_pid` | `0` on success; `u64::MAX` if no framebuffer |
+| `10` | `SYS_EXIT` | none | does not return normally |
+| `11` | `SYS_EXEC` | `arg0 = path pointer`, `arg1 = path byte length` | new pid, or `0`/`u64::MAX`/`1` (driver) on error |
+| `12` | `SYS_KILL` | `arg0 = pid` | `0` |
+| `13` | `SYS_WAIT` | `arg0 = pid` | blocks until target exits; returns `1` |
+| `14` | `SYS_PROCESS_INFO` | `arg0 = selector`, `arg1 = buffer` | selector-dependent |
+| `15` | `SYS_PROCESS_NEXT` | `arg0 = previous pid` | next pid, or `u64::MAX` if none |
+| `16` | `SYS_SLEEP` | `arg0 = duration`, `arg1 = SLEEP_UNIT_MS` (0) or `SLEEP_UNIT_US` (1) | `0` after blocking |
+| `17` | `SYS_MEM_INFO` | none | `(total_kib << 32) \| used_kib`, or `0` |
+| `18` | `SYS_HEAP_ALLOC` | `arg0 = size` | user VA (page-aligned, zeroed), or `u64::MAX` on error |
+| `19` | `SYS_HEAP_FREE` | `arg0 = VA from SYS_HEAP_ALLOC` | `0` on success; `u64::MAX` on error |
+| `20` | `SYS_SIGNAL_CATCH` | `arg0 = 1 to catch, 0 to reset` | `0` |
+| `21` | `SYS_SIGNAL_CHECK` | none | `1` if Ctrl+C since last check, else `0` |
+| `22` | `SYS_IPC_OPEN` | `arg0 = name ptr`, `arg1 = name len` | channel id (1-based), or `u64::MAX` on error |
+| `23` | `SYS_IPC_SEND` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | `0` on success; blocks if full; `u64::MAX` on error |
+| `24` | `SYS_IPC_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written; blocks; `u64::MAX` on error |
+| `25` | `SYS_IPC_CLOSE` | `arg0 = channel id` | `0` |
+| `26` | `SYS_OPEN` | `arg0 = path ptr`, `arg1 = path len` | fd (1-based), or `u64::MAX` on error |
+| `27` | `SYS_CLOSE` | `arg0 = fd` | `0` |
+| `28` | `SYS_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, or `u64::MAX` on error |
+| `29` | `SYS_WRITE` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, or `u64::MAX` on error |
+| `30` | `SYS_IOCTL` | `arg0 = fd`, `arg1 = request`, `arg2 = arg` | device-specific, or `u64::MAX` |
+| `31` | `SYS_PIPE` | `arg0 = *mut [u64; 2]` | `0` on success; `u64::MAX` on error |
+| `32` | `SYS_PCI_INFO` | `arg0 = index`, `arg1 = *mut PciDeviceInfo` | count, or `u64::MAX` on error |
+| `33` | `SYS_IOPORT_REQUEST` | `arg0 = port`, `arg1 = count` | `0` (driver only) |
+| `34` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks (driver only) |
+| `35` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA; `u64::MAX` on error (driver only) |
+| `36` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
+| `37` | `SYS_PCI_BAR_MAP` | `arg0 = BDF ((bus << 16) \| (dev << 8) \| func)`, `arg1 = BAR index (0-5)` | user VA on success; `u64::MAX` on error (driver only) |
+| `38` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
+| `39` | `SYS_KEYBOARD_READ` | none | key byte (blocking). Arrow keys: `0x80`=Left, `0x81`=Right |
+| `40` | `SYS_KEYBOARD_POLL` | none | key byte if available, or `0` (non-blocking) |
+| `41` | `SYS_CPU_INFO` | `arg0 = selector`, `arg1 = per-cpu index when noted` | selector-dependent |
+| `42` | `SYS_SHUTDOWN` | none | does not return |
+| `43` | `SYS_REBOOT` | none | does not return |
+| `44` | `SYS_LS` | `arg0 = path ptr or 0 for /`, `arg1 = path len` | entry count, or `u64::MAX` on error |
+| `45` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
+| `46` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
+| `47` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count |
+| `48` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
 
 ## `SYS_PROCESS_INFO` selectors
 
@@ -91,13 +92,20 @@ Userspace can retrieve the full `ProcessInfo` (including `memory_bytes` and `cpu
 
 ## `SYS_CPU_INFO` selectors
 
-| `arg0` | Return |
-| --- | --- |
-| `0` | total timer ticks |
-| `1` | total user CPU ticks across all tracked processes |
-| `2` | kernel CPU ticks |
-| `3` | idle CPU ticks |
-| any other value | CPU ticks for PID=`arg0`, or `u64::MAX` if not found |
+| `arg0` | `arg1` | Return |
+| --- | --- | --- |
+| `0` | — | total timer ticks |
+| `1` | — | total user CPU ticks across all tracked processes |
+| `2` | — | kernel CPU ticks |
+| `3` | — | idle CPU ticks |
+| `4` | — | CPU count |
+| `5` | — | BSP local APIC ID |
+| `6` | — | current CPU index |
+| `7` | CPU index | local APIC ID of that CPU, or `0xFF` if invalid |
+| `8` | CPU index | idle CPU ticks for that CPU |
+| `9` | CPU index | kernel CPU ticks for that CPU |
+| `10` | CPU index | user CPU ticks for that CPU |
+| any other value | — | CPU ticks for PID=`arg0`, or `u64::MAX` if not found |
 
 ## Framebuffer access
 

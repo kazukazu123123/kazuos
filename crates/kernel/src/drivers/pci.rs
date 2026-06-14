@@ -127,6 +127,10 @@ pub fn read_command(bus: u8, device: u8, function: u8) -> u16 {
     (read_u32(bus, device, function, 0x04) & 0xFFFF) as u16
 }
 
+pub fn read_interrupt_line(bus: u8, device: u8, function: u8) -> u8 {
+    (read_u32(bus, device, function, 0x3C) & 0xFF) as u8
+}
+
 pub fn write_command(bus: u8, device: u8, function: u8, value: u16) {
     let address = read_u32(bus, device, function, 0x04) & 0xFFFF_0000;
     write_u32(bus, device, function, 0x04, address | value as u32);

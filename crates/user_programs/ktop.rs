@@ -1,10 +1,11 @@
 #![no_std]
 #![no_main]
 include!("../../crates/user_rt/runtime.rs");
-// v2: blocking-syscall aware
+// v3: per-core CPU + clean framebuffer hand-off
 
 const NAME_LEN:  usize = 32;
 const MAX_PROCS: usize = 32;
+const MAX_CPUS:  usize = 16;
 const BAR_WIDTH: usize = 30;
 
 #[repr(C)]
@@ -26,12 +27,19 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut prev_ker:   u64 = 0;
     let mut prev_idle:  u64 = 0;
     let mut prev_user:  u64 = 0;
+    let mut prev_idle_cpu:  [u64; MAX_CPUS] = [0; MAX_CPUS];
+    let mut prev_ker_cpu:   [u64; MAX_CPUS] = [0; MAX_CPUS];
+    let mut prev_user_cpu:  [u64; MAX_CPUS] = [0; MAX_CPUS];
     let mut prev_pids:  [u64; MAX_PROCS]  = [0; MAX_PROCS];
     let mut prev_ticks: [u64; MAX_PROCS]  = [0; MAX_PROCS];
     let mut prev_n:     usize = 0;
 
+    syscall(SYS_CURSOR_SAVE, 0, 0, 0);
     syscall(SYS_FB_ACQUIRE, 0, 0, 0);
     syscall(SYS_SIGNAL_CATCH, 1, 0, 0);
+
+    let cpu_count = syscall(SYS_CPU_INFO, 4, 0, 0) as usize;
+    let cpu_count = cpu_count.min(MAX_CPUS);
 
     loop {
         // --- sample ---
@@ -50,10 +58,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
         // --- draw ---
         sys_write(b"\x1b[2J\x1b[H");
-        sys_write(b"KazuOS ktop                              [q] quit\r\n");
+        sys_write(b"KazuOS ktop                       [Ctrl+C] quit\r\n");
         sys_write(b"--------------------------------------------------\r\n");
 
-        // CPU bars
+        // Overall CPU bar
         let usr_p10 = pct10(du, dt);
         let ker_p10 = pct10(dk, dt);
         let idl_p10 = pct10(di, dt);
@@ -63,6 +71,39 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         sys_write(b" ker:");    write_pct(ker_p10);
         sys_write(b" idle:");   write_pct(idl_p10);
         sys_write(b"\r\n");
+
+        // Per-core usage
+        sys_write(b"Cores:\r\n");
+        let mut i = 0usize;
+        while i < cpu_count {
+            let ci = i as u64;
+            let idle_c = syscall(SYS_CPU_INFO, 8, ci, 0);
+            let ker_c  = syscall(SYS_CPU_INFO, 9, ci, 0);
+            let user_c = syscall(SYS_CPU_INFO, 10, ci, 0);
+
+            let dic = idle_c.saturating_sub(prev_idle_cpu[i]);
+            let dkc = ker_c.saturating_sub(prev_ker_cpu[i]);
+            let duc = user_c.saturating_sub(prev_user_cpu[i]);
+            let dtc = dic + dkc + duc;
+
+            let u_p10 = pct10(duc, dtc);
+            let k_p10 = pct10(dkc, dtc);
+            let i_p10 = pct10(dic, dtc);
+
+            sys_write(b" C");
+            write_u64(ci);
+            sys_write(b" ["); draw_bar(u_p10 + k_p10, 1000); sys_write(b"] ");
+            write_pct(u_p10 + k_p10);
+            sys_write(b" u:"); write_pct(u_p10);
+            sys_write(b" k:"); write_pct(k_p10);
+            sys_write(b" i:"); write_pct(i_p10);
+            sys_write(b"\r\n");
+
+            prev_idle_cpu[i] = idle_c;
+            prev_ker_cpu[i]  = ker_c;
+            prev_user_cpu[i] = user_c;
+            i += 1;
+        }
 
         // Memory bar
         let mem_p10 = pct10(use_kib, tot_kib);
@@ -86,7 +127,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         let mut cur_n = 0usize;
 
         let mut pid = syscall(SYS_PROCESS_NEXT, 0, 0, 0);
-        while pid != 0 && cur_n < MAX_PROCS {
+        while pid != u64::MAX && cur_n < MAX_PROCS {
             let mut info = EMPTY_INFO;
             let r = syscall(SYS_PROCESS_INFO, pid, &mut info as *mut _ as u64, 0);
             if r == 0 {
@@ -128,7 +169,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         if quit { break; }
     }
 
-    sys_write(b"\x1b[2J\x1b[H");
+    syscall(SYS_CURSOR_RESTORE, 0, 0, 0);
     syscall(SYS_FB_RELEASE, 0, 0, 0);
     syscall(SYS_EXIT, 0, 0, 0);
     loop {}
@@ -218,5 +259,3 @@ fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     }
     r
 }
-
-

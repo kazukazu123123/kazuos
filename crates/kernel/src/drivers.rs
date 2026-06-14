@@ -2,6 +2,7 @@ pub mod acpi;
 pub mod beep;
 pub mod fb_owner;
 pub mod framebuffer;
+pub mod hda;
 pub mod ioapic;
 pub mod keyboard;
 pub mod lapic;

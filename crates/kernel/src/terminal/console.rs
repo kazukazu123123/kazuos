@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use crate::drivers::framebuffer::FramebufferInfo;
 use crate::terminal::bitmap;
-use crate::util::SyncUnsafeCell;
+use crate::util::{IrqGuard, SpinLock, SyncUnsafeCell};
 
 #[derive(Clone, Copy, PartialEq)]
 enum EscapeState {
@@ -338,14 +338,34 @@ impl Write for Console {
 static CONSOLE: SyncUnsafeCell<Option<Console>> = SyncUnsafeCell::new(None);
 static SAVED_CURSOR: SyncUnsafeCell<CursorPosition> =
     SyncUnsafeCell::new(CursorPosition { x: 0.0, y: 0.0, height: 0.0 });
+static CONSOLE_LOCK: SpinLock = SpinLock::new();
+
+struct ConsoleGuard {
+    _irq: IrqGuard,
+}
+
+impl ConsoleGuard {
+    fn new() -> Self {
+        CONSOLE_LOCK.lock();
+        Self { _irq: IrqGuard::new() }
+    }
+}
+
+impl Drop for ConsoleGuard {
+    fn drop(&mut self) {
+        CONSOLE_LOCK.unlock();
+    }
+}
 
 pub fn init(console: Console) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         *CONSOLE.0.get() = Some(console);
     }
 }
 
 pub fn clear() {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             console.clear();
@@ -354,6 +374,7 @@ pub fn clear() {
 }
 
 pub fn screen_print(text: &str) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             console.print(text);
@@ -362,6 +383,7 @@ pub fn screen_print(text: &str) {
 }
 
 pub fn screen_println(text: &str) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             console.println(text);
@@ -370,6 +392,7 @@ pub fn screen_println(text: &str) {
 }
 
 pub fn position() -> CursorPosition {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             return console.position();
@@ -383,6 +406,7 @@ pub fn position() -> CursorPosition {
 }
 
 pub fn set_position(position: CursorPosition) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             console.set_position(position);
@@ -391,6 +415,7 @@ pub fn set_position(position: CursorPosition) {
 }
 
 pub fn font_descent() -> f32 {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &*CONSOLE.0.get() {
             return console.line_descent();
@@ -401,6 +426,7 @@ pub fn font_descent() -> f32 {
 
 /// Returns (cols, rows) — number of character columns and rows on screen.
 pub fn console_size() -> (u32, u32) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &*CONSOLE.0.get() {
             let cw = console.char_width(' ');
@@ -416,6 +442,7 @@ pub fn console_size() -> (u32, u32) {
 }
 
 pub fn text_width(text: &[u8]) -> f32 {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             let mut width = 0.0;
@@ -429,6 +456,7 @@ pub fn text_width(text: &[u8]) -> f32 {
 }
 
 pub fn clear_rect(x: usize, y: usize, width: usize, height: usize) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             console.clear_rect(x, y, width, height);
@@ -437,6 +465,7 @@ pub fn clear_rect(x: usize, y: usize, width: usize, height: usize) {
 }
 
 pub fn draw_cursor(position: CursorPosition, visible: bool) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             console.draw_cursor(position, visible);
@@ -445,6 +474,7 @@ pub fn draw_cursor(position: CursorPosition, visible: bool) {
 }
 
 pub fn save_cursor_pos() {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             // Erase old cursor block before saving new position so stale
@@ -456,10 +486,20 @@ pub fn save_cursor_pos() {
 }
 
 pub fn draw_saved_cursor(visible: bool) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         let pos = *SAVED_CURSOR.0.get();
         if let Some(console) = &*CONSOLE.0.get() {
             console.draw_cursor(pos, visible);
+        }
+    }
+}
+
+pub fn restore_cursor_pos() {
+    let _guard = ConsoleGuard::new();
+    unsafe {
+        if let Some(console) = &mut *CONSOLE.0.get() {
+            console.set_position(*SAVED_CURSOR.0.get());
         }
     }
 }
@@ -473,6 +513,7 @@ pub struct FbParams {
 }
 
 pub fn fb_params() -> Option<FbParams> {
+    let _guard = ConsoleGuard::new();
     unsafe {
         (*CONSOLE.0.get()).as_ref().map(|c| FbParams {
             base: c.fb.base as u64,
@@ -488,6 +529,7 @@ pub fn fb_params() -> Option<FbParams> {
 }
 
 pub fn _print(args: fmt::Arguments) {
+    let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
             let _ = console.write_fmt(args);
@@ -496,8 +538,13 @@ pub fn _print(args: fmt::Arguments) {
 }
 
 pub fn _println(args: fmt::Arguments) {
-    _print(args);
-    screen_println("");
+    let _guard = ConsoleGuard::new();
+    unsafe {
+        if let Some(console) = &mut *CONSOLE.0.get() {
+            let _ = console.write_fmt(args);
+            console.println("");
+        }
+    }
 }
 
 #[macro_export]
