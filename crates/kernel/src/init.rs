@@ -38,10 +38,14 @@ pub fn run(boot_info: &'static BootInfo) -> InitState {
     unsafe {
         vmm::init();
     }
+    let hda_irq = drivers::hda::init();
     init_idt();
     crate::logln!("Platform: {:?}", platform.hypervisor);
     let interrupt_config = init_acpi(boot_info.rsdp);
-    init_interrupts(interrupt_config, platform);
+    init_interrupts(interrupt_config, platform, hda_irq);
+    unsafe {
+        crate::smp::detect_cpus(boot_info.rsdp);
+    }
     InitState {
         tsc_per_ms: calibrate_tsc(boot_info),
     }
@@ -133,6 +137,7 @@ fn init_idt() {
             interrupts::timer_handler_addr(),
             syscall::handler_addr(),
             interrupts::mouse_handler_addr(),
+            interrupts::hda_handler_addr(),
         );
     }
     crate::logln!("IDT loaded successfully");
@@ -188,7 +193,7 @@ fn init_acpi(rsdp: u64) -> InterruptConfig {
     config
 }
 
-fn init_interrupts(config: InterruptConfig, platform: platform::Platform) {
+fn init_interrupts(config: InterruptConfig, platform: platform::Platform, hda_irq: Option<u8>) {
     unsafe {
         pic::init();
         pic::mask_all();
@@ -210,6 +215,14 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform) {
                 ioapic.set_irq_ext(irq, 0x21, config.bsp_apic_id, flags);
                 // IRQ12 (PS/2 mouse) at vector 0x2C
                 ioapic.set_irq_ext(12, 0x2C, config.bsp_apic_id, 0);
+                // HDA IRQ at vector 0x31 (if available)
+                if let Some(hda) = hda_irq
+                    && hda != 0 && hda != 255
+                {
+                    ioapic.set_irq_ext(hda, 0x31, config.bsp_apic_id, 0);
+                    ioapic.unmask_irq(hda);
+                    crate::log_info!("IOAPIC HDA IRQ{} enabled", hda);
+                }
                 if !platform.keyboard_polling {
                     ioapic.unmask_irq(irq);
                     ioapic.unmask_irq(12);
@@ -230,6 +243,16 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform) {
             crate::logln!("PIC keyboard IRQ1 enabled");
         } else {
             crate::logln!("Keyboard polling mode");
+        }
+
+        // PIC fallback for HDA: unmask the legacy IRQ if IOAPIC is not used.
+        if let Some(hda) = hda_irq
+            && hda != 0
+            && hda != 255
+            && !platform.use_ioapic
+        {
+            pic::unmask_irq(hda);
+            crate::log_info!("PIC HDA IRQ{} enabled", hda);
         }
 
         if platform.use_lapic_timer {

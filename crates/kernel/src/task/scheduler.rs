@@ -1,21 +1,29 @@
-use crate::util::SyncUnsafeCell;
+use crate::util::{IrqGuard, SyncUnsafeCell};
 
 #[repr(C, align(16))]
 struct UserReturnStack([u8; 16384]);
 
-static mut USER_RETURN_STACK: UserReturnStack = UserReturnStack([0; 16384]);
+static mut USER_RETURN_STACKS: [UserReturnStack; MAX_CPUS] =
+    [const { UserReturnStack([0; 16384]) }; MAX_CPUS];
 
-static CURRENT_USER_PID: SyncUnsafeCell<Option<u64>> = SyncUnsafeCell::new(None);
-static NEXT_USER_PID: SyncUnsafeCell<Option<u64>> = SyncUnsafeCell::new(None);
-static IS_IDLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+unsafe fn user_return_stack_top() -> u64 {
+    let idx = cpu_idx();
+    unsafe { core::ptr::addr_of!(USER_RETURN_STACKS[idx]) as u64 + 16384 }
+}
+
+use crate::smp::{MAX_CPUS, current_cpu_index};
+
+static CURRENT_USER_PID: SyncUnsafeCell<[Option<u64>; MAX_CPUS]> = SyncUnsafeCell::new([None; MAX_CPUS]);
+static CURRENT_USER_TID: SyncUnsafeCell<[Option<u64>; MAX_CPUS]> = SyncUnsafeCell::new([None; MAX_CPUS]);
+static NEXT_USER_PID: SyncUnsafeCell<[Option<u64>; MAX_CPUS]> = SyncUnsafeCell::new([None; MAX_CPUS]);
+static IS_IDLE: SyncUnsafeCell<[core::sync::atomic::AtomicBool; MAX_CPUS]> =
+    SyncUnsafeCell::new([const { core::sync::atomic::AtomicBool::new(false) }; MAX_CPUS]);
 
 type ExitHandler = Option<fn()>;
 static EXIT_HANDLER: SyncUnsafeCell<ExitHandler> = SyncUnsafeCell::new(None);
 
 #[repr(C)]
 pub struct InterruptFrame {
-    // Matches timer_handler_asm push order (last pushed = lowest address):
-    // push rax, rcx, rdx, rsi, rdi, r8, r9, r10, r11, rbx, rbp, r12, r13, r14, r15
     pub r15: u64,
     pub r14: u64,
     pub r13: u64,
@@ -52,62 +60,96 @@ pub fn run_exit_handler() {
     }
 }
 
+fn cpu_idx() -> usize {
+    current_cpu_index()
+}
+
 pub fn current_user_pid() -> Option<u64> {
-    unsafe { *CURRENT_USER_PID.0.get() }
+    unsafe { (*CURRENT_USER_PID.0.get())[cpu_idx()] }
+}
+
+pub fn current_user_tid() -> Option<u64> {
+    unsafe { (*CURRENT_USER_TID.0.get())[cpu_idx()] }
 }
 
 pub fn set_current_user_pid(pid: Option<u64>) {
+    let _irq = IrqGuard::new();
     unsafe {
-        *CURRENT_USER_PID.0.get() = pid;
+        let idx = cpu_idx();
+        (*CURRENT_USER_PID.0.get())[idx] = pid;
+        (*CURRENT_USER_TID.0.get())[idx] = pid.and_then(|p| crate::process::main_tid(p));
+    }
+}
+
+pub fn set_current_user_tid(tid: Option<u64>) {
+    let _irq = IrqGuard::new();
+    unsafe {
+        let idx = cpu_idx();
+        (*CURRENT_USER_TID.0.get())[idx] = tid;
+        (*CURRENT_USER_PID.0.get())[idx] = tid.and_then(|t| crate::task::thread::thread_pid(t));
     }
 }
 
 pub fn set_idle(idle: bool) {
-    IS_IDLE.store(idle, core::sync::atomic::Ordering::Release);
+    unsafe {
+        (*IS_IDLE.0.get())[cpu_idx()].store(idle, core::sync::atomic::Ordering::Release);
+    }
 }
 
 pub fn is_idle() -> bool {
-    IS_IDLE.load(core::sync::atomic::Ordering::Acquire)
+    unsafe { (*IS_IDLE.0.get())[cpu_idx()].load(core::sync::atomic::Ordering::Acquire) }
 }
 
 pub fn clear_current_user(pid: u64) {
+    let _irq = IrqGuard::new();
     unsafe {
-        if *CURRENT_USER_PID.0.get() == Some(pid) {
-            *CURRENT_USER_PID.0.get() = None;
-            *NEXT_USER_PID.0.get() = None;
+        let idx = cpu_idx();
+        if (*CURRENT_USER_PID.0.get())[idx] == Some(pid) {
+            (*CURRENT_USER_PID.0.get())[idx] = None;
+            (*CURRENT_USER_TID.0.get())[idx] = None;
+            (*NEXT_USER_PID.0.get())[idx] = None;
         }
     }
 }
 
-pub fn schedule_next(current: u64) -> u64 {
-    unsafe {
-        let processes = &*crate::task::process::PROCESSES.0.get();
-        if let Some(next) = processes
-            .iter()
-            .filter(|p| {
-                matches!(p.state, crate::task::process::ProcessState::Ready) && p.pid > current
-            })
-            .map(|p| p.pid)
-            .min()
-        {
-            return next;
+pub fn schedule_next(current_tid: u64) -> u64 {
+    crate::task::thread::with_threads_lock(|| {
+        let cpu = cpu_idx();
+        unsafe {
+            let threads = &*crate::task::thread::THREADS.0.get();
+            if let Some(next) = threads
+                .iter()
+                .filter(|t| {
+                    t.assigned_cpu == cpu
+                        && matches!(t.state, crate::task::thread::ThreadState::Ready)
+                        && t.tid > current_tid
+                })
+                .map(|t| t.tid)
+                .min()
+            {
+                return next;
+            }
+            if let Some(next) = threads
+                .iter()
+                .filter(|t| {
+                    t.assigned_cpu == cpu
+                        && matches!(t.state, crate::task::thread::ThreadState::Ready)
+                        && t.tid > 0
+                })
+                .map(|t| t.tid)
+                .min()
+            {
+                return next;
+            }
+            0
         }
-        if let Some(next) = processes
-            .iter()
-            .filter(|p| matches!(p.state, crate::task::process::ProcessState::Ready) && p.pid > 0)
-            .map(|p| p.pid)
-            .min()
-        {
-            return next;
-        }
-        0
-    }
+    })
 }
 
-pub fn save_user_context(pid: u64, frame_ptr: u64) {
+pub fn save_user_context(tid: u64, frame_ptr: u64) {
     unsafe {
         let frame = &*(frame_ptr as *const InterruptFrame);
-        if let Some(mut ctx) = crate::process::user_context(pid) {
+        if let Some(mut ctx) = crate::task::thread::user_context(tid) {
             ctx.rax = frame.rax;
             ctx.rcx = frame.rcx;
             ctx.rdx = frame.rdx;
@@ -127,17 +169,17 @@ pub fn save_user_context(pid: u64, frame_ptr: u64) {
             ctx.rsp = frame.rsp;
             ctx.rflags = frame.rflags;
             ctx.kernel_rsp = frame_ptr;
-            crate::process::set_user_context(pid, ctx);
+            crate::task::thread::set_user_context(tid, ctx);
         }
     }
 }
 
-pub fn save_kernel_context(pid: u64, saved_rsp: u64) {
-    crate::process::set_kernel_rsp(pid, saved_rsp);
+pub fn save_kernel_context(tid: u64, saved_rsp: u64) {
+    crate::task::thread::set_kernel_rsp(tid, saved_rsp);
 }
 
 pub unsafe fn setup_user_frame_on_temp_stack(ctx: crate::process::UserContext) -> u64 {
-    let stack_top = (core::ptr::addr_of!(USER_RETURN_STACK) as u64) + 16384;
+    let stack_top = unsafe { user_return_stack_top() };
     let frame_bottom = stack_top - 160;
     unsafe {
         let p = frame_bottom as *mut u64;
@@ -165,10 +207,8 @@ pub unsafe fn setup_user_frame_on_temp_stack(ctx: crate::process::UserContext) -
     frame_bottom
 }
 
-// Layout matches timer_handler_asm pop order:
-// pop r15, r14, r13, r12, rbp, rbx, r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax, iretq
 pub unsafe fn setup_user_frame_for_timer_on_temp_stack(ctx: crate::process::UserContext) -> u64 {
-    let stack_top = (core::ptr::addr_of!(USER_RETURN_STACK) as u64) + 16384;
+    let stack_top = unsafe { user_return_stack_top() };
     let frame_bottom = stack_top - 160;
     unsafe {
         let p = frame_bottom as *mut u64;
@@ -231,27 +271,44 @@ extern "C" fn idle_loop() -> ! {
 
 pub fn enter_next_process() -> ! {
     unsafe {
-        let next_pid = schedule_next(0);
-        if next_pid == 0 {
+        // Wait until there is work for this CPU. The loop runs with interrupts
+        // enabled so the timer can wake us; once a thread is selected we disable
+        // them until the iretq to userspace/kernel-thread installs the new
+        // RFLAGS. A timer interrupt between set_current_user_tid() and the
+        // iretq would mark the thread kernel-preempted and skip setting the
+        // per-CPU kernel return stack, which makes the next blocking syscall
+        // load RSP=0 and double fault.
+        let next_tid = loop {
+            let t = schedule_next(0);
+            if t != 0 {
+                if let Some(ac) = crate::task::thread::assigned_cpu(t) {
+                    if ac != cpu_idx() {
+                        crate::serial_println!("SCHED BUG: tid={} assigned_cpu={} but cpu={}", t, ac, cpu_idx());
+                        loop { crate::util::hlt(); }
+                    }
+                }
+                break t;
+            }
             set_idle(true);
             crate::process::clear_current_pid();
-            set_current_user_pid(None);
-            loop {
-                crate::util::hlt();
-            }
-        }
+            set_current_user_tid(None);
+            crate::util::hlt();
+        };
 
-        // If next_pid was blocked in a syscall (blocking_rsp set), resume the int-0x80 frame.
-        // Frame layout: [r15][r14][r13][r12][r11][r10][r9][r8][rdi][rsi][rdx][rcx][rbx][rbp] | iretq_frame
-        if let Some(blocking_rsp) = crate::process::take_blocking_rsp(next_pid) {
-            let retval = crate::process::take_blocking_retval(next_pid);
-            if let Some(ctx) = crate::process::user_context(next_pid) {
+        let _irq = crate::util::IrqGuard::new();
+        core::mem::forget(_irq);
+
+        let next_pid = crate::task::thread::thread_pid(next_tid).unwrap_or(0);
+
+        if let Some(blocking_rsp) = crate::task::thread::take_blocking_rsp(next_tid) {
+            let retval = crate::task::thread::take_blocking_retval(next_tid);
+            if let Some(ctx) = crate::task::thread::user_context(next_tid) {
                 if ctx.cr3 != 0 {
                     crate::vmm::switch_cr3(ctx.cr3);
                 }
             }
-            set_current_user_pid(Some(next_pid));
-            if let Some(top) = crate::process::kernel_stack_top(next_pid) {
+            set_current_user_tid(Some(next_tid));
+            if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
                 crate::gdt::set_kernel_stack_top(top);
             }
             crate::process::set_running(next_pid);
@@ -279,18 +336,17 @@ pub fn enter_next_process() -> ! {
             );
         }
 
-        // If next_pid was preempted mid-syscall (kernel mode), resume via kernel stack.
-        if crate::process::is_kernel_preempted(next_pid) {
-            if let Some(kernel_rsp) = crate::process::kernel_rsp(next_pid) {
-                if let Some(ctx) = crate::process::user_context(next_pid) {
+        if crate::task::thread::is_kernel_preempted(next_tid) {
+            if let Some(kernel_rsp) = crate::task::thread::kernel_rsp(next_tid) {
+                if let Some(ctx) = crate::task::thread::user_context(next_tid) {
                     if ctx.cr3 != 0 {
                         crate::vmm::switch_cr3(ctx.cr3);
                     }
-                    set_current_user_pid(Some(next_pid));
+                    set_current_user_tid(Some(next_tid));
                 } else {
-                    set_current_user_pid(None);
+                    set_current_user_tid(None);
                 }
-                if let Some(top) = crate::process::kernel_stack_top(next_pid) {
+                if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
                     crate::gdt::set_kernel_stack_top(top);
                 }
                 crate::process::set_running(next_pid);
@@ -318,21 +374,18 @@ pub fn enter_next_process() -> ! {
             }
         }
 
-        if let Some(ctx) = crate::process::user_context(next_pid) {
+        if let Some(ctx) = crate::task::thread::user_context(next_tid) {
             if ctx.cr3 != 0 {
                 crate::vmm::switch_cr3(ctx.cr3);
             }
-            set_current_user_pid(Some(next_pid));
-            if let Some(top) = crate::process::kernel_stack_top(next_pid) {
+            set_current_user_tid(Some(next_tid));
+            if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
                 crate::gdt::set_kernel_stack_top(top);
             }
             crate::process::set_running(next_pid);
             let rsp: u64;
             core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
-            crate::user::KERNEL_RETURN_STACK = rsp;
-            // Use setup_user_frame_on_temp_stack so ALL registers (including rax) are
-            // restored correctly — essential when resuming a process that was woken from
-            // a blocking syscall (blocking_rsp was cleared before reaching this path).
+            crate::user::set_kernel_return_stack(rsp);
             let temp_rsp = setup_user_frame_on_temp_stack(ctx);
             core::arch::asm!(
                 "mov ax, dx",
@@ -361,8 +414,8 @@ pub fn enter_next_process() -> ! {
             );
         }
 
-        if let Some(kernel_rsp) = crate::process::kernel_rsp(next_pid) {
-            set_current_user_pid(None);
+        if let Some(kernel_rsp) = crate::task::thread::kernel_rsp(next_tid) {
+            set_current_user_tid(None);
             crate::process::set_running(next_pid);
             core::arch::asm!(
                 "mov rsp, {rsp}",

@@ -7,7 +7,10 @@ param(
     [string[]]$SendLines = @("ret"),
     [string]$ExpectPattern = $null,
     [string]$WaitPattern = "KazuOS kernel started",
-    [string]$EarlyPattern = "KazuOS Bootloader"
+    [string]$EarlyPattern = "KazuOS Bootloader",
+    [ValidateSet("ac97", "hda", "none")]
+    [string]$AudioDevice = "ac97",
+    [int]$CpuCount = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -92,7 +95,7 @@ function Text-ToSendKeys([string]$Text) {
     $keys = New-Object System.Collections.Generic.List[string]
     foreach ($ch in $Text.ToCharArray()) {
         switch ($ch) {
-            "`n" { $keys.Add("ret"); continue }
+            "`n" { $keys.Add("0x1c"); continue }
             " " { $keys.Add("spc"); continue }
             "/" { $keys.Add("slash"); continue }
             "." { $keys.Add("dot"); continue }
@@ -105,8 +108,10 @@ function Text-ToSendKeys([string]$Text) {
 }
 
 function Send-TextToGuest([string]$Text) {
-    $keys = (Text-ToSendKeys $Text) -join "-"
-    Send-HmpLines @("sendkey $keys")
+    $keys = Text-ToSendKeys $Text
+    # Send each key as a separate sendkey command for reliability.
+    $lines = $keys | ForEach-Object { "sendkey $_" }
+    Send-HmpLines $lines
 }
 
 Stop-OldQemu
@@ -175,8 +180,15 @@ $OvmfVars = Find-FirstExisting @(
 $TempVars = Join-Path $Root "ovmf_vars_pipeline.tmp.fd"
 if ($OvmfVars) { Copy-Item $OvmfVars $TempVars -Force }
 
+$audioArgs = switch ($AudioDevice) {
+    "ac97" { @("-device", "ac97,audiodev=snd0") }
+    "hda"  { @("-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0") }
+    "none" { @() }
+}
+
 $qemuArgs = @(
     "-machine", "q35,pcspk-audiodev=snd0,i8042=on",
+    "-smp", "$CpuCount",
     "-drive", "if=pflash,format=raw,readonly=on,file=$OvmfPath"
 )
 if ($OvmfVars) { $qemuArgs += @("-drive", "if=pflash,format=raw,file=$TempVars") }
@@ -187,10 +199,12 @@ $qemuArgs += @(
     "-net", "none",
     "-display", "none",
     "-vnc", "127.0.0.1:1",
-    "-audiodev", "none,id=snd0",
-    "-device", "ac97,audiodev=snd0",
     "-serial", "file:$SerialLog",
-    "-monitor", "tcp:127.0.0.1:$MonitorPort,server,nowait",
+    "-monitor", "tcp:127.0.0.1:$MonitorPort,server,nowait"
+)
+$qemuArgs += @("-audiodev", "none,id=snd0")
+$qemuArgs += $audioArgs
+$qemuArgs += @(
     "-no-reboot",
     "-d", "int,guest_errors",
     "-D", $QemuLog
@@ -238,9 +252,17 @@ try {
         Write-Host "Warning: pattern '$WaitPattern' not found within ${BootTimeoutSeconds}s, sending commands anyway"
     }
     Start-Sleep -Seconds 5
-    foreach ($line in $SendLines) {
+    # Allow callers to pass -SendLines either as an array or as a single
+    # comma-separated string (common when invoking from non-PowerShell shells).
+    $linesToSend = if ($SendLines.Count -eq 1 -and $SendLines[0].Contains(",")) {
+        $SendLines[0].Split(",", [System.StringSplitOptions]::RemoveEmptyEntries)
+    } else {
+        $SendLines
+    }
+    foreach ($line in $linesToSend) {
+        $line = $line.Trim()
         if ($line -eq "ret") {
-            Send-HmpLines @("sendkey ret")
+            Send-HmpLines @("sendkey 0x1c")
             Start-Sleep -Milliseconds 500
         } else {
             Send-TextToGuest "$line`n"

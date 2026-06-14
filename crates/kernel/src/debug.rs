@@ -3,7 +3,9 @@ use core::fmt::{self, Write};
 use crate::drivers::serial;
 
 pub fn serial_print(args: fmt::Arguments) {
-    let _ = SerialWriter.write_fmt(args);
+    serial::with_lock(|| {
+        let _ = SerialWriter.write_fmt(args);
+    });
 }
 
 pub fn qemu_exit(code: u32) -> ! {

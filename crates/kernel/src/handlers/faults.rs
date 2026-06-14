@@ -37,8 +37,8 @@ unsafe extern "C" fn fault_handler_inner(
     if frame.code_segment & 3 == 3 {
         let pid = crate::scheduler::current_user_pid().unwrap_or(0);
         crate::log_error!(
-            "USER FAULT: {} pid={} vector={} error={:#x} rip={:#x}",
-            name, pid, vector, error_code, frame.instruction_pointer
+            "USER FAULT: {} cpu={} tid={} pid={} vector={} error={:#x} rip={:#x}",
+            name, crate::smp::current_cpu_index(), crate::scheduler::current_user_tid().unwrap_or(0), pid, vector, error_code, frame.instruction_pointer
         );
         if pid != 0 {
             unsafe {

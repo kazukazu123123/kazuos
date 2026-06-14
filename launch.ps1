@@ -46,6 +46,13 @@ $debugChoice = Show-Menu "Debug options" @(
     "Full          -- no-reboot + no-shutdown + exception log (-d int,guest_errors)"
 )
 
+# --- Audio device ---
+$audioChoice = Show-Menu "Audio device" @(
+    "AC97        -- legacy AC97 audio",
+    "Intel HDA   -- Intel High Definition Audio (for hda driver)",
+    "None        -- no audio device"
+)
+
 Write-Host ""
 
 # ===== Find OVMF =====
@@ -126,13 +133,22 @@ $qemuArgs += @(
 )
 
 $qemuArgs += @(
-    "-m",       "10G",
+    "-m",       "1G",
     "-net",     "none",
     "-device",  "VGA",
-    "-device",  "AC97,audiodev=snd0",
     "-audiodev","dsound,id=snd0",
     "-serial",  "stdio"
 )
+
+$qemuArgs += @(
+    "-smp",     "4"
+)
+
+switch ($audioChoice) {
+    0 { $qemuArgs += @("-device", "AC97,audiodev=snd0") }
+    1 { $qemuArgs += @("-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0") }
+    2 { }
+}
 
 if ($debugChoice -ge 1) { $qemuArgs += "-no-reboot" }
 if ($debugChoice -ge 2) { $qemuArgs += "-no-shutdown" }

@@ -86,18 +86,23 @@ global_asm!(
     "    iretq",
     // EXIT_TO_KERNEL path
     "2:",
-    "    mov rsp, [rip + {return_stack}]",
+    "    call {get_return_stack}",
+    "    mov rsp, [rax]",
     "    jmp {return_fn}",
     // BLOCK_TO_SCHEDULER path: save frame RSP, switch to kernel stack, call block handler
     // rsp still has the 8-byte alignment pad below r15; skip it so blocking_rsp → r15 slot.
     "3:",
     "    lea rax, [rsp+8]",
-    "    mov [{blocking_rsp_tmp}], rax",
-    "    mov rsp, [rip + {return_stack}]",
+    "    push rax",
+    "    call {get_blocking_rsp_tmp}",
+    "    pop rdi",
+    "    mov [rax], rdi",
+    "    call {get_return_stack}",
+    "    mov rsp, [rax]",
     "    jmp {block_fn}",
-    return_stack = sym crate::user::KERNEL_RETURN_STACK,
+    get_return_stack = sym crate::user::kernel_return_stack_ptr,
+    get_blocking_rsp_tmp = sym crate::user::blocking_rsp_tmp_ptr,
     return_fn = sym syscall_return_to_kernel,
-    blocking_rsp_tmp = sym crate::user::BLOCKING_RSP_TMP,
     block_fn = sym syscall_block_fn,
 );
 
@@ -121,7 +126,7 @@ extern "C" fn syscall_block_fn() -> ! {
             in("ax") crate::gdt::KERNEL_DATA,
             options(nostack, preserves_flags),
         );
-        let blocking_rsp = crate::user::BLOCKING_RSP_TMP;
+        let blocking_rsp = crate::user::blocking_rsp_tmp();
         if let Some(pid) = crate::scheduler::current_user_pid() {
             crate::process::set_blocking_rsp(pid, blocking_rsp);
         }
@@ -142,8 +147,8 @@ extern "C" fn syscall_return_to_kernel() -> ! {
             in("ax") crate::gdt::KERNEL_DATA,
             options(nostack, preserves_flags),
         );
-        let exiting_pid = crate::user::EXITING_PID_TMP;
-        crate::user::EXITING_PID_TMP = 0;
+        let exiting_pid = crate::user::exiting_pid_tmp();
+        crate::user::set_exiting_pid_tmp(0);
         crate::scheduler::set_current_user_pid(None);
         if exiting_pid != 0 {
             crate::kmod::on_process_exit(exiting_pid);

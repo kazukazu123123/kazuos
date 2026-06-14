@@ -121,6 +121,20 @@ unsafe fn get_bit(bitmap: *mut u8, index: usize) -> bool {
     }
 }
 
+pub fn alloc_frame_below(limit: u64) -> Option<u64> {
+    unsafe {
+        let pmm = (*PMM.0.get()).as_ref()?;
+        let limit_frame = (limit / FRAME_SIZE) as usize;
+        for frame in 0..limit_frame.min(pmm.total_frames) {
+            if !get_bit(pmm.bitmap, frame) {
+                set_bit(pmm.bitmap, frame, true);
+                return Some(frame as u64 * FRAME_SIZE);
+            }
+        }
+        None
+    }
+}
+
 pub fn alloc_frame() -> Option<u64> {
     unsafe {
         let pmm = (*PMM.0.get()).as_ref()?;

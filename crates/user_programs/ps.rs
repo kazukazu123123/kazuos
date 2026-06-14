@@ -26,36 +26,20 @@ const EMPTY_INFO: ProcessInfo = ProcessInfo {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
-    let kernel_ticks = syscall(SYS_CPU_INFO, 2, 0, 0);
-    let idle_ticks   = syscall(SYS_CPU_INFO, 3, 0, 0);
-    let user_ticks   = syscall(SYS_CPU_INFO, 1, 0, 0);
-    let grand_total  = kernel_ticks + idle_ticks + user_ticks;
-
-    let mem_info     = syscall(SYS_MEM_INFO, 0, 0, 0);
-    let used_kib     = mem_info & 0xffff_ffff;
+    let total_ticks = syscall(SYS_CPU_INFO, 1, 0, 0);
 
     sys_write(b"  PID  STATE    %CPU     MEM     NAME\r\n");
 
-    // collect user process rows first so we can subtract their memory from used_kib
-    let mut user_mem_kib: u64 = 0;
-    let mut pid = syscall(SYS_PROCESS_NEXT, 0, 0, 0);
-    while pid != 0 {
-        let mut info = EMPTY_INFO;
-        let r = syscall(SYS_PROCESS_INFO, pid, &mut info as *mut _ as u64, 0);
-        if r == 0 {
-            user_mem_kib = user_mem_kib.saturating_add(info.memory_bytes / 1024);
-        }
-        pid = syscall(SYS_PROCESS_NEXT, pid, 0, 0);
+    // kernel row (pid 0)
+    let mut kinfo = EMPTY_INFO;
+    if syscall(SYS_PROCESS_INFO, 0, &mut kinfo as *mut _ as u64, 0) == 0 {
+        let k_pct = pct10(kinfo.cpu_ticks, total_ticks);
+        write_row(0, b"Running", k_pct, kinfo.memory_bytes / 1024, b"kernel");
     }
-    let kernel_mem_kib = used_kib.saturating_sub(user_mem_kib);
-
-    // kernel row
-    let k_pct = pct10(kernel_ticks, grand_total);
-    write_row(0, b"Running", k_pct, kernel_mem_kib, b"kernel");
 
     // user processes
     let mut pid = syscall(SYS_PROCESS_NEXT, 0, 0, 0);
-    while pid != 0 {
+    while pid != u64::MAX {
         let mut info = EMPTY_INFO;
         let r = syscall(SYS_PROCESS_INFO, pid, &mut info as *mut _ as u64, 0);
         if r == 0 {
@@ -64,7 +48,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
                 3 => b"Sleep  ",
                 _ => b"?      ",
             };
-            let p_pct = pct10(info.cpu_ticks, grand_total);
+            let p_pct = pct10(info.cpu_ticks, total_ticks);
             let name_len = info.image_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
             write_row(pid, state_str, p_pct, info.memory_bytes / 1024, &info.image_name[..name_len]);
         }

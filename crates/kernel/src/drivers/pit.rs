@@ -24,6 +24,25 @@ pub fn sleep_oneshot_ms(ms: u32) {
     }
 }
 
+/// Sleep for approximately the requested number of microseconds using PIT
+/// channel 2 in one-shot mode. Values below the timer resolution are rounded up
+/// to one count.
+pub fn sleep_us(us: u32) {
+    if us == 0 {
+        return;
+    }
+    let count = ((PIT_HZ as u64 * us as u64) / 1_000_000).max(1).min(u16::MAX as u64) as u16;
+    unsafe {
+        let speaker = inb(SPEAKER);
+        outb(SPEAKER, (speaker & !0x02) | 0x01);
+        outb(COMMAND, 0xB0);
+        outb(CHANNEL_2, (count & 0xFF) as u8);
+        outb(CHANNEL_2, (count >> 8) as u8);
+        while inb(SPEAKER) & 0x20 == 0 {}
+        outb(SPEAKER, speaker);
+    }
+}
+
 fn sleep_one_ms() {
     let count = (PIT_HZ / 1000) as u16;
     unsafe {

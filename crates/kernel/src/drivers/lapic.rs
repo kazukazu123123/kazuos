@@ -58,3 +58,26 @@ pub(crate) unsafe fn eoi() {
         write(0xB0, 0);
     }
 }
+
+pub fn local_apic_id() -> u8 {
+    unsafe { (read(0x20) >> 24) as u8 }
+}
+
+pub fn icr_low() -> u32 {
+    unsafe { read(0x300) }
+}
+
+pub fn icr_high() -> u32 {
+    unsafe { read(0x310) }
+}
+
+pub unsafe fn send_ipi(destination: u8, vector: u8, flags: u32) {
+    unsafe {
+        // Wait for ICR idle
+        while read(0x300) & 0x1000 != 0 {}
+        write(0x310, (destination as u32) << 24);
+        core::arch::asm!("mfence");
+        write(0x300, flags | (vector as u32));
+        core::arch::asm!("mfence");
+    }
+}

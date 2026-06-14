@@ -25,6 +25,7 @@ pub mod pipe;
 pub mod pmm;
 pub mod process;
 pub mod scheduler;
+pub mod smp;
 pub mod syscall;
 pub mod task;
 pub mod terminal;
@@ -78,6 +79,9 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
     let pid = exec::spawn("/bin/shell.kxe");
     if pid == 0 {
         panic!("shell spawn failed");
+    }
+    unsafe {
+        crate::smp::start_aps();
     }
 
     crate::scheduler::enter_next_process();

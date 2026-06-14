@@ -1,9 +1,52 @@
 use crate::process::ProcessInfo;
+use crate::smp::{MAX_CPUS, current_cpu_index};
+use crate::util::SyncUnsafeCell;
 use crate::{console, exec, fd, ipc, process, syscall};
 use alloc;
 
 pub static mut TSC_PER_MS: u64 = 3_000_000;
-pub static mut EXITING_PID_TMP: u64 = 0;
+
+static EXITING_PID_TMPS: SyncUnsafeCell<[u64; MAX_CPUS]> = SyncUnsafeCell::new([0; MAX_CPUS]);
+
+pub fn exiting_pid_tmp() -> u64 {
+    unsafe { (*EXITING_PID_TMPS.0.get())[current_cpu_index()] }
+}
+
+pub fn set_exiting_pid_tmp(value: u64) {
+    unsafe {
+        (*EXITING_PID_TMPS.0.get())[current_cpu_index()] = value;
+    }
+}
+
+static KERNEL_RETURN_STACKS: SyncUnsafeCell<[u64; MAX_CPUS]> = SyncUnsafeCell::new([0; MAX_CPUS]);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_return_stack_ptr() -> *mut u64 {
+    unsafe { (*KERNEL_RETURN_STACKS.0.get()).as_mut_ptr().add(current_cpu_index()) }
+}
+
+pub fn set_kernel_return_stack(value: u64) {
+    unsafe {
+        (*KERNEL_RETURN_STACKS.0.get())[current_cpu_index()] = value;
+    }
+}
+
+static BLOCKING_RSP_TMPS: SyncUnsafeCell<[u64; MAX_CPUS]> = SyncUnsafeCell::new([0; MAX_CPUS]);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn blocking_rsp_tmp_ptr() -> *mut u64 {
+    unsafe { (*BLOCKING_RSP_TMPS.0.get()).as_mut_ptr().add(current_cpu_index()) }
+}
+
+pub fn blocking_rsp_tmp() -> u64 {
+    unsafe { (*BLOCKING_RSP_TMPS.0.get())[current_cpu_index()] }
+}
+
+pub fn set_blocking_rsp_tmp(value: u64) {
+    unsafe {
+        (*BLOCKING_RSP_TMPS.0.get())[current_cpu_index()] = value;
+    }
+}
 
 include!("syscall_numbers.rs");
 
@@ -90,7 +133,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         // Process / Lifecycle
         SYS_EXIT => {
             if let Some(pid) = crate::scheduler::current_user_pid() {
-                unsafe { crate::user::EXITING_PID_TMP = pid; }
+                crate::user::set_exiting_pid_tmp(pid);
             }
             process::exit_current();
             syscall::EXIT_TO_KERNEL
@@ -229,6 +272,13 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             1 => process::total_cpu_ticks(),
             2 => crate::handlers::interrupts::kernel_cpu_ticks(),
             3 => crate::handlers::interrupts::idle_cpu_ticks(),
+            4 => crate::smp::cpu_count() as u64,
+            5 => crate::smp::bsp_apic_id() as u64,
+            6 => crate::smp::current_cpu_index() as u64,
+            7 => crate::smp::apic_id_for_cpu_index(arg1 as usize).unwrap_or(0xff) as u64,
+            8 => crate::handlers::interrupts::idle_cpu_ticks_for_cpu(arg1 as usize),
+            9 => crate::handlers::interrupts::kernel_cpu_ticks_for_cpu(arg1 as usize),
+            10 => crate::handlers::interrupts::user_cpu_ticks_for_cpu(arg1 as usize),
             pid => process::cpu_ticks(pid).unwrap_or(u64::MAX),
         },
         SYS_SHUTDOWN => crate::drivers::power::shutdown(),
@@ -990,11 +1040,4 @@ fn sys_ioctl(fd: u64, cmd: u64, arg: u64) -> u64 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub static mut KERNEL_RETURN_STACK: u64 = 0;
 
-#[unsafe(no_mangle)]
-pub static mut USER_INTERRUPT_STACK: u64 = 0;
-
-#[unsafe(no_mangle)]
-pub static mut BLOCKING_RSP_TMP: u64 = 0;

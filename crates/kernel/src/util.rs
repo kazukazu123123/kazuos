@@ -1,6 +1,142 @@
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub struct SyncUnsafeCell<T>(pub UnsafeCell<T>);
+
+pub struct SpinLock {
+    locked: AtomicBool,
+}
+
+impl SpinLock {
+    pub const fn new() -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+        }
+    }
+
+    pub fn lock(&self) {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::arch::x86_64::_mm_pause();
+        }
+    }
+
+    pub fn unlock(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+}
+
+pub fn save_flags() -> u64 {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+    }
+    flags
+}
+
+pub fn restore_flags(flags: u64) {
+    unsafe {
+        core::arch::asm!("push {}; popfq", in(reg) flags, options(nomem, preserves_flags));
+    }
+}
+
+pub fn cli() {
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+}
+
+pub fn sti() {
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+}
+
+pub fn irq_save() -> u64 {
+    let flags = save_flags();
+    cli();
+    flags
+}
+
+pub struct IrqGuard {
+    flags: u64,
+}
+
+impl IrqGuard {
+    pub fn new() -> Self {
+        Self { flags: irq_save() }
+    }
+}
+
+impl Drop for IrqGuard {
+    fn drop(&mut self) {
+        restore_flags(self.flags);
+    }
+}
+
+use core::sync::atomic::AtomicUsize;
+
+pub struct ReentrantSpinLock {
+    locked: AtomicBool,
+    owner: AtomicUsize,
+    depth: AtomicUsize,
+}
+
+impl ReentrantSpinLock {
+    pub const fn new() -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            owner: AtomicUsize::new(usize::MAX),
+            depth: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn lock(&self) {
+        let cpu = crate::smp::current_cpu_index();
+        if self.owner.load(Ordering::Relaxed) == cpu && self.locked.load(Ordering::Relaxed) {
+            self.depth.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::arch::x86_64::_mm_pause();
+        }
+        self.owner.store(cpu, Ordering::Relaxed);
+        self.depth.store(1, Ordering::Relaxed);
+    }
+
+    pub fn unlock(&self) {
+        if self.depth.fetch_sub(1, Ordering::Relaxed) == 1 {
+            self.owner.store(usize::MAX, Ordering::Relaxed);
+            self.locked.store(false, Ordering::Release);
+        }
+    }
+}
+
+pub struct ReentrantIrqGuard {
+    _irq: IrqGuard,
+    lock: &'static ReentrantSpinLock,
+}
+
+impl ReentrantIrqGuard {
+    pub fn new(lock: &'static ReentrantSpinLock) -> Self {
+        let irq = IrqGuard::new();
+        lock.lock();
+        Self { _irq: irq, lock }
+    }
+}
+
+impl Drop for ReentrantIrqGuard {
+    fn drop(&mut self) {
+        self.lock.unlock();
+    }
+}
 
 unsafe impl<T> Sync for SyncUnsafeCell<T> {}
 

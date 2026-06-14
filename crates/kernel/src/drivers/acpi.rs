@@ -1,5 +1,7 @@
 // Minimal ACPI parser for RSDP -> XSDT/RSDT -> MADT
 
+extern crate alloc;
+
 use core::mem::size_of;
 
 #[repr(C, packed)]
@@ -182,6 +184,30 @@ pub struct IrqOverride {
     pub bus_irq: u8,
     pub global_irq: u32,
     pub flags: u16,
+}
+
+pub(crate) unsafe fn parse_cpu_lapic_ids(madt_phys: u64) -> alloc::vec::Vec<u8> {
+    let mut ids = alloc::vec::Vec::new();
+    let madt: Madt = unsafe { read_phys(madt_phys) };
+    let header_length = unsafe { read_unaligned(core::ptr::addr_of!(madt.header.length)) };
+    let data_start = madt_phys + size_of::<Madt>() as u64;
+    let data_end = madt_phys + header_length as u64;
+    let mut ptr = data_start;
+    while ptr + 2 <= data_end {
+        let header: MadtEntryHeader = unsafe { read_phys(ptr) };
+        if header.len == 0 {
+            break;
+        }
+        if header.ty == 0 && header.len as usize >= size_of::<MadtLocalApic>() {
+            let entry: MadtLocalApic = unsafe { read_phys(ptr) };
+            let flags = unsafe { read_unaligned(core::ptr::addr_of!(entry.flags)) };
+            if (flags & 1) != 0 {
+                ids.push(entry.apic_id);
+            }
+        }
+        ptr += header.len as u64;
+    }
+    ids
 }
 
 pub(crate) unsafe fn parse_madt(

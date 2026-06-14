@@ -1,3 +1,15 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static LOCK: AtomicBool = AtomicBool::new(false);
+
+pub fn with_lock<F: FnOnce()>(f: F) {
+    while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::arch::x86_64::_mm_pause();
+    }
+    f();
+    LOCK.store(false, Ordering::Release);
+}
+
 pub fn init() {
     unsafe {
         outb(0x3F8 + 1, 0x00);
