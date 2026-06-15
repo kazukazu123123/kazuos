@@ -62,6 +62,7 @@ fn run() -> Result<(), String> {
         ovmf_dir.join("edk2-i386-vars.fd"),
         ovmf_dir.join("edk2-x86_64-vars.fd"),
         ovmf_dir.join("OVMF_VARS.fd"),
+        ovmf_dir.join("OVMF_VARS.4m.fd"),
     ]);
 
     let esp_dir = root.join("esp");
@@ -86,6 +87,8 @@ fn run() -> Result<(), String> {
         copy(v, &temp_vars)?;
     }
 
+    let audiodev_backend = if cfg!(unix) { "pa" } else { "dsound" };
+
     let mut args: Vec<String> = vec![
         "-machine".into(), "q35,pcspk-audiodev=snd0".into(),
         "-drive".into(), format!("if=pflash,format=raw,readonly=on,file={}", ovmf.display()),
@@ -100,7 +103,7 @@ fn run() -> Result<(), String> {
         "-m".into(), "1G".into(),
         "-net".into(), "none".into(),
         "-device".into(), "VGA".into(),
-        "-audiodev".into(), "dsound,id=snd0".into(),
+        "-audiodev".into(), format!("{audiodev_backend},id=snd0"),
         "-serial".into(), "stdio".into(),
         "-smp".into(), "4".into(),
     ]);
@@ -186,6 +189,15 @@ fn find_ovmf() -> Result<PathBuf, String> {
         }
     }
     find_first(&[
+        // Linux (Arch / Debian / Fedora)
+        PathBuf::from("/usr/share/edk2/x64/OVMF_CODE.4m.fd"),
+        PathBuf::from("/usr/share/OVMF/x64/OVMF_CODE.4m.fd"),
+        PathBuf::from("/usr/share/ovmf/x64/OVMF_CODE.4m.fd"),
+        PathBuf::from("/usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd"),
+        PathBuf::from("/usr/share/edk2/x64/OVMF_CODE.fd"),
+        PathBuf::from("/usr/share/OVMF/OVMF_CODE.fd"),
+        PathBuf::from("/usr/share/ovmf/OVMF.fd"),
+        // Windows
         PathBuf::from(r"C:\Program Files\qemu\share\edk2-x86_64-code.fd"),
         PathBuf::from(r"C:\Program Files\qemu\share\qemu\edk2-x86_64-code.fd"),
         PathBuf::from(r"C:\Program Files\qemu\share\ovmf-x64\OVMF_CODE.fd"),
@@ -201,11 +213,26 @@ fn find_qemu() -> Result<PathBuf, String> {
             return Ok(p);
         }
     }
+    // Try PATH lookup on Unix
+    if cfg!(unix) {
+        if let Ok(out) = Command::new("which").arg("qemu-system-x86_64").output() {
+            if out.status.success() {
+                let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
+                if path.exists() {
+                    return Ok(path);
+                }
+            }
+        }
+    }
     find_first(&[
+        // Linux common paths
+        PathBuf::from("/usr/bin/qemu-system-x86_64"),
+        PathBuf::from("/usr/local/bin/qemu-system-x86_64"),
+        // Windows
         PathBuf::from(r"C:\Program Files\qemu\qemu-system-x86_64.exe"),
         PathBuf::from(r"C:\msys64\mingw64\bin\qemu-system-x86_64.exe"),
     ])
-    .ok_or_else(|| "qemu-system-x86_64.exe not found (set QEMU_PATH)".into())
+    .ok_or_else(|| "qemu-system-x86_64 not found (set QEMU_PATH)".into())
 }
 
 fn find_first(cands: &[PathBuf]) -> Option<PathBuf> {
