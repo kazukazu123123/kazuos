@@ -503,5 +503,13 @@ extern "C" fn ap_main() -> ! {
 
     crate::serial_println!("SMP: AP apic_id={} cpu_index={} ready", apic_id, cpu_index);
 
+    // Install this AP's scheduler restart stack (fixed top of its kernel stack)
+    // before entering the scheduler, so blocking syscalls on threads pinned to
+    // this CPU always unwind to a valid stack regardless of which entry path
+    // first ran the thread.
+    if let Some(top) = cpu_kernel_stack_top(cpu_index) {
+        crate::user::set_kernel_return_stack(top);
+    }
+
     crate::scheduler::enter_next_process();
 }

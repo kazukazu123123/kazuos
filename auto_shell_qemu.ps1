@@ -101,6 +101,7 @@ function Text-ToSendKeys([string]$Text) {
             "." { $keys.Add("dot"); continue }
             "-" { $keys.Add("minus"); continue }
             "_" { $keys.Add("shift-minus"); continue }
+            "&" { $keys.Add("shift-7"); continue }
             default { $keys.Add([string]$ch); continue }
         }
     }

@@ -383,9 +383,14 @@ pub fn enter_next_process() -> ! {
                 crate::gdt::set_kernel_stack_top(top);
             }
             crate::process::set_running(next_pid);
-            let rsp: u64;
-            core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack));
-            crate::user::set_kernel_return_stack(rsp);
+            // The per-CPU kernel return stack is the scheduler's restart point and
+            // is installed once per CPU (kernel_main / ap_main) to a fixed stack
+            // top. Do NOT capture the live rsp here: this path is not the only way
+            // a user thread is entered (the timer can enter one from ring 0, and
+            // resume/blocking paths skip it entirely), and capturing the current —
+            // ever-deeper — rsp on each pass would both drift the stack downward
+            // and leave the slot stale/garbage for threads entered via other paths,
+            // making their next blocking syscall load a bad rsp.
             let temp_rsp = setup_user_frame_on_temp_stack(ctx);
             core::arch::asm!(
                 "mov ax, dx",

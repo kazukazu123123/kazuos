@@ -84,6 +84,12 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
         crate::smp::start_aps();
     }
 
+    // Install the BSP's scheduler restart stack: the fixed top of the boot stack.
+    // Every blocking syscall / process exit resets rsp to this and re-runs the
+    // scheduler. It must be set before the first user thread runs, because some
+    // entry paths (timer, blocking-resume) do not set it themselves.
+    crate::user::set_kernel_return_stack(core::ptr::addr_of!(STACK) as u64 + 1024 * 1024);
+
     crate::scheduler::enter_next_process();
 }
 
