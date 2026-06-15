@@ -521,6 +521,15 @@ pub fn add_memory_bytes(pid: u64, bytes: u64) {
     })
 }
 
+pub fn sub_memory_bytes(pid: u64, bytes: u64) {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        let processes = &mut *PROCESSES.0.get();
+        if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
+            p.memory_bytes = p.memory_bytes.saturating_sub(bytes);
+        }
+    })
+}
+
 pub fn memory_bytes(pid: u64) -> Option<u64> {
     crate::task::thread::with_threads_lock(|| unsafe {
         (*PROCESSES.0.get())

@@ -180,6 +180,29 @@ pub unsafe fn unmap_range(cr3: u64, virt: u64, size: u64) {
     }
 }
 
+/// Return the physical address mapped at `virt` in `cr3`, if any (4 KiB page).
+pub unsafe fn translate(cr3: u64, virt: u64) -> Option<u64> {
+    unsafe {
+        let pml4 = (cr3 & ADDR_MASK) as *mut u64;
+        let pml4_i = ((virt >> 39) & 0x1ff) as usize;
+        let pdpt_i = ((virt >> 30) & 0x1ff) as usize;
+        let pd_i = ((virt >> 21) & 0x1ff) as usize;
+        let pt_i = ((virt >> 12) & 0x1ff) as usize;
+        let pdpt = table_if_present(pml4, pml4_i);
+        if pdpt.is_null() { return None; }
+        let pd = table_if_present(pdpt, pdpt_i);
+        if pd.is_null() { return None; }
+        let pt = table_if_present(pd, pd_i);
+        if pt.is_null() { return None; }
+        let entry = pt.add(pt_i).read_volatile();
+        if entry & PRESENT != 0 {
+            Some(entry & ADDR_MASK)
+        } else {
+            None
+        }
+    }
+}
+
 unsafe fn table_if_present(parent: *mut u64, index: usize) -> *mut u64 {
     unsafe {
         let entry = parent.add(index).read_volatile();

@@ -582,11 +582,10 @@ fn sys_pci_bar_unmap(virt: u64) -> u64 {
     0
 }
 
-/// Heap alloc for user programs.
-/// Virtual-address range analogue of DMA alloc, but:
-///  - not physically contiguous (each page separate)
-///  - no physical address returned
-///  - not gated to driver privilege
+/// Heap alloc for user programs. Backed by individual PMM frames (each page is a
+/// separate frame, mapped into the caller's address space) so it draws from all
+/// of RAM rather than the kernel's heap pool, and does not require physically
+/// contiguous memory. Frames are returned to the PMM on free / process exit.
 const HEAP_VA_BASE: u64 = 0x0000_00C0_0000_0000;
 static HEAP_VA_BUMP: crate::util::SyncUnsafeCell<u64> =
     crate::util::SyncUnsafeCell::new(HEAP_VA_BASE);
@@ -594,26 +593,45 @@ static HEAP_VA_BUMP: crate::util::SyncUnsafeCell<u64> =
 struct HeapAlloc {
     pid: u64,
     virt: u64,
-    phys: u64,
     size: u64,
 }
 
 static HEAP_ALLOCS: crate::util::SyncUnsafeCell<alloc::vec::Vec<HeapAlloc>> =
     crate::util::SyncUnsafeCell::new(alloc::vec::Vec::new());
 
+// Serialises the heap bookkeeping (HEAP_VA_BUMP + HEAP_ALLOCS) across CPUs.
+static HEAP_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn heap_lock() -> u64 {
+    let flags = crate::util::irq_save();
+    while HEAP_LOCK.swap(true, core::sync::atomic::Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    flags
+}
+
+fn heap_unlock(flags: u64) {
+    HEAP_LOCK.store(false, core::sync::atomic::Ordering::Release);
+    crate::util::restore_flags(flags);
+}
+
+/// Unmap `pages` pages starting at `virt` and return their frames to the PMM.
+unsafe fn free_user_pages(cr3: u64, virt: u64, pages: u64) {
+    for i in 0..pages {
+        let v = virt + i * 4096;
+        if let Some(phys) = unsafe { crate::vmm::translate(cr3, v) } {
+            crate::pmm::free_frame(phys);
+        }
+        unsafe { crate::vmm::unmap_page(cr3, v); }
+    }
+}
+
 fn sys_heap_alloc(size: u64) -> u64 {
     if size == 0 || size > 128 * 1024 * 1024 {
         return u64::MAX;
     }
     let aligned = (size + 4095) & !4095;
-    let layout = match alloc::alloc::Layout::from_size_align(aligned as usize, 4096) {
-        Ok(l) => l,
-        Err(_) => return u64::MAX,
-    };
-    let phys = unsafe { alloc::alloc::alloc_zeroed(layout) } as u64;
-    if phys == 0 {
-        return u64::MAX;
-    }
+    let pages = aligned / 4096;
     let caller = match crate::scheduler::current_user_pid() {
         Some(pid) => pid,
         None => return u64::MAX,
@@ -622,21 +640,47 @@ fn sys_heap_alloc(size: u64) -> u64 {
         Some(c) => c,
         None => return u64::MAX,
     };
-    let virt = unsafe {
-        let bump = &mut *HEAP_VA_BUMP.0.get();
-        let va = *bump;
-        *bump += aligned;
-        va
+    // Reserve a virtual range (short critical section).
+    let virt = {
+        let g = heap_lock();
+        let virt = unsafe {
+            let bump = &mut *HEAP_VA_BUMP.0.get();
+            let va = *bump;
+            *bump += aligned;
+            va
+        };
+        heap_unlock(g);
+        virt
     };
+    // Map the pages (PMM and the page-table allocator lock internally; no heap
+    // lock held here to keep lock ordering simple).
     unsafe {
-        if crate::vmm::map_range(cr3, virt, phys, aligned, crate::vmm::MapFlags::USER_READ_WRITE)
-            .is_err()
-        {
-            return u64::MAX;
+        for i in 0..pages {
+            let v = virt + i * 4096;
+            let frame = match crate::pmm::alloc_frame() {
+                Some(f) => f,
+                None => {
+                    free_user_pages(cr3, virt, i); // roll back the pages done so far
+                    return u64::MAX;
+                }
+            };
+            core::ptr::write_bytes(frame as *mut u8, 0, 4096);
+            if crate::vmm::map_page(cr3, v, frame, crate::vmm::MapFlags::USER_READ_WRITE).is_err() {
+                crate::pmm::free_frame(frame);
+                free_user_pages(cr3, virt, i);
+                return u64::MAX;
+            }
         }
-        let allocs = &mut *HEAP_ALLOCS.0.get();
-        allocs.push(HeapAlloc { pid: caller, virt, phys, size: aligned });
     }
+    {
+        let g = heap_lock();
+        unsafe {
+            let allocs = &mut *HEAP_ALLOCS.0.get();
+            allocs.push(HeapAlloc { pid: caller, virt, size: aligned });
+        }
+        heap_unlock(g);
+    }
+    process::add_memory_bytes(caller, aligned);
     virt
 }
 
@@ -648,42 +692,42 @@ fn sys_heap_free(virt: u64) -> u64 {
         Some(pid) => pid,
         None => return u64::MAX,
     };
-    unsafe {
+    // Remove the bookkeeping entry under the heap lock, then free the pages
+    // without holding it.
+    let g = heap_lock();
+    let removed = unsafe {
         let allocs = &mut *HEAP_ALLOCS.0.get();
-        let pos = allocs.iter().position(|a| a.virt == virt && a.pid == caller);
-        let Some(pos) = pos else { return u64::MAX; };
-        let alloc = allocs.swap_remove(pos);
-        let cr3 = match process::user_cr3(caller) {
-            Some(c) => c,
-            None => return u64::MAX,
-        };
-        crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
-        let layout = match alloc::alloc::Layout::from_size_align(alloc.size as usize, 4096) {
-            Ok(l) => l,
-            Err(_) => return u64::MAX,
-        };
-        alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
-    }
+        allocs
+            .iter()
+            .position(|a| a.virt == virt && a.pid == caller)
+            .map(|pos| allocs.swap_remove(pos))
+    };
+    heap_unlock(g);
+    let Some(alloc) = removed else { return u64::MAX; };
+    let cr3 = match process::user_cr3(caller) {
+        Some(c) => c,
+        None => return u64::MAX,
+    };
+    unsafe { free_user_pages(cr3, alloc.virt, alloc.size / 4096); }
+    process::sub_memory_bytes(caller, alloc.size);
     0
 }
 
 pub fn free_heap_for_pid(pid: u64) {
-    unsafe {
-        let allocs = &mut *HEAP_ALLOCS.0.get();
-        let mut i = 0;
-        while i < allocs.len() {
-            if allocs[i].pid == pid {
-                let alloc = allocs.swap_remove(i);
-                if let Some(cr3) = process::user_cr3(pid) {
-                    crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
-                }
-                if let Ok(layout) = alloc::alloc::Layout::from_size_align(alloc.size as usize, 4096)
-                {
-                    alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
-                }
-            } else {
-                i += 1;
-            }
+    // Pull entries out one at a time under the lock, freeing pages outside it.
+    loop {
+        let g = heap_lock();
+        let removed = unsafe {
+            let allocs = &mut *HEAP_ALLOCS.0.get();
+            allocs
+                .iter()
+                .position(|a| a.pid == pid)
+                .map(|pos| allocs.swap_remove(pos))
+        };
+        heap_unlock(g);
+        let Some(alloc) = removed else { break; };
+        if let Some(cr3) = process::user_cr3(pid) {
+            unsafe { free_user_pages(cr3, alloc.virt, alloc.size / 4096); }
         }
     }
 }

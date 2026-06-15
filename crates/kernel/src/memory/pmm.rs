@@ -1,6 +1,25 @@
 use crate::util::SyncUnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use kazuos_shared::MemoryMapEntry;
+
+// The bitmap test-and-set is not atomic, so all frame alloc/free must be
+// serialised — otherwise two CPUs can hand out the same physical frame.
+static LOCK: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn lock() -> u64 {
+    let flags = crate::util::irq_save();
+    while LOCK.swap(true, Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+    flags
+}
+
+#[inline]
+fn unlock(flags: u64) {
+    LOCK.store(false, Ordering::Release);
+    crate::util::restore_flags(flags);
+}
 
 pub struct Pmm {
     bitmap: *mut u8,
@@ -122,39 +141,55 @@ unsafe fn get_bit(bitmap: *mut u8, index: usize) -> bool {
 }
 
 pub fn alloc_frame_below(limit: u64) -> Option<u64> {
-    unsafe {
-        let pmm = (*PMM.0.get()).as_ref()?;
-        let limit_frame = (limit / FRAME_SIZE) as usize;
-        for frame in 0..limit_frame.min(pmm.total_frames) {
-            if !get_bit(pmm.bitmap, frame) {
-                set_bit(pmm.bitmap, frame, true);
-                return Some(frame as u64 * FRAME_SIZE);
+    let flags = lock();
+    let r = unsafe {
+        match (*PMM.0.get()).as_ref() {
+            None => None,
+            Some(pmm) => {
+                let limit_frame = (limit / FRAME_SIZE) as usize;
+                let mut found = None;
+                for frame in 0..limit_frame.min(pmm.total_frames) {
+                    if !get_bit(pmm.bitmap, frame) {
+                        set_bit(pmm.bitmap, frame, true);
+                        found = Some(frame as u64 * FRAME_SIZE);
+                        break;
+                    }
+                }
+                found
             }
         }
-        None
-    }
+    };
+    unlock(flags);
+    r
 }
 
 pub fn alloc_frame() -> Option<u64> {
-    unsafe {
-        let pmm = (*PMM.0.get()).as_ref()?;
-
-        // Simple linear scan with next-frame hint
-        let start = pmm.next_frame.load(Ordering::Relaxed);
-        for i in 0..pmm.total_frames {
-            let frame = (start + i) % pmm.total_frames;
-            if !get_bit(pmm.bitmap, frame) {
-                set_bit(pmm.bitmap, frame, true);
-                pmm.next_frame
-                    .store((frame + 1) % pmm.total_frames, Ordering::Relaxed);
-                return Some(frame as u64 * FRAME_SIZE);
+    let flags = lock();
+    let r = unsafe {
+        match (*PMM.0.get()).as_ref() {
+            None => None,
+            Some(pmm) => {
+                let start = pmm.next_frame.load(Ordering::Relaxed);
+                let mut found = None;
+                for i in 0..pmm.total_frames {
+                    let frame = (start + i) % pmm.total_frames;
+                    if !get_bit(pmm.bitmap, frame) {
+                        set_bit(pmm.bitmap, frame, true);
+                        pmm.next_frame
+                            .store((frame + 1) % pmm.total_frames, Ordering::Relaxed);
+                        found = Some(frame as u64 * FRAME_SIZE);
+                        break;
+                    }
+                }
+                found
             }
         }
-        None
-    }
+    };
+    unlock(flags);
+    r
 }
 
-pub fn free_frame(addr: u64) {
+unsafe fn free_frame_nolock(addr: u64) {
     unsafe {
         if let Some(pmm) = (*PMM.0.get()).as_ref() {
             let frame = (addr / FRAME_SIZE) as usize;
@@ -165,32 +200,50 @@ pub fn free_frame(addr: u64) {
     }
 }
 
+pub fn free_frame(addr: u64) {
+    let flags = lock();
+    unsafe { free_frame_nolock(addr); }
+    unlock(flags);
+}
+
 /// Allocate contiguous frames
 pub fn alloc_frames(count: usize) -> Option<u64> {
-    unsafe {
-        let pmm = (*PMM.0.get()).as_ref()?;
-        'outer: for start in 0..pmm.total_frames.saturating_sub(count) {
-            for i in 0..count {
-                if get_bit(pmm.bitmap, start + i) {
-                    continue 'outer;
+    let flags = lock();
+    let r = unsafe {
+        match (*PMM.0.get()).as_ref() {
+            None => None,
+            Some(pmm) => {
+                let mut found = None;
+                'outer: for start in 0..pmm.total_frames.saturating_sub(count) {
+                    for i in 0..count {
+                        if get_bit(pmm.bitmap, start + i) {
+                            continue 'outer;
+                        }
+                    }
+                    for i in 0..count {
+                        set_bit(pmm.bitmap, start + i, true);
+                    }
+                    pmm.next_frame
+                        .store((start + count) % pmm.total_frames, Ordering::Relaxed);
+                    found = Some(start as u64 * FRAME_SIZE);
+                    break;
                 }
+                found
             }
-            // Found contiguous block
-            for i in 0..count {
-                set_bit(pmm.bitmap, start + i, true);
-            }
-            pmm.next_frame
-                .store((start + count) % pmm.total_frames, Ordering::Relaxed);
-            return Some(start as u64 * FRAME_SIZE);
         }
-        None
-    }
+    };
+    unlock(flags);
+    r
 }
 
 pub fn free_frames(addr: u64, count: usize) {
-    for i in 0..count {
-        free_frame(addr + i as u64 * FRAME_SIZE);
+    let flags = lock();
+    unsafe {
+        for i in 0..count {
+            free_frame_nolock(addr + i as u64 * FRAME_SIZE);
+        }
     }
+    unlock(flags);
 }
 
 /// Mark a physical region as used (for reserving bootloader/kernel memory)
