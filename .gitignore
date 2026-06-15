@@ -5,3 +5,4 @@
 *.iso
 ovmf_vars*.tmp.fd
 /tools
+/.ps1_backup

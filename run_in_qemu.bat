@@ -1,2 +1,5 @@
 @echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch.ps1" %*
+setlocal
+cd /d "%~dp0"
+cargo +nightly -Zscript scripts\launch.rs %*
+exit /b %ERRORLEVEL%

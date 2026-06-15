@@ -1,4 +1,5 @@
 @echo off
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0make_iso.ps1" %*
+cd /d "%~dp0"
+cargo +nightly -Zscript scripts\make_iso.rs %*
 exit /b %ERRORLEVEL%

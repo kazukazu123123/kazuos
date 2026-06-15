@@ -272,9 +272,21 @@ fn load_file(path: &uefi::CStr16) -> Result<Vec<u8>, uefi::Error> {
         }
     }
 
+    // Fall back to scanning every SimpleFileSystem volume. Use a non-exclusive
+    // GET_PROTOCOL open: filesystem volumes (e.g. an ISO9660 CD) are typically
+    // already open BY_DRIVER, so open_protocol_exclusive would fail with
+    // ACCESS_DENIED and we would skip the very volume that holds the file.
     let handles = boot::find_handles::<SimpleFileSystem>()?;
     for handle in handles {
-        if let Ok(fs) = boot::open_protocol_exclusive::<SimpleFileSystem>(handle) {
+        let params = boot::OpenProtocolParams {
+            handle,
+            agent: boot::image_handle(),
+            controller: None,
+        };
+        let opened = unsafe {
+            boot::open_protocol::<SimpleFileSystem>(params, boot::OpenProtocolAttributes::GetProtocol)
+        };
+        if let Ok(fs) = opened {
             let mut fs = FileSystem::new(fs);
             if let Ok(data) = fs.read(path) {
                 return Ok(data);
