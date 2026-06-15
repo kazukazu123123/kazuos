@@ -332,6 +332,39 @@ pub fn send_sigint(pid: u64) {
     })
 }
 
+/// The "foreground" process for terminal signals (Ctrl+C): the leaf of the wait
+/// chain — a process that another process is blocked waiting on
+/// (`WaitTarget::Pid`) and that is not itself waiting on a child. With the
+/// shell's exec+wait model this is the program currently running in the
+/// foreground. Returns `None` when nothing is being waited on (e.g. only
+/// background jobs at the prompt), so Ctrl+C then has no foreground target.
+pub fn foreground_pid() -> Option<u64> {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        let processes = &*PROCESSES.0.get();
+        let waits_on_pid = |p: &Process| -> bool {
+            p.main_tid
+                .and_then(thread::wait_target)
+                .map(|t| matches!(t, WaitTarget::Pid(_)))
+                .unwrap_or(false)
+        };
+        for p in processes.iter() {
+            if p.pid == 0 || matches!(p.state, ProcessState::Empty | ProcessState::Exited) {
+                continue;
+            }
+            let waited_on = processes.iter().any(|q| {
+                q.main_tid
+                    .and_then(thread::wait_target)
+                    .map(|t| matches!(t, WaitTarget::Pid(target) if target == p.pid))
+                    .unwrap_or(false)
+            });
+            if waited_on && !waits_on_pid(p) {
+                return Some(p.pid);
+            }
+        }
+        None
+    })
+}
+
 pub fn send_module_exit(pid: u64) {
     crate::task::thread::with_threads_lock(|| unsafe {
         let processes = &mut *PROCESSES.0.get();

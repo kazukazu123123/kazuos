@@ -140,7 +140,13 @@ pub(crate) unsafe fn poll() {
 unsafe fn push_byte(ch: u8) {
     unsafe {
         if ch == 0x03 {
-            if let Some(pid) = crate::drivers::fb_owner::owner() {
+            // Ctrl+C goes to the graphical foreground (framebuffer owner) if any,
+            // otherwise to the text foreground process (the program the shell is
+            // currently waiting on). Falls through to the key buffer only when
+            // there is no foreground at all (e.g. shell prompt, background jobs).
+            if let Some(pid) =
+                crate::drivers::fb_owner::owner().or_else(crate::process::foreground_pid)
+            {
                 crate::process::send_sigint(pid);
                 return;
             }

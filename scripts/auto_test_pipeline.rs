@@ -243,6 +243,9 @@ fn drive(cfg: &Cfg, serial_log: &Path) -> bool {
         if line == "ret" {
             let _ = monitor_send(&["sendkey 0x1c".into()]);
             sleep(Duration::from_millis(500));
+        } else if line == "^C" || line == "ctrl-c" {
+            let _ = monitor_send(&["sendkey ctrl-c".into()]);
+            sleep(Duration::from_millis(500));
         } else {
             let mut s = line.to_string();
             s.push('\n');
