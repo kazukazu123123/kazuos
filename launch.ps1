@@ -95,21 +95,13 @@ if ($doBuild) {
     cargo build -p kazuos-kernel --target crates/kernel/x86_64-kazuos.json '-Zbuild-std=core,alloc' '-Zbuild-std-features=compiler-builtins-mem' -Zjson-target-spec --release
     if ($LASTEXITCODE -ne 0) { throw "Kernel build failed." }
 
-    Write-Host "Preparing ESP..."
-    if (Test-Path (Join-Path $Root "esp")) { Remove-Item (Join-Path $Root "esp") -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path (Join-Path $Root "esp\EFI\BOOT"), (Join-Path $Root "esp\KazuOS") | Out-Null
-    Copy-Item (Join-Path $Root "target\x86_64-unknown-uefi\release\kazuos-bootloader.efi") `
-              (Join-Path $Root "esp\EFI\BOOT\BOOTX64.EFI") -Force
-    Copy-Item (Join-Path $Root "target\x86_64-kazuos\release\kazuos-kernel") `
-              (Join-Path $Root "esp\KazuOS\kernel.elf") -Force
-    if (Test-Path (Join-Path $Root "target\initrd.kfs")) {
-        Copy-Item (Join-Path $Root "target\initrd.kfs") (Join-Path $Root "esp\KazuOS\initrd.kfs") -Force
-    } else {
-        throw "initrd.kfs not found. Kernel build may have failed."
-    }
-    if (Test-Path (Join-Path $Root "font.ttf")) {
-        Copy-Item (Join-Path $Root "font.ttf") (Join-Path $Root "esp\KazuOS\font.ttf") -Force
-    }
+    Write-Host "Preparing ESP (Limine chain-load)..."
+    & (Join-Path $Root "setup_limine_esp.ps1") `
+        -EspDir        (Join-Path $Root "esp") `
+        -BootloaderEfi (Join-Path $Root "target\x86_64-unknown-uefi\release\kazuos-bootloader.efi") `
+        -KernelElf     (Join-Path $Root "target\x86_64-kazuos\release\kazuos-kernel") `
+        -InitrdKfs     (Join-Path $Root "target\initrd.kfs") `
+        -FontTtf       (Join-Path $Root "font.ttf")
 } elseif (!(Test-Path (Join-Path $Root "esp"))) {
     throw "ESP directory not found: esp\`nBuild first or use an existing ESP."
 }
