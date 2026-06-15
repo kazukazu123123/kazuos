@@ -397,17 +397,35 @@ fn read_u16(data: &[u8]) -> u16 {
 }
 
 fn find_objcopy() -> String {
-    for name in &["llvm-objcopy", "objcopy"] {
-        if Command::new(name)
-            .arg("--version")
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-        {
-            return name.to_string();
+    if let Some(path) = find_objcopy_in_sysroot() {
+        return path;
+    }
+
+    panic!(
+        "rust-objcopy not found. Install the rustup component with \
+         `rustup component add llvm-tools`."
+    );
+}
+
+fn find_objcopy_in_sysroot() -> Option<String> {
+    let output = Command::new("rustc").arg("--print").arg("sysroot").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sysroot = String::from_utf8(output.stdout).ok()?;
+    let sysroot = Path::new(sysroot.trim());
+
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    let rustlib = sysroot.join("lib").join("rustlib");
+
+    let entries = std::fs::read_dir(&rustlib).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join("bin").join(format!("rust-objcopy{exe}"));
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
         }
     }
-    panic!("objcopy not found. Please install llvm-objcopy or GNU objcopy.");
+    None
 }
 
 fn build_kfs(
