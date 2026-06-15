@@ -70,3 +70,6 @@ pub const SYS_MODULE_LOAD:   u64 = 45;
 pub const SYS_MODULE_UNLOAD: u64 = 46;
 pub const SYS_MODULE_LIST:   u64 = 47;
 pub const SYS_MODULE_INFO:   u64 = 48;
+
+// Network
+pub const SYS_NETTEST: u64 = 49;

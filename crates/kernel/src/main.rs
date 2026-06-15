@@ -20,6 +20,7 @@ pub mod idt;
 pub mod init;
 pub mod log;
 pub mod memory;
+pub mod net;
 pub mod platform;
 pub mod pipe;
 pub mod pmm;

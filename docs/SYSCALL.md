@@ -502,6 +502,23 @@ Query info for a specific module.
 
 Returns `0` on success, `u64::MAX` on error.
 
+### Network
+
+#### `SYS_NETTEST` (49)
+
+Run a self-contained connectivity test: configure the interface over DHCP,
+resolve a hostname over DNS, and send four ICMP echo requests. A human-readable
+report is written into the caller's buffer.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | hostname or IPv4 literal pointer (may be null → defaults to `example.com`) |
+| `arg1` | hostname byte length |
+| `arg2` | output buffer pointer (kernel writes up to 1024 bytes of report text) |
+
+Returns the number of report bytes written, or `u64::MAX` on error (null output
+buffer). Requires an e1000 NIC; the report states when none is present.
+
 ## CPU Accounting
 
 CPU time is measured in TSC ticks sampled at each timer interrupt.

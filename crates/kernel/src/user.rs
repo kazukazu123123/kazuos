@@ -307,8 +307,24 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_MODULE_LIST => crate::kmod::list(arg0, arg1),
         SYS_MODULE_INFO => crate::kmod::info(arg0 as u32, arg1),
 
+        SYS_NETTEST => sys_nettest(arg0, arg1, arg2),
+
         _ => u64::MAX,
     }
+}
+
+fn sys_nettest(name_ptr: u64, name_len: u64, out_ptr: u64) -> u64 {
+    if out_ptr == 0 {
+        return u64::MAX;
+    }
+    let host = if name_ptr == 0 || name_len == 0 {
+        "example.com"
+    } else {
+        let bytes = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, name_len as usize) };
+        core::str::from_utf8(bytes).unwrap_or("example.com")
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, 1024) };
+    crate::net::run_nettest(host, out) as u64
 }
 
 fn sys_wait(pid: u64) -> u64 {

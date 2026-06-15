@@ -260,4 +260,19 @@ Current drivers/support code:
 - ACPI parsing
 - Power shutdown/reboot
 - PC speaker beep
+- PCI / PCIe enumeration
+- Intel HD Audio (HDA)
+- e1000 (Intel 82540EM) network controller
+
+### Networking
+
+Located in `crates/kernel/src/net.rs`.
+
+A minimal polling-mode IPv4 stack used by the `nettest` shell command
+(`SYS_NETTEST`). It builds and parses Ethernet, ARP, IPv4, ICMP, UDP, DHCP, and
+DNS frames directly on top of the `e1000` driver. There is no socket layer yet;
+the stack runs a fixed sequence — DHCP configure, ARP resolve, DNS lookup, ICMP
+echo — and is driven synchronously by polling the NIC receive ring with
+TSC-based timeouts. Interrupt-driven RX/TX and a general socket API are future
+work.
 
