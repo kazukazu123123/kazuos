@@ -145,6 +145,7 @@ fn run() -> Result<bool, String> {
 
     let mut args: Vec<String> = vec![
         "-machine".into(), "q35,pcspk-audiodev=snd0,i8042=on".into(),
+        "-cpu".into(), "qemu64,+rdrand".into(),
         "-smp".into(), cfg.cpu_count.to_string(),
         "-drive".into(), format!("if=pflash,format=raw,readonly=on,file={}", ovmf.display()),
     ];

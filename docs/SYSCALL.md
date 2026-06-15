@@ -519,6 +519,34 @@ report is written into the caller's buffer.
 Returns the number of report bytes written, or `u64::MAX` on error (null output
 buffer). Requires an e1000 NIC; the report states when none is present.
 
+#### `SYS_HTTPGET` (50)
+
+Configure via DHCP, resolve the host (or accept an IPv4 literal), open a TCP
+connection to port 80, issue an HTTP/1.1 `GET /`, and write the status line and
+number of body bytes received into the caller's buffer.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | hostname or IPv4 literal pointer (may be null → defaults to `example.com`) |
+| `arg1` | hostname byte length |
+| `arg2` | output buffer pointer (up to 1024 bytes of report text) |
+
+Returns the number of report bytes written, or `u64::MAX` on error.
+
+#### `SYS_HTTPSGET` (51)
+
+Like `SYS_HTTPGET` but over TLS on port 443, using rustls with the
+rustls-rustcrypto provider. The server certificate chain is verified against the
+webpki-roots trust anchors, with the current time read from the CMOS RTC.
+
+| arg | Meaning |
+| --- | --- |
+| `arg0` | hostname or IPv4 literal pointer (may be null → defaults to `example.com`) |
+| `arg1` | hostname byte length |
+| `arg2` | output buffer pointer (up to 1024 bytes of report text) |
+
+Returns the number of report bytes written, or `u64::MAX` on error.
+
 ## CPU Accounting
 
 CPU time is measured in TSC ticks sampled at each timer interrupt.

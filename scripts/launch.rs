@@ -91,6 +91,7 @@ fn run() -> Result<(), String> {
 
     let mut args: Vec<String> = vec![
         "-machine".into(), "q35,pcspk-audiodev=snd0".into(),
+        "-cpu".into(), "qemu64,+rdrand".into(),
         "-drive".into(), format!("if=pflash,format=raw,readonly=on,file={}", ovmf.display()),
     ];
     if ovmf_vars.is_some() {

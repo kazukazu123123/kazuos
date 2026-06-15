@@ -1,5 +1,8 @@
 use crate::drivers::e1000;
 use crate::util::rdtsc;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt::Write;
 
 const ETHERTYPE_IPV4: u16 = 0x0800;
@@ -871,6 +874,387 @@ pub fn run_httpget(host: &str, out: &mut [u8]) -> usize {
         Some(mut c) => http_get(&mut c, host, &mut r),
         None => {
             let _ = write!(r, "http: TCP connect failed\r\n");
+        }
+    }
+
+    r.pos
+}
+
+const TCP_MSS: usize = 1400;
+
+enum TcpEvent {
+    Data,
+    Fin,
+    Rst,
+    Timeout,
+}
+
+fn tcp_send_data(c: &mut TcpConn, data: &[u8], stash: &mut Vec<u8>) -> bool {
+    let mut off = 0;
+    while off < data.len() {
+        let n = (data.len() - off).min(TCP_MSS);
+        let seq = c.snd_nxt;
+        let mut acked = false;
+        let mut rx = [0u8; FRAME_MAX];
+        for _ in 0..6 {
+            c.snd_nxt = seq;
+            tcp_send_seg(c, TCP_ACK | TCP_PSH, &data[off..off + n], false);
+            c.snd_nxt = seq.wrapping_add(n as u32);
+            let deadline = now_ms() + 1000;
+            while let Some((flags, sseq, ack, poff, plen)) = tcp_recv_seg(c, &mut rx, deadline) {
+                if flags & TCP_RST != 0 {
+                    return false;
+                }
+                if plen > 0 && sseq == c.rcv_nxt {
+                    stash.extend_from_slice(&rx[poff..poff + plen]);
+                    c.rcv_nxt = c.rcv_nxt.wrapping_add(plen as u32);
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                } else if plen > 0 {
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                }
+                if ack == c.snd_nxt {
+                    acked = true;
+                    break;
+                }
+            }
+            if acked {
+                break;
+            }
+        }
+        if !acked {
+            return false;
+        }
+        off += n;
+    }
+    true
+}
+
+fn tcp_recv_into(c: &mut TcpConn, incoming: &mut Vec<u8>, deadline_ms: u64) -> TcpEvent {
+    let mut rx = [0u8; FRAME_MAX];
+    let mut got = false;
+    loop {
+        match tcp_recv_seg(c, &mut rx, deadline_ms) {
+            Some((flags, seq, _ack, poff, plen)) => {
+                if flags & TCP_RST != 0 {
+                    return TcpEvent::Rst;
+                }
+                if plen > 0 && seq == c.rcv_nxt {
+                    incoming.extend_from_slice(&rx[poff..poff + plen]);
+                    c.rcv_nxt = c.rcv_nxt.wrapping_add(plen as u32);
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                    got = true;
+                } else if plen > 0 {
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                }
+                if flags & TCP_FIN != 0 && seq.wrapping_add(plen as u32) == c.rcv_nxt {
+                    c.rcv_nxt = c.rcv_nxt.wrapping_add(1);
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                    return TcpEvent::Fin;
+                }
+                if got {
+                    return TcpEvent::Data;
+                }
+            }
+            None => {
+                return if got { TcpEvent::Data } else { TcpEvent::Timeout };
+            }
+        }
+    }
+}
+
+unsafe fn cmos_read(reg: u8) -> u8 {
+    crate::util::outb(0x70, reg);
+    crate::util::inb(0x71)
+}
+
+fn bcd_to_bin(v: u8) -> u8 {
+    (v & 0x0F) + ((v >> 4) * 10)
+}
+
+fn rtc_read_raw() -> (u8, u8, u8, u8, u8, u8) {
+    unsafe {
+        loop {
+            while cmos_read(0x0A) & 0x80 != 0 {}
+            let s = cmos_read(0x00);
+            let mi = cmos_read(0x02);
+            let h = cmos_read(0x04);
+            let d = cmos_read(0x07);
+            let mo = cmos_read(0x08);
+            let y = cmos_read(0x09);
+            while cmos_read(0x0A) & 0x80 != 0 {}
+            if s == cmos_read(0x00) {
+                return (y, mo, d, h, mi, s);
+            }
+        }
+    }
+}
+
+fn rtc_unix_secs() -> u64 {
+    let (mut y, mut mo, mut d, mut h, mut mi, mut s) = rtc_read_raw();
+    let status_b = unsafe { cmos_read(0x0B) };
+    if status_b & 0x04 == 0 {
+        let pm = h & 0x80 != 0;
+        s = bcd_to_bin(s);
+        mi = bcd_to_bin(mi);
+        h = bcd_to_bin(h & 0x7F);
+        d = bcd_to_bin(d);
+        mo = bcd_to_bin(mo);
+        y = bcd_to_bin(y);
+        if status_b & 0x02 == 0 && pm {
+            h = (h % 12) + 12;
+        }
+    }
+    let year = 2000i64 + y as i64;
+    let days = days_from_civil(year, mo as i64, d as i64);
+    (days * 86400 + h as i64 * 3600 + mi as i64 * 60 + s as i64) as u64
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+#[derive(Debug)]
+struct RtcTime;
+
+impl rustls::time_provider::TimeProvider for RtcTime {
+    fn current_time(&self) -> Option<rustls::pki_types::UnixTime> {
+        Some(rustls::pki_types::UnixTime::since_unix_epoch(
+            core::time::Duration::from_secs(rtc_unix_secs()),
+        ))
+    }
+}
+
+fn tls_get(c: &mut TcpConn, host: &str, r: &mut Report) {
+    let provider = Arc::new(rustls_rustcrypto::provider());
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let config = rustls::ClientConfig::builder_with_details(provider, Arc::new(RtcTime))
+        .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12]);
+    let config = match config {
+        Ok(b) => b.with_root_certificates(roots).with_no_client_auth(),
+        Err(_) => {
+            let _ = write!(r, "https: config error\r\n");
+            return;
+        }
+    };
+
+    let server_name = match rustls::pki_types::ServerName::try_from(host) {
+        Ok(n) => n.to_owned(),
+        Err(_) => {
+            let _ = write!(r, "https: bad server name\r\n");
+            return;
+        }
+    };
+
+    let mut conn =
+        match rustls::client::UnbufferedClientConnection::new(Arc::new(config), server_name) {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = write!(r, "https: connection init failed\r\n");
+                return;
+            }
+        };
+
+    let mut request = [0u8; 256];
+    let mut rw = Report {
+        buf: &mut request,
+        pos: 0,
+    };
+    let _ = write!(
+        rw,
+        "GET / HTTP/1.1\r\nHost: {}\r\nUser-Agent: KazuOS\r\nConnection: close\r\n\r\n",
+        host
+    );
+    let req_len = rw.pos;
+
+    let mut incoming: Vec<u8> = Vec::new();
+    let mut scratch = vec![0u8; 18 * 1024];
+    let mut total = 0usize;
+    let mut status_done = false;
+    let mut request_sent = false;
+    let overall = now_ms() + 15000;
+
+    loop {
+        if now_ms() >= overall {
+            let _ = write!(r, "https: timeout\r\n");
+            break;
+        }
+
+        let status = conn.process_tls_records(&mut incoming);
+        let discard = status.discard;
+        let mut need_read = false;
+        let mut done = false;
+
+        match status.state {
+            Ok(rustls::unbuffered::ConnectionState::EncodeTlsData(mut s)) => {
+                let mut len = 0;
+                loop {
+                    match s.encode(&mut scratch) {
+                        Ok(n) => {
+                            len = n;
+                            break;
+                        }
+                        Err(rustls::unbuffered::EncodeError::InsufficientSize(e)) => {
+                            scratch.resize(e.required_size, 0);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if len > 0 {
+                    let mut stash = Vec::new();
+                    tcp_send_data(c, &scratch[..len], &mut stash);
+                    incoming.extend_from_slice(&stash);
+                }
+            }
+            Ok(rustls::unbuffered::ConnectionState::TransmitTlsData(s)) => {
+                s.done();
+            }
+            Ok(rustls::unbuffered::ConnectionState::BlockedHandshake) => {
+                need_read = true;
+            }
+            Ok(rustls::unbuffered::ConnectionState::WriteTraffic(mut s)) => {
+                if !request_sent {
+                    match s.encrypt(&request[..req_len], &mut scratch) {
+                        Ok(n) => {
+                            let mut stash = Vec::new();
+                            tcp_send_data(c, &scratch[..n], &mut stash);
+                            incoming.extend_from_slice(&stash);
+                            request_sent = true;
+                        }
+                        Err(_) => {
+                            let _ = write!(r, "https: encrypt failed\r\n");
+                            done = true;
+                        }
+                    }
+                }
+                need_read = true;
+            }
+            Ok(rustls::unbuffered::ConnectionState::ReadTraffic(mut s)) => {
+                while let Some(Ok(rec)) = s.next_record() {
+                    if !status_done {
+                        let end = find_crlf(rec.payload).unwrap_or(rec.payload.len());
+                        if let Ok(line) = core::str::from_utf8(&rec.payload[..end]) {
+                            let _ = write!(r, "{}\r\n", line);
+                        }
+                        status_done = true;
+                    }
+                    total += rec.payload.len();
+                }
+            }
+            Ok(rustls::unbuffered::ConnectionState::PeerClosed) => {
+                done = true;
+            }
+            Ok(rustls::unbuffered::ConnectionState::Closed) => {
+                done = true;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                let _ = write!(r, "https: tls error: {:?}\r\n", e);
+                done = true;
+            }
+        }
+
+        if discard > 0 {
+            incoming.drain(..discard);
+        }
+        if done {
+            break;
+        }
+        if need_read {
+            match tcp_recv_into(c, &mut incoming, now_ms() + 5000) {
+                TcpEvent::Rst => {
+                    let _ = write!(r, "https: connection reset\r\n");
+                    break;
+                }
+                TcpEvent::Fin => {
+                    if incoming.is_empty() {
+                        break;
+                    }
+                }
+                TcpEvent::Timeout => {
+                    if request_sent && total > 0 {
+                        break;
+                    }
+                }
+                TcpEvent::Data => {}
+            }
+        }
+    }
+
+    let _ = write!(r, "received {} bytes (TLS)\r\n", total);
+}
+
+pub fn run_httpsget(host: &str, out: &mut [u8]) -> usize {
+    let mut r = Report { buf: out, pos: 0 };
+
+    if !e1000::is_available() {
+        let _ = write!(r, "https: no network device\r\n");
+        return r.pos;
+    }
+    let mac = match e1000::mac() {
+        Some(m) => m,
+        None => {
+            let _ = write!(r, "https: MAC unavailable\r\n");
+            return r.pos;
+        }
+    };
+    let cfg = match dhcp_configure(mac) {
+        Some(c) => c,
+        None => {
+            let _ = write!(r, "https: DHCP failed\r\n");
+            return r.pos;
+        }
+    };
+
+    let target = if let Some(ip) = parse_ipv4(host) {
+        ip
+    } else {
+        let dns_next = if same_subnet(&cfg, cfg.dns) { cfg.dns } else { cfg.gw };
+        let dns_mac = match arp_resolve(&cfg, dns_next) {
+            Some(m) => m,
+            None => {
+                let _ = write!(r, "https: ARP for DNS failed\r\n");
+                return r.pos;
+            }
+        };
+        match dns_resolve(&cfg, dns_mac, host) {
+            Some(ip) => {
+                let _ = write!(r, "resolved {} -> ", host);
+                fmt_ip(&mut r, ip);
+                let _ = write!(r, "\r\n");
+                ip
+            }
+            None => {
+                let _ = write!(r, "https: DNS resolve failed for {}\r\n", host);
+                return r.pos;
+            }
+        }
+    };
+
+    let next = if same_subnet(&cfg, target) { target } else { cfg.gw };
+    let dst_mac = match arp_resolve(&cfg, next) {
+        Some(m) => m,
+        None => {
+            let _ = write!(r, "https: ARP for route failed\r\n");
+            return r.pos;
+        }
+    };
+
+    let _ = write!(r, "GET https://{}/ via ", host);
+    fmt_ip(&mut r, target);
+    let _ = write!(r, ":443\r\n");
+
+    match tcp_connect(cfg, dst_mac, target, 443) {
+        Some(mut c) => tls_get(&mut c, host, &mut r),
+        None => {
+            let _ = write!(r, "https: TCP connect failed\r\n");
         }
     }
 

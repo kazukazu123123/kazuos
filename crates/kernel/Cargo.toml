@@ -10,3 +10,4 @@ kazuos-shared = { path = "../shared" }
 rustls = { version = "0.23", default-features = false, features = ["tls12"] }
 rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.2", features = ["custom"] }
+webpki-roots = "1.0.7"

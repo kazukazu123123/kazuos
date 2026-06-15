@@ -268,11 +268,18 @@ Current drivers/support code:
 
 Located in `crates/kernel/src/net.rs`.
 
-A minimal polling-mode IPv4 stack used by the `nettest` shell command
-(`SYS_NETTEST`). It builds and parses Ethernet, ARP, IPv4, ICMP, UDP, DHCP, and
-DNS frames directly on top of the `e1000` driver. There is no socket layer yet;
-the stack runs a fixed sequence — DHCP configure, ARP resolve, DNS lookup, ICMP
-echo — and is driven synchronously by polling the NIC receive ring with
-TSC-based timeouts. Interrupt-driven RX/TX and a general socket API are future
-work.
+A minimal polling-mode IPv4 stack on top of the `e1000` driver. It builds and
+parses Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, and an active-open TCP client,
+and is driven synchronously by polling the NIC receive ring with TSC-based
+timeouts. There is no socket layer yet; each command runs a fixed sequence.
+
+Shell commands:
+
+- `nettest [host]` (`SYS_NETTEST`) — DHCP, DNS/IPv4 literal, four ICMP echoes.
+- `http [host]` (`SYS_HTTPGET`) — TCP connect to port 80 and an HTTP/1.1 GET.
+- `https [host]` (`SYS_HTTPSGET`) — TLS over TCP on port 443 via rustls with the
+  rustls-rustcrypto provider. Certificates are verified against webpki-roots,
+  with the current time from the CMOS RTC and entropy from `rng.rs`.
+
+Interrupt-driven RX/TX and a general socket API are future work.
 
