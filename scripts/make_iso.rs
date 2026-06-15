@@ -173,10 +173,18 @@ fn author_iso(tool: &IsoTool, iso_root: &Path, output: &Path) -> Result<(), Stri
         IsoTool::Xorriso(p) => {
             let iso_root_c = to_cygwin(iso_root);
             let output_c = to_cygwin(output);
+            let efi_img_c = to_cygwin(&iso_root.join("efi.img"));
+            // Hybrid ISO: besides the El Torito UEFI entry, expose the FAT boot
+            // image as a real GPT EFI System Partition with a protective MBR.
+            // This makes the medium bootable by firmwares that ignore El Torito
+            // EFI and instead look for a GPT ESP (e.g. VirtualBox).
             Command::new(p)
                 .args([
                     "-as", "mkisofs", "-R", "-r", "-J", "-V", "KAZUOS",
                     "-eltorito-platform", "efi", "-b", "efi.img", "-no-emul-boot",
+                    "-appended_part_as_gpt",
+                    "-append_partition", "2",
+                    "c12a7328-f81f-11d2-ba4b-00a0c93ec93b", &efi_img_c,
                     "-o", &output_c, &iso_root_c,
                 ])
                 .status()
