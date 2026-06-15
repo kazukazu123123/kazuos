@@ -4,7 +4,7 @@ include!("../../crates/user_rt/runtime.rs");
 // v3: per-core CPU + clean framebuffer hand-off
 
 const NAME_LEN:  usize = 32;
-const MAX_PROCS: usize = 32;
+const MAX_PROCS: usize = 25;
 const MAX_CPUS:  usize = 16;
 const BAR_WIDTH: usize = 30;
 
@@ -40,6 +40,16 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
     let cpu_count = syscall(SYS_CPU_INFO, 4, 0, 0) as usize;
     let cpu_count = cpu_count.min(MAX_CPUS);
+
+    // Console height drives how many process rows fit; the rest scrolls.
+    let console = syscall(SYS_CONSOLE_SIZE, 0, 0, 0);
+    let rows = (console >> 32) as usize;
+    // Lines used by the fixed header (title..column header) and footer.
+    let header_lines = 7 + cpu_count;
+    let footer_lines = 2;
+    let visible = rows.saturating_sub(header_lines + footer_lines).max(1);
+    let mut scroll: usize = 0;
+    let mut total_rows: usize = 1; // actual list rows drawn last frame (for clamping)
 
     loop {
         // --- sample ---
@@ -118,6 +128,11 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         sys_write(b"--------------------------------------------------\r\n");
         sys_write(b"  PID  STATE    %CPU     MEM     NAME\r\n");
 
+        // Clamp scroll using the actual number of rows drawn last frame.
+        let max_scroll = total_rows.saturating_sub(visible);
+        if scroll > max_scroll { scroll = max_scroll; }
+        let mut row_idx = 0usize; // index into the (kernel + users) list
+
         // kernel row (delta-based)
         let mut kinfo = EMPTY_INFO;
         let k_mem = if syscall(SYS_PROCESS_INFO, 0, &mut kinfo as *mut _ as u64, 0) == 0 {
@@ -125,7 +140,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         } else {
             0
         };
-        write_row(0, b"Running", ker_p10, k_mem, b"kernel");
+        if row_idx >= scroll && row_idx < scroll + visible {
+            write_row(0, b"Running", ker_p10, k_mem, b"kernel");
+        }
+        row_idx += 1;
 
         // user processes
         let mut cur_pids:  [u64; MAX_PROCS] = [0; MAX_PROCS];
@@ -146,7 +164,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
                     _ => b"?      ",
                 };
                 let nlen = info.image_name.iter().position(|&b| b == 0).unwrap_or(NAME_LEN);
-                write_row(pid, state, p_p10, info.memory_bytes / 1024, &info.image_name[..nlen]);
+                if row_idx >= scroll && row_idx < scroll + visible {
+                    write_row(pid, state, p_p10, info.memory_bytes / 1024, &info.image_name[..nlen]);
+                }
+                row_idx += 1;
                 cur_pids[cur_n]  = pid;
                 cur_ticks[cur_n] = info.cpu_ticks;
                 cur_n += 1;
@@ -154,7 +175,20 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
             pid = syscall(SYS_PROCESS_NEXT, pid, 0, 0);
         }
 
+        // Remember the real row count and re-clamp so the footer is accurate.
+        total_rows = row_idx;
+        let max_scroll = total_rows.saturating_sub(visible);
+        if scroll > max_scroll { scroll = max_scroll; }
+
         sys_write(b"--------------------------------------------------\r\n");
+        // Footer: scroll position / hint.
+        sys_write(b"  ");
+        write_u64((scroll + 1) as u64);
+        sys_write(b"-");
+        write_u64((scroll + visible).min(row_idx) as u64);
+        sys_write(b"/");
+        write_u64(row_idx as u64);
+        sys_write(b"  [Up/Down] scroll  [Ctrl+C] quit\r\n");
 
         // update prev
         prev_ker   = ker;
@@ -164,12 +198,24 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         prev_ticks = cur_ticks;
         prev_n     = cur_n;
 
-        // wait ~500ms, check for Ctrl+C every 100ms
+        // wait ~500ms, check for Ctrl+C and arrow-key scrolling every 100ms
         let mut quit = false;
         let mut i = 0u32;
         while i < 5 {
             syscall(SYS_SLEEP, 100, SLEEP_UNIT_MS, 0);
             if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) != 0 { quit = true; break; }
+            // Drain pending keys; redraw immediately if the view scrolled.
+            let mut moved = false;
+            loop {
+                let key = syscall(SYS_KEYBOARD_POLL, 0, 0, 0);
+                if key == 0 { break; }
+                match key as u8 {
+                    0x82 => { scroll = scroll.saturating_sub(1); moved = true; } // Up
+                    0x83 => { scroll += 1; moved = true; }                       // Down (clamped on redraw)
+                    _ => {}
+                }
+            }
+            if moved { break; }
             i += 1;
         }
         if quit { break; }
