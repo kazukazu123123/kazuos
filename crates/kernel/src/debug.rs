@@ -54,3 +54,15 @@ macro_rules! serial_println {
         $crate::serial_print!("{}\n", format_args!($($arg)*))
     };
 }
+
+/// Like `serial_println!`, but only emits when booted in verbose mode. Used for
+/// chatty diagnostics (SMP bring-up, thread creation) that slow down a normal
+/// boot over the serial port.
+#[macro_export]
+macro_rules! vserial_println {
+    ($($arg:tt)*) => {
+        if $crate::init::is_verbose() {
+            $crate::serial_println!($($arg)*);
+        }
+    };
+}

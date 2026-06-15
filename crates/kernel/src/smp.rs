@@ -284,10 +284,10 @@ unsafe extern "C" {
 }
 
 pub unsafe fn detect_cpus(rsdp: u64) {
-    crate::serial_println!("SMP: detect_cpus called, rsdp={:#x}", rsdp);
+    crate::vserial_println!("SMP: detect_cpus called, rsdp={:#x}", rsdp);
     unsafe {
         if rsdp == 0 {
-            crate::serial_println!("SMP: no RSDP, assuming single core");
+            crate::vserial_println!("SMP: no RSDP, assuming single core");
             *CPU_COUNT.0.get() = 1;
             *BSP_APIC_ID.0.get() = 0;
             (*APIC_IDS.0.get()).clear();
@@ -315,17 +315,17 @@ pub unsafe fn detect_cpus(rsdp: u64) {
                     cpu_data[i].idle.store(id != *BSP_APIC_ID.0.get(), core::sync::atomic::Ordering::Relaxed);
                 }
 
-                crate::serial_println!("SMP: detected {} CPU(s), BSP apic_id={}", ids.len(), *BSP_APIC_ID.0.get());
+                crate::vserial_println!("SMP: detected {} CPU(s), BSP apic_id={}", ids.len(), *BSP_APIC_ID.0.get());
                 for (i, &id) in ids.iter().enumerate() {
-                    crate::serial_println!("SMP: CPU[{}] apic_id={}", i, id);
+                    crate::vserial_println!("SMP: CPU[{}] apic_id={}", i, id);
                 }
             } else {
-                crate::serial_println!("SMP: MADT not found, assuming single core");
+                crate::vserial_println!("SMP: MADT not found, assuming single core");
                 (*APIC_IDS.0.get()).clear();
                 (*APIC_IDS.0.get()).push(0);
             }
         } else {
-            crate::serial_println!("SMP: RSDP invalid, assuming single core");
+            crate::vserial_println!("SMP: RSDP invalid, assuming single core");
             (*APIC_IDS.0.get()).clear();
             (*APIC_IDS.0.get()).push(0);
         }
@@ -356,7 +356,7 @@ unsafe fn start_aps_inner(ids: &[u8]) {
             }
             let ap_index = i - 1; // BSP is index 0
             if ap_index >= MAX_CPUS - 1 {
-                crate::serial_println!("SMP: too many CPUs, skipping apic_id={}", apic_id);
+                crate::vserial_println!("SMP: too many CPUs, skipping apic_id={}", apic_id);
                 continue;
             }
             let stack_top = core::ptr::addr_of!(AP_STACKS[ap_index]) as u64 + 32768;
@@ -426,7 +426,7 @@ unsafe fn start_ap(apic_id: u8, pml4: u64, stack_top: u64) {
         (base.add(in_long_offset) as *mut u64).write_volatile(0);
         (base.add(done_offset) as *mut u64).write_volatile(0);
 
-        crate::serial_println!("SMP: starting AP apic_id={}", apic_id);
+        crate::vserial_println!("SMP: starting AP apic_id={}", apic_id);
 
         // INIT (level-triggered)
         lapic::send_ipi(apic_id, 0, 0x0000C500);
@@ -444,12 +444,12 @@ unsafe fn start_ap(apic_id: u8, pml4: u64, stack_top: u64) {
         let deadline = crate::util::rdtsc() + crate::user::TSC_PER_MS * 100;
         while crate::util::rdtsc() < deadline {
             if base.add(done_offset).read_volatile() != 0 {
-                crate::serial_println!("SMP: AP apic_id={} started", apic_id);
+                crate::vserial_println!("SMP: AP apic_id={} started", apic_id);
                 return;
             }
             crate::util::pause();
         }
-        crate::serial_println!("SMP: AP apic_id={} start timeout", apic_id);
+        crate::vserial_println!("SMP: AP apic_id={} start timeout", apic_id);
     }
 }
 
@@ -501,7 +501,7 @@ extern "C" fn ap_main() -> ! {
         lapic::set_timer(0x30, 0x20000);
     }
 
-    crate::serial_println!("SMP: AP apic_id={} cpu_index={} ready", apic_id, cpu_index);
+    crate::vserial_println!("SMP: AP apic_id={} cpu_index={} ready", apic_id, cpu_index);
 
     // Install this AP's scheduler restart stack (fixed top of its kernel stack)
     // before entering the scheduler, so blocking syscalls on threads pinned to

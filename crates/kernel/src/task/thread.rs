@@ -174,7 +174,7 @@ pub fn create_kernel_thread(
         *NEXT_TID.0.get() = tid + 1;
         let cpu_count = crate::smp::cpu_count().max(1);
         let assigned_cpu = NEXT_ASSIGN_CPU.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % cpu_count;
-        crate::serial_println!("THREAD: create tid={} pid={} assigned_cpu={}", tid, pid, assigned_cpu);
+        crate::vserial_println!("THREAD: create tid={} pid={} assigned_cpu={}", tid, pid, assigned_cpu);
         let threads = &mut *THREADS.0.get();
         threads.push(Thread {
             tid,
