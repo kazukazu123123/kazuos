@@ -9,7 +9,14 @@ const ARP_REQUEST: u16 = 1;
 const ARP_REPLY: u16 = 2;
 
 const IP_PROTO_ICMP: u8 = 1;
+const IP_PROTO_TCP: u8 = 6;
 const IP_PROTO_UDP: u8 = 17;
+
+const TCP_FIN: u8 = 0x01;
+const TCP_SYN: u8 = 0x02;
+const TCP_RST: u8 = 0x04;
+const TCP_PSH: u8 = 0x08;
+const TCP_ACK: u8 = 0x10;
 
 const ICMP_ECHO_REQUEST: u8 = 8;
 const ICMP_ECHO_REPLY: u8 = 0;
@@ -79,6 +86,13 @@ fn wr_be32(buf: &mut [u8], off: usize, val: u32) {
 
 fn rd_be16(buf: &[u8], off: usize) -> u16 {
     ((buf[off] as u16) << 8) | buf[off + 1] as u16
+}
+
+fn rd_be32(buf: &[u8], off: usize) -> u32 {
+    ((buf[off] as u32) << 24)
+        | ((buf[off + 1] as u32) << 16)
+        | ((buf[off + 2] as u32) << 8)
+        | buf[off + 3] as u32
 }
 
 fn checksum16(data: &[u8]) -> u16 {
@@ -588,6 +602,277 @@ pub fn run_nettest(host: &str, out: &mut [u8]) -> usize {
         }
     }
     let _ = write!(r, "{}/{} replies received\r\n", received, PING_COUNT);
+
+    r.pos
+}
+
+struct TcpConn {
+    cfg: Config,
+    dst_mac: [u8; 6],
+    dst_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    snd_nxt: u32,
+    rcv_nxt: u32,
+}
+
+fn tcp_checksum(src: [u8; 4], dst: [u8; 4], seg: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    sum += ((src[0] as u32) << 8) | src[1] as u32;
+    sum += ((src[2] as u32) << 8) | src[3] as u32;
+    sum += ((dst[0] as u32) << 8) | dst[1] as u32;
+    sum += ((dst[2] as u32) << 8) | dst[3] as u32;
+    sum += IP_PROTO_TCP as u32;
+    sum += seg.len() as u32;
+    let mut i = 0;
+    while i + 1 < seg.len() {
+        sum += ((seg[i] as u32) << 8) | seg[i + 1] as u32;
+        i += 2;
+    }
+    if i < seg.len() {
+        sum += (seg[i] as u32) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn tcp_send_seg(c: &TcpConn, flags: u8, payload: &[u8], with_mss: bool) -> bool {
+    let opt_len = if with_mss { 4 } else { 0 };
+    let tcp_len = 20 + opt_len + payload.len();
+    let mut frame = [0u8; FRAME_MAX];
+    write_eth(&mut frame, c.dst_mac, c.cfg.mac, ETHERTYPE_IPV4);
+    write_ipv4(&mut frame, c.cfg.ip, c.dst_ip, IP_PROTO_TCP, tcp_len, c.snd_nxt as u16);
+
+    let t = &mut frame[34..34 + tcp_len];
+    for b in t.iter_mut() {
+        *b = 0;
+    }
+    wr_be16(t, 0, c.src_port);
+    wr_be16(t, 2, c.dst_port);
+    wr_be32(t, 4, c.snd_nxt);
+    wr_be32(t, 8, c.rcv_nxt);
+    t[12] = (((20 + opt_len) / 4) as u8) << 4;
+    t[13] = flags;
+    wr_be16(t, 14, 8192);
+    if with_mss {
+        t[20] = 2;
+        t[21] = 4;
+        wr_be16(t, 22, 1460);
+    }
+    t[20 + opt_len..20 + opt_len + payload.len()].copy_from_slice(payload);
+    let csum = tcp_checksum(c.cfg.ip, c.dst_ip, &frame[34..34 + tcp_len]);
+    wr_be16(&mut frame[34..], 16, csum);
+    e1000::transmit(&frame[..34 + tcp_len])
+}
+
+fn tcp_recv_seg(c: &TcpConn, rx: &mut [u8], deadline_ms: u64) -> Option<(u8, u32, u32, usize, usize)> {
+    while let Some(len) = poll_recv(rx, deadline_ms) {
+        if len < 34 || rd_be16(rx, 12) != ETHERTYPE_IPV4 || rx[23] != IP_PROTO_TCP {
+            continue;
+        }
+        if rx[26..30] != c.dst_ip {
+            continue;
+        }
+        let ihl = (rx[14] & 0x0F) as usize * 4;
+        let t = 14 + ihl;
+        if len < t + 20 {
+            continue;
+        }
+        if rd_be16(rx, t) != c.dst_port || rd_be16(rx, t + 2) != c.src_port {
+            continue;
+        }
+        let data_off = ((rx[t + 12] >> 4) as usize) * 4;
+        let flags = rx[t + 13];
+        let seq = rd_be32(rx, t + 4);
+        let ack = rd_be32(rx, t + 8);
+        let ip_total = rd_be16(rx, 16) as usize;
+        let seg_end = (14 + ip_total).min(len);
+        let payload_off = t + data_off;
+        let payload_len = seg_end.saturating_sub(payload_off);
+        return Some((flags, seq, ack, payload_off, payload_len));
+    }
+    None
+}
+
+fn tcp_connect(cfg: Config, dst_mac: [u8; 6], dst_ip: [u8; 4], dst_port: u16) -> Option<TcpConn> {
+    let iss = rdtsc() as u32;
+    let src_port = 0xC000 | (rdtsc() as u16 & 0x3FFF);
+    let mut c = TcpConn {
+        cfg,
+        dst_mac,
+        dst_ip,
+        src_port,
+        dst_port,
+        snd_nxt: iss,
+        rcv_nxt: 0,
+    };
+    let mut rx = [0u8; FRAME_MAX];
+    for _ in 0..5 {
+        c.snd_nxt = iss;
+        tcp_send_seg(&c, TCP_SYN, &[], true);
+        let deadline = now_ms() + 1000;
+        while let Some((flags, seq, ack, _, _)) = tcp_recv_seg(&c, &mut rx, deadline) {
+            if flags & TCP_RST != 0 {
+                return None;
+            }
+            if flags & TCP_SYN != 0 && flags & TCP_ACK != 0 && ack == iss.wrapping_add(1) {
+                c.rcv_nxt = seq.wrapping_add(1);
+                c.snd_nxt = iss.wrapping_add(1);
+                tcp_send_seg(&c, TCP_ACK, &[], false);
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+fn http_get(c: &mut TcpConn, host: &str, r: &mut Report) {
+    let mut req = [0u8; 256];
+    let mut w = Report { buf: &mut req, pos: 0 };
+    let _ = write!(
+        w,
+        "GET / HTTP/1.1\r\nHost: {}\r\nUser-Agent: KazuOS\r\nConnection: close\r\n\r\n",
+        host
+    );
+    let req_len = w.pos;
+    let req_seq = c.snd_nxt;
+
+    tcp_send_seg(c, TCP_ACK | TCP_PSH, &req[..req_len], false);
+    c.snd_nxt = req_seq.wrapping_add(req_len as u32);
+
+    let mut rx = [0u8; FRAME_MAX];
+    let mut total = 0usize;
+    let mut status_done = false;
+    let mut acked = false;
+    let overall = now_ms() + 8000;
+
+    loop {
+        if now_ms() >= overall {
+            break;
+        }
+        match tcp_recv_seg(c, &mut rx, now_ms() + 500) {
+            Some((flags, seq, ack, poff, plen)) => {
+                if flags & TCP_RST != 0 {
+                    let _ = write!(r, "http: connection reset\r\n");
+                    return;
+                }
+                if ack == c.snd_nxt {
+                    acked = true;
+                }
+                if plen > 0 && seq == c.rcv_nxt {
+                    if !status_done {
+                        let line_end = find_crlf(&rx[poff..poff + plen]).unwrap_or(plen);
+                        if let Ok(line) = core::str::from_utf8(&rx[poff..poff + line_end]) {
+                            let _ = write!(r, "{}\r\n", line);
+                        }
+                        status_done = true;
+                    }
+                    total += plen;
+                    c.rcv_nxt = c.rcv_nxt.wrapping_add(plen as u32);
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                } else if plen > 0 {
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                }
+                if flags & TCP_FIN != 0 && seq.wrapping_add(plen as u32) == c.rcv_nxt {
+                    c.rcv_nxt = c.rcv_nxt.wrapping_add(1);
+                    tcp_send_seg(c, TCP_ACK, &[], false);
+                    tcp_send_seg(c, TCP_FIN | TCP_ACK, &[], false);
+                    c.snd_nxt = c.snd_nxt.wrapping_add(1);
+                    break;
+                }
+            }
+            None => {
+                if !acked {
+                    c.snd_nxt = req_seq;
+                    tcp_send_seg(c, TCP_ACK | TCP_PSH, &req[..req_len], false);
+                    c.snd_nxt = req_seq.wrapping_add(req_len as u32);
+                }
+            }
+        }
+    }
+
+    let _ = write!(r, "received {} bytes\r\n", total);
+}
+
+fn find_crlf(data: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + 1 < data.len() {
+        if data[i] == b'\r' && data[i + 1] == b'\n' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+pub fn run_httpget(host: &str, out: &mut [u8]) -> usize {
+    let mut r = Report { buf: out, pos: 0 };
+
+    if !e1000::is_available() {
+        let _ = write!(r, "http: no network device\r\n");
+        return r.pos;
+    }
+    let mac = match e1000::mac() {
+        Some(m) => m,
+        None => {
+            let _ = write!(r, "http: MAC unavailable\r\n");
+            return r.pos;
+        }
+    };
+    let cfg = match dhcp_configure(mac) {
+        Some(c) => c,
+        None => {
+            let _ = write!(r, "http: DHCP failed\r\n");
+            return r.pos;
+        }
+    };
+
+    let target = if let Some(ip) = parse_ipv4(host) {
+        ip
+    } else {
+        let dns_next = if same_subnet(&cfg, cfg.dns) { cfg.dns } else { cfg.gw };
+        let dns_mac = match arp_resolve(&cfg, dns_next) {
+            Some(m) => m,
+            None => {
+                let _ = write!(r, "http: ARP for DNS failed\r\n");
+                return r.pos;
+            }
+        };
+        match dns_resolve(&cfg, dns_mac, host) {
+            Some(ip) => {
+                let _ = write!(r, "resolved {} -> ", host);
+                fmt_ip(&mut r, ip);
+                let _ = write!(r, "\r\n");
+                ip
+            }
+            None => {
+                let _ = write!(r, "http: DNS resolve failed for {}\r\n", host);
+                return r.pos;
+            }
+        }
+    };
+
+    let next = if same_subnet(&cfg, target) { target } else { cfg.gw };
+    let dst_mac = match arp_resolve(&cfg, next) {
+        Some(m) => m,
+        None => {
+            let _ = write!(r, "http: ARP for route failed\r\n");
+            return r.pos;
+        }
+    };
+
+    let _ = write!(r, "GET http://{}/ via ", host);
+    fmt_ip(&mut r, target);
+    let _ = write!(r, ":80\r\n");
+
+    match tcp_connect(cfg, dst_mac, target, 80) {
+        Some(mut c) => http_get(&mut c, host, &mut r),
+        None => {
+            let _ = write!(r, "http: TCP connect failed\r\n");
+        }
+    }
 
     r.pos
 }

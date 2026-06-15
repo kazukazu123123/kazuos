@@ -73,3 +73,4 @@ pub const SYS_MODULE_INFO:   u64 = 48;
 
 // Network
 pub const SYS_NETTEST: u64 = 49;
+pub const SYS_HTTPGET: u64 = 50;
