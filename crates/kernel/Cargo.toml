@@ -7,3 +7,6 @@ edition = "2024"
 ab_glyph = { version = "0.2.32", default-features = false, features = ["libm"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["no-std-float"] }
 kazuos-shared = { path = "../shared" }
+rustls = { version = "0.23", default-features = false, features = ["tls12"] }
+rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["alloc"] }
+getrandom = { version = "0.2", features = ["custom"] }

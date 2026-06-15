@@ -25,6 +25,7 @@ pub mod platform;
 pub mod pipe;
 pub mod pmm;
 pub mod process;
+pub mod rng;
 pub mod scheduler;
 pub mod smp;
 pub mod syscall;
