@@ -402,6 +402,30 @@ pub fn sigint_check_and_clear(pid: u64) -> bool {
     })
 }
 
+/// Pick an out-of-memory victim: the killable user process (not the kernel, not
+/// a driver, not `exclude`) currently using the most memory.
+pub fn oom_victim(exclude: u64) -> Option<u64> {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        let processes = &*PROCESSES.0.get();
+        let mut best: Option<(u64, u64)> = None; // (pid, memory_bytes)
+        for p in processes.iter() {
+            if p.pid == 0 || p.pid == exclude {
+                continue;
+            }
+            if p.privilege <= PrivilegeLevel::Driver {
+                continue;
+            }
+            if matches!(p.state, ProcessState::Empty | ProcessState::Exited) {
+                continue;
+            }
+            if best.map_or(true, |(_, bm)| p.memory_bytes > bm) {
+                best = Some((p.pid, p.memory_bytes));
+            }
+        }
+        best.map(|(pid, _)| pid)
+    })
+}
+
 pub fn kill_pid(pid: u64) {
     crate::task::thread::with_threads_lock(|| {
         if pid == 0 {

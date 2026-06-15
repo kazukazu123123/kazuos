@@ -626,6 +626,23 @@ unsafe fn free_user_pages(cr3: u64, virt: u64, pages: u64) {
     }
 }
 
+/// Reclaim memory by killing the largest killable process (OOM killer).
+/// Never kills the calling process itself (it can't be safely freed mid-syscall);
+/// if the caller is the biggest, returns false so the allocation just fails and
+/// the runaway process self-limits. Returns true if a victim was killed. The
+/// caller must restore its CR3 afterwards, since kill_pid switches the address
+/// space of the current CPU.
+fn oom_kill(caller: u64) -> bool {
+    match process::oom_victim(0) {
+        Some(victim) if victim != caller => {
+            crate::serial_println!("OOM: killing pid {} to reclaim memory", victim);
+            crate::process::kill_pid(victim);
+            true
+        }
+        _ => false,
+    }
+}
+
 fn sys_heap_alloc(size: u64) -> u64 {
     if size == 0 || size > 128 * 1024 * 1024 {
         return u64::MAX;
@@ -657,11 +674,20 @@ fn sys_heap_alloc(size: u64) -> u64 {
     unsafe {
         for i in 0..pages {
             let v = virt + i * 4096;
-            let frame = match crate::pmm::alloc_frame() {
-                Some(f) => f,
-                None => {
-                    free_user_pages(cr3, virt, i); // roll back the pages done so far
-                    return u64::MAX;
+            // Get a frame; if out of memory, kill a process to reclaim and retry.
+            let frame = loop {
+                match crate::pmm::alloc_frame() {
+                    Some(f) => break f,
+                    None => {
+                        let killed = oom_kill(caller);
+                        // kill_pid switches this CPU's CR3 to the kernel's; put
+                        // the caller's address space back before we continue.
+                        crate::vmm::switch_cr3(cr3);
+                        if !killed {
+                            free_user_pages(cr3, virt, i); // give up; roll back
+                            return u64::MAX;
+                        }
+                    }
                 }
             };
             core::ptr::write_bytes(frame as *mut u8, 0, 4096);
