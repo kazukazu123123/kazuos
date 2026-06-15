@@ -328,7 +328,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
         // Update position, clamped to screen
         let new_x = (mx as i32 + dx as i32).clamp(0, info.width  as i32 - 1) as u32;
-        let new_y = (my as i32 - dy as i32).clamp(20, info.height as i32 - 1) as u32; // Y inverted, avoid HUD
+        let new_y = (my as i32 - dy as i32).clamp(0, info.height as i32 - 1) as u32; // Y inverted; allow reaching the top
 
         // Move cursor
         restore_cross(&info);
