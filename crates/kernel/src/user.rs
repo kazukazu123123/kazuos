@@ -857,12 +857,18 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
             process::set_winsize(pid, cols, rows);
         }
     }
+    if pid == 0 || pid == u64::MAX {
+        crate::log_warn!("sys_exec: spawn failed for '{}' (caller={}, stdio={:#x})", path, caller, stdio_pack);
+    }
     pid
 }
 
 fn sys_pipe(out_ptr: u64) -> u64 {
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-    let Some(pipe_id) = crate::pipe::create() else { return u64::MAX; };
+    let Some(pipe_id) = crate::pipe::create() else {
+        crate::log_warn!("sys_pipe: pipe::create failed (pid={})", caller);
+        return u64::MAX;
+    };
     let read_fd  = fd::alloc_fd(caller, fd::FdEntry::PipeRead(pipe_id));
     let write_fd = fd::alloc_fd(caller, fd::FdEntry::PipeWrite(pipe_id));
     match (read_fd, write_fd) {
@@ -875,7 +881,13 @@ fn sys_pipe(out_ptr: u64) -> u64 {
             }
             0
         }
-        _ => u64::MAX,
+        _ => {
+            // fd table full: roll back whatever we did grab so we don't leak it.
+            if let Some(r) = read_fd { fd::free_fd(caller, r); }
+            if let Some(w) = write_fd { fd::free_fd(caller, w); }
+            crate::log_warn!("sys_pipe: out of fds (pid={}, MAX_FD={})", caller, fd::MAX_FD);
+            u64::MAX
+        }
     }
 }
 
