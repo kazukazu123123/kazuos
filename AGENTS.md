@@ -44,6 +44,7 @@ Do not use plain `cargo check` for kernel validation because stable Rust fails o
 
 - Keep code `no_std` compatible in kernel crates.
 - Do not add comments unless explicitly requested.
+- Do not use decorative divider/banner comments: rows of dashes, box-drawing characters, or ASCII art (e.g. `// ──── section ────` or `// ==== FOO ====`). Plain `//` line comments and `/* ... */` block comments are both fine.
 - Prefer small modules with clear ownership.
 - Keep unsafe blocks as small as practical.
 - Prefer existing `crate::util::{inb,outb,inw,outw,ind,outd,pause,rdtsc}` helpers over inline asm duplicates.
