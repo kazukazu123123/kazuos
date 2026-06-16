@@ -6,9 +6,18 @@ use crate::{allocator, console, drivers, idt, platform, pmm, syscall, vmm};
 use kazuos_shared::BootInfo;
 
 static mut VERBOSE: bool = false;
+static mut HEARTBEAT_LOG: bool = false;
 
 pub fn is_verbose() -> bool {
     unsafe { VERBOSE }
+}
+
+/// Whether the timer should emit the periodic verbose `HEARTBEAT` liveness line.
+/// Gated by its own `heartbeat` boot arg (not plain `verbose`) so normal verbose
+/// boots stay quiet; the headless test harness opts in to distinguish idle from
+/// a real freeze via `--liveness-pattern HEARTBEAT`.
+pub fn heartbeat_log() -> bool {
+    unsafe { HEARTBEAT_LOG }
 }
 
 pub struct InitState {
@@ -24,6 +33,7 @@ struct InterruptConfig {
 pub fn run(boot_info: &'static BootInfo) -> InitState {
     unsafe {
         VERBOSE = boot_info.command_line().contains("verbose");
+        HEARTBEAT_LOG = boot_info.command_line().contains("heartbeat");
     }
     let platform = platform::Platform::detect();
     crate::drivers::serial::init();
