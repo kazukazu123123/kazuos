@@ -109,8 +109,25 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
         SYS_FB_RELEASE => { if let Some(pid) = crate::scheduler::current_user_pid() { crate::drivers::fb_owner::release(pid); } 0 }
         SYS_CONSOLE_SIZE => {
-            let (cols, rows) = crate::terminal::console::console_size();
-            ((rows as u64) << 32) | (cols as u64)
+            // Terminal-size get/set: arg0 == 0 gets, arg0 != 0 sets.
+            if arg0 == 0 {
+                // GET: the caller's terminal size, or the console if none was set.
+                let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+                let (mut cols, mut rows) = process::winsize(caller);
+                if cols == 0 || rows == 0 {
+                    let (c, r) = crate::terminal::console::console_size();
+                    cols = c as u16;
+                    rows = r as u16;
+                }
+                ((rows as u64) << 32) | (cols as u64)
+            } else {
+                // SET: cols = arg0 & 0xFFFF, rows = arg0 >> 16; target pid = arg1 (0 = self).
+                let cols = (arg0 & 0xFFFF) as u16;
+                let rows = ((arg0 >> 16) & 0xFFFF) as u16;
+                let target = if arg1 == 0 { crate::scheduler::current_user_pid().unwrap_or(0) } else { arg1 };
+                process::set_winsize(target, cols, rows);
+                0
+            }
         }
 
         // Process / Lifecycle
@@ -831,9 +848,14 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
     } else {
         exec::spawn_user_with_fds_and_args(path, &args, caller, stdin_fd, stdout_fd)
     };
-    // Record the spawner as the child's parent so it's cleaned up if the parent exits.
+    // Record the spawner as the child's parent so it's cleaned up if the parent exits,
+    // and inherit its terminal size so children see the same terminal.
     if pid != 0 && pid != u64::MAX {
         process::set_parent(pid, caller);
+        let (cols, rows) = process::winsize(caller);
+        if cols != 0 && rows != 0 {
+            process::set_winsize(pid, cols, rows);
+        }
     }
     pid
 }

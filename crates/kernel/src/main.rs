@@ -80,6 +80,12 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
     if pid == 0 {
         panic!("shell spawn failed");
     }
+    // The boot shell talks to the kernel console over standard fds (it shares the one
+    // unified line editor with the GUI terminal, reading fd 0 and writing fd 1), so it
+    // needs the default console stdio the same way a user-spawned process gets it.
+    crate::fd::alloc_fd_at(pid, 0, crate::fd::FdEntry::ConsoleIn);
+    crate::fd::alloc_fd_at(pid, 1, crate::fd::FdEntry::ConsoleOut);
+    crate::fd::alloc_fd_at(pid, 2, crate::fd::FdEntry::ConsoleOut);
     unsafe {
         crate::smp::start_aps();
     }

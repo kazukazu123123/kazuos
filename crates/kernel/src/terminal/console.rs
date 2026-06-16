@@ -380,7 +380,15 @@ pub fn screen_print(text: &str) {
     let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
+            // Auto-cursor: erase the old caret, print, then draw a caret at the new
+            // position. This makes the console a self-cursoring terminal, so a shell
+            // line editor only needs to emit text + ANSI (no cursor syscalls) and works
+            // the same here as in the GUI terminal.
+            console.draw_cursor(*SAVED_CURSOR.0.get(), false);
             console.print(text);
+            let pos = console.position();
+            *SAVED_CURSOR.0.get() = pos;
+            console.draw_cursor(pos, true);
         }
     }
 }

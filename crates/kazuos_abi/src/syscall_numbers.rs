@@ -80,3 +80,7 @@ pub const SYS_RMDIR:  u64 = 51; // remove an empty directory
 // descendant was signaled, 0 if arg0 is itself the leaf (idle at its own prompt).
 // Lets a terminal interrupt the command its shell is currently waiting on.
 pub const SYS_SIGINT_FG: u64 = 52;
+
+// Note: SYS_CONSOLE_SIZE is also the terminal-size get/set call. arg0 == 0 gets the
+// caller's terminal size; arg0 != 0 sets it (cols = arg0 & 0xFFFF, rows = arg0 >> 16,
+// target pid = arg1, 0 = self), letting a terminal set the size its shell sees.
