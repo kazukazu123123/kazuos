@@ -669,7 +669,16 @@ pub fn notify_pipe_readers(pipe_id: u64) {
             if matches!(t.state, ThreadState::Sleeping) {
                 if let WaitTarget::PipeRead { pipe_id: id, buf_ptr, buf_len } = t.wait_target {
                     if id == pipe_id {
+                        // The blocked reader's buffer lives in *its* address space, but we
+                        // run in the writer's. Switch to the reader's CR3 to copy into the
+                        // right pages, then restore. (Kernel mappings are global, so the
+                        // switch is safe inside this IRQ-disabled, locked section.)
+                        let reader_cr3 = t.user_context.cr3;
+                        let cur_cr3 = crate::vmm::active_cr3();
+                        let switch = reader_cr3 != 0 && reader_cr3 != cur_cr3;
+                        if switch { crate::vmm::switch_cr3(reader_cr3); }
                         let n = crate::pipe::read_raw(pipe_id, buf_ptr, buf_len as usize);
+                        if switch { crate::vmm::switch_cr3(cur_cr3); }
                         restore_ctx_from_blocking_frame(t, n as u64);
                         t.state = ThreadState::Ready;
                         t.wait_target = WaitTarget::None;
