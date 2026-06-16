@@ -8,7 +8,13 @@ static mut KERNEL_TICKS: u64 = 0;
 static mut IDLE_TICKS: u64 = 0;
 static mut USE_IOAPIC: bool = false;
 static mut KEYBOARD_POLLING: bool = false;
-static mut LAST_TSC: u64 = 0;
+
+// Per-CPU TSC of the previous timer tick. Must be per-CPU: a single shared value
+// would make every CPU compute its delta from whichever CPU fired last, so the
+// accumulated ticks would sum to wall-clock time (1 CPU's worth) rather than the
+// real total across all CPUs — inflating reported %CPU on SMP.
+static LAST_TSC_PER_CPU: SyncUnsafeCell<[u64; crate::smp::MAX_CPUS]> =
+    SyncUnsafeCell::new([0; crate::smp::MAX_CPUS]);
 
 static KERNEL_TICKS_PER_CPU: SyncUnsafeCell<[u64; crate::smp::MAX_CPUS]> =
     SyncUnsafeCell::new([0; crate::smp::MAX_CPUS]);
@@ -74,12 +80,10 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         // install the target thread's CR3 themselves and are unaffected.
         let entry_cr3 = crate::vmm::active_cr3();
         let now = rdtsc();
-        let delta = if LAST_TSC == 0 {
-            0
-        } else {
-            now.saturating_sub(LAST_TSC)
-        };
-        LAST_TSC = now;
+        let cpu = crate::smp::current_cpu_index();
+        let last = (*LAST_TSC_PER_CPU.0.get())[cpu];
+        let delta = if last == 0 { 0 } else { now.saturating_sub(last) };
+        (*LAST_TSC_PER_CPU.0.get())[cpu] = now;
         TIMER_TICKS += 1;
         // Verbose-only liveness beat for the headless test harness. The timer
         // keeps firing while idle (the idle loop only `hlt`s), so this continues
@@ -91,7 +95,6 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
             crate::serial_println!("HEARTBEAT ticks={} cpu={}", hb_ticks, crate::smp::current_cpu_index());
         }
         if delta != 0 {
-            let cpu = crate::smp::current_cpu_index();
             if let Some(pid) = crate::scheduler::current_user_pid() {
                 crate::process::add_cpu_ticks(pid, delta);
                 if let Some(v) = (*USER_TICKS_PER_CPU.0.get()).get_mut(cpu) {
