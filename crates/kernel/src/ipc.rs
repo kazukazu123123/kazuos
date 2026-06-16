@@ -161,6 +161,32 @@ pub fn try_recv(channel_id: u64, buf: &mut [u8], pid: u64) -> RecvResult {
     })
 }
 
+/// Non-blocking dequeue: like `try_recv` but never registers a waiter or sleeps —
+/// returns `Block` immediately when the queue is empty so a single-threaded poller
+/// (e.g. the GUI compositor) can multiplex several sources in one loop.
+pub fn try_recv_nonblock(channel_id: u64, buf: &mut [u8]) -> RecvResult {
+    with_lock(|| {
+        let idx = channel_id as usize - 1;
+        let ch = channels();
+        if idx >= ch.len() {
+            return RecvResult::Error;
+        }
+        let c = &mut ch[idx];
+        match c.queue.pop_front() {
+            None => RecvResult::Block,
+            Some(msg) => {
+                let len = msg.data.len().min(buf.len());
+                buf[..len].copy_from_slice(&msg.data[..len]);
+                if !c.send_waiters.is_empty() {
+                    let waiter_pid = c.send_waiters.remove(0);
+                    crate::process::wakeup_ipc_waiter(waiter_pid, 0);
+                }
+                RecvResult::Ok(len)
+            }
+        }
+    })
+}
+
 pub fn add_send_waiter(channel_id: u64, pid: u64) {
     with_lock(|| {
         let idx = channel_id as usize - 1;

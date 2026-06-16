@@ -229,6 +229,19 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
                 ipc::RecvResult::Block   => syscall::BLOCK_TO_SCHEDULER,
             }
         }
+        SYS_IPC_TRY_RECV => {
+            let channel_id = arg0;
+            let buf_ptr    = arg1;
+            let buf_len    = arg2 as usize;
+            if buf_ptr == 0 || buf_len == 0 { return u64::MAX; }
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+            match ipc::try_recv_nonblock(channel_id, buf) {
+                ipc::RecvResult::Ok(len) => len as u64,
+                ipc::RecvResult::Error   => u64::MAX,
+                // No message available right now; caller polls again later.
+                ipc::RecvResult::Block   => 0,
+            }
+        }
         SYS_IPC_CLOSE => { ipc::close(arg0); 0 }
 
         // File I/O
