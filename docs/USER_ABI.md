@@ -74,7 +74,7 @@ User programs call the kernel with `int 0x80`.
 | `2` | first PID, or `0` if none |
 | any other value (PID) | **`arg1` = userspace `ProcessInfo*` buffer** — kernel writes the full `ProcessInfo` struct to the buffer and returns `0`. Returns `u64::MAX` if PID not found or `arg1` is null. |
 
-`ProcessInfo` layout (`#[repr(C)]`, 96 bytes):
+`ProcessInfo` layout (`#[repr(C)]`, 104 bytes):
 
 ```
 pid: u64          — process ID
@@ -86,9 +86,10 @@ stack_top: u64    — virtual stack top
 step: u64         — scheduler step counter
 cpu_ticks: u64    — accumulated TSC ticks
 memory_bytes: u64 — allocated memory in bytes
+parent: u64       — parent process ID (PPID); 0 = kernel
 ```
 
-Userspace can retrieve the full `ProcessInfo` (including `memory_bytes` and `cpu_ticks`) for any process by calling `SYS_PROCESS_INFO(pid, buf)` with a 96-byte buffer.
+Userspace can retrieve the full `ProcessInfo` (including `memory_bytes`, `cpu_ticks`, and the parent PID) for any process by calling `SYS_PROCESS_INFO(pid, buf)` with a 104-byte buffer.
 
 ## `SYS_CPU_INFO` selectors
 

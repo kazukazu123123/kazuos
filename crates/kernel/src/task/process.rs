@@ -90,6 +90,7 @@ pub struct ProcessInfo {
     pub step: u64,
     pub cpu_ticks: u64,
     pub memory_bytes: u64,
+    pub parent: u64,
 }
 
 pub(crate) static PROCESSES: SyncUnsafeCell<Vec<Process>> = SyncUnsafeCell::new(Vec::new());
@@ -824,6 +825,7 @@ pub fn info(pid: u64) -> Option<ProcessInfo> {
                     step: p.step,
                     cpu_ticks,
                     memory_bytes,
+                    parent: p.parent,
                 }
             })
     })

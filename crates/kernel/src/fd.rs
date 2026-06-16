@@ -2,7 +2,10 @@ use alloc::vec::Vec;
 use crate::util::SyncUnsafeCell;
 use crate::devfs::DeviceOps;
 
-pub const MAX_FD: usize = 16;
+// The fd table grows on demand (see alloc_fd / alloc_fd_at), so a process opens as
+// many fds as it needs — a compositor like the GUI holds ~2 per child terminal. This
+// is only a safety ceiling so a runaway/hostile program can't exhaust kernel memory.
+pub const MAX_FD: usize = 1024;
 
 #[derive(Clone, Copy)]
 pub enum FdEntry {
@@ -15,16 +18,15 @@ pub enum FdEntry {
     PipeWrite(u64),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct FdTable {
-    pub entries: [FdEntry; MAX_FD],
+    // Grows as fds are allocated; freed fds become Empty holes that are reused.
+    pub entries: Vec<FdEntry>,
 }
 
 impl FdTable {
     pub const fn new() -> Self {
-        Self {
-            entries: [FdEntry::Empty; MAX_FD],
-        }
+        Self { entries: Vec::new() }
     }
 }
 
@@ -44,15 +46,19 @@ pub fn ensure_table(pid: u64) {
 }
 
 pub fn alloc_fd_at(pid: u64, fd: usize, entry: FdEntry) -> bool {
+    if fd >= MAX_FD {
+        return false;
+    }
     ensure_table(pid);
-    pipe_clone(&entry);
     unsafe {
         let tables = &mut *TABLES.0.get();
         if let Some(Some(table)) = tables.get_mut(pid as usize) {
-            if fd < MAX_FD {
-                table.entries[fd] = entry;
-                return true;
+            if fd >= table.entries.len() {
+                table.entries.resize(fd + 1, FdEntry::Empty);
             }
+            pipe_clone(&entry);
+            table.entries[fd] = entry;
+            return true;
         }
     }
     false
@@ -60,15 +66,23 @@ pub fn alloc_fd_at(pid: u64, fd: usize, entry: FdEntry) -> bool {
 
 pub fn alloc_fd(pid: u64, entry: FdEntry) -> Option<usize> {
     ensure_table(pid);
-    pipe_clone(&entry);
     unsafe {
         let tables = &mut *TABLES.0.get();
         let table = tables[pid as usize].as_mut()?;
-        for i in 0..MAX_FD {
+        // Reuse the lowest freed slot first.
+        for i in 0..table.entries.len() {
             if matches!(table.entries[i], FdEntry::Empty) {
+                pipe_clone(&entry);
                 table.entries[i] = entry;
                 return Some(i);
             }
+        }
+        // Otherwise grow the table, up to the safety ceiling.
+        if table.entries.len() < MAX_FD {
+            let i = table.entries.len();
+            pipe_clone(&entry);
+            table.entries.push(entry);
+            return Some(i);
         }
     }
     None
@@ -86,7 +100,7 @@ pub fn set_fd(pid: u64, fd: usize, entry: FdEntry) -> bool {
     unsafe {
         let tables = &mut *TABLES.0.get();
         if let Some(Some(table)) = tables.get_mut(pid as usize) {
-            if fd < MAX_FD {
+            if fd < table.entries.len() {
                 table.entries[fd] = entry;
                 return true;
             }
@@ -99,7 +113,7 @@ pub fn free_fd(pid: u64, fd: usize) -> bool {
     unsafe {
         let tables = &mut *TABLES.0.get();
         if let Some(Some(table)) = tables.get_mut(pid as usize) {
-            if fd < MAX_FD {
+            if fd < table.entries.len() {
                 close_entry(table.entries[fd]);
                 table.entries[fd] = FdEntry::Empty;
                 return true;
@@ -113,10 +127,10 @@ pub fn close_all(pid: u64) {
     unsafe {
         let tables = &mut *TABLES.0.get();
         if let Some(Some(table)) = tables.get_mut(pid as usize) {
-            for i in 0..MAX_FD {
-                close_entry(table.entries[i]);
-                table.entries[i] = FdEntry::Empty;
+            for entry in table.entries.iter() {
+                close_entry(*entry);
             }
+            table.entries.clear();
         }
     }
 }
