@@ -285,9 +285,17 @@ concern, distinct from the minimal panic blit above.
 
 **Rule of thumb for new drivers:** write them as ring3 `.kkm` modules, not as new
 files under `crates/kernel/src/drivers/`. The existing in-kernel drivers (`hda`,
-`keyboard`, framebuffer rendering, `beep`, `pci` enumeration, `power`) predate this
-policy; they work and need not be moved urgently, but they are candidates to migrate
-to ring3 over time. Large protocol/library stacks (e.g. a TLS library) must never
-live in ring0 — `panic = "abort"` means a driver panic in ring0 takes down the whole
-kernel.
+framebuffer rendering, `beep`, `pci` enumeration, `power`) predate this policy; they
+work and need not be moved urgently, but they are candidates to migrate to ring3 over
+time. Large protocol/library stacks (e.g. a TLS library) must never live in ring0 —
+`panic = "abort"` means a driver panic in ring0 takes down the whole kernel.
+
+**`keyboard` is deliberately kept in-kernel** and is *not* a migration candidate. It
+is the recovery input path: a ring3 keyboard module that is accidentally unloaded
+(`SYS_MODULE_UNLOAD`) or crashes would leave no way to type to recover — the system
+is bricked. This is asymmetric with the mouse (losing the mouse is survivable via the
+keyboard; losing the keyboard is not). Keyboard is also the stdin source for every
+program (`FdEntry::ConsoleIn` reads it directly). Keeping it in ring0 is an
+intentional, pragmatic exception with a concrete reason — not a violation of the
+policy above.
 
