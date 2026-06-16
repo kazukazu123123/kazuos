@@ -157,12 +157,40 @@ unsafe fn push_byte(ch: u8) {
                 return;
             }
         }
+        // Keyboard focus: a graphical program that owns the framebuffer also owns
+        // the keyboard. Deliver only to it — wake a blocking read, otherwise buffer
+        // for its non-blocking polls — and never wake other readers such as the
+        // shell. The ring buffer is flushed on FB acquire/release (see flush()) so
+        // keys typed under one focus never resurface under another.
+        if let Some(owner) = crate::drivers::fb_owner::owner() {
+            if crate::process::wakeup_key_waiter_for_pid(owner, ch) > 0 { return; }
+            buffer_byte(ch);
+            return;
+        }
+
         if crate::process::wakeup_key_waiters(ch) > 0 { return; }
+        buffer_byte(ch);
+    }
+}
+
+unsafe fn buffer_byte(ch: u8) {
+    unsafe {
         let next = (*HEAD.0.get() + 1) % BUF_SIZE;
         if next != *TAIL.0.get() {
             (*BUF.0.get())[*HEAD.0.get()] = ch;
             *HEAD.0.get() = next;
         }
+    }
+}
+
+/// Discard any buffered keystrokes. Called on framebuffer acquire/release so a
+/// graphical program and the shell never inherit each other's typed-but-unread
+/// keys across a focus change.
+pub fn flush() {
+    let _guard = KeyboardGuard::new();
+    unsafe {
+        *HEAD.0.get() = 0;
+        *TAIL.0.get() = 0;
     }
 }
 

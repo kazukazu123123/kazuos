@@ -594,6 +594,27 @@ pub fn wakeup_key_waiters(key: u8) -> usize {
     })
 }
 
+/// Like `wakeup_key_waiters` but only wakes a keyboard waiter belonging to `pid`.
+/// Used for keyboard focus: while a graphical program owns the framebuffer, keys
+/// go only to it, never to other readers (e.g. the shell at its prompt).
+pub fn wakeup_key_waiter_for_pid(pid: u64, key: u8) -> usize {
+    with_threads_lock(|| unsafe {
+        let threads = &mut *THREADS.0.get();
+        for t in threads.iter_mut() {
+            if t.pid == pid
+                && matches!(t.state, ThreadState::Sleeping)
+                && matches!(t.wait_target, WaitTarget::Keyboard)
+            {
+                restore_ctx_from_blocking_frame(t, key as u64);
+                t.state = ThreadState::Ready;
+                t.wait_target = WaitTarget::None;
+                return 1;
+            }
+        }
+        0
+    })
+}
+
 pub fn wakeup_pid_waiters(exited_pid: u64) {
     with_threads_lock(|| unsafe {
         let threads = &mut *THREADS.0.get();
