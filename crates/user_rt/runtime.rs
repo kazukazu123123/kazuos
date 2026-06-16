@@ -249,13 +249,16 @@ unsafe impl core::alloc::GlobalAlloc for Heap {
 }
 
 fn sys_write_raw(buf: &[u8]) {
+    // Write to stdout (fd 1), not the console directly, so program output follows
+    // the process's stdout — to the screen normally, or into a pipe when redirected
+    // (e.g. running under the GUI terminal). fd 1 defaults to the console.
     unsafe {
         core::arch::asm!(
             "int 0x80",
-            in("rax") SYS_CONSOLE_WRITE,
-            in("rdi") buf.as_ptr(),
-            in("rsi") buf.len(),
-            in("rdx") 0,
+            in("rax") SYS_WRITE,
+            in("rdi") 1u64,
+            in("rsi") buf.as_ptr(),
+            in("rdx") buf.len(),
             lateout("rax") _,
         );
     }
@@ -309,6 +312,20 @@ pub fn sys_read(fd: u64, buf: &mut [u8]) -> u64 {
         core::arch::asm!(
             "int 0x80",
             inlateout("rax") SYS_READ => r,
+            in("rdi") fd,
+            in("rsi") buf.as_mut_ptr(),
+            in("rdx") buf.len(),
+        );
+    }
+    r
+}
+
+pub fn sys_try_read(fd: u64, buf: &mut [u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_TRY_READ => r,
             in("rdi") fd,
             in("rsi") buf.as_mut_ptr(),
             in("rdx") buf.len(),

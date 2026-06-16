@@ -3,6 +3,10 @@
 include!("../../crates/user_rt/runtime.rs");
 
 const STDIO_DEFAULT: u64 = 0xFFFF_FFFF;
+// Child inherits the shell's stdout (fd 1): default stdin, stdout = our fd 1. So a
+// command's output follows the shell's stdout — the console normally, or the GUI
+// terminal's pipe when the shell itself is running piped.
+const STDIO_INHERIT: u64 = 0xFFFF | (1 << 16);
 
 const KEY_UP:   u64 = 0x82;
 const KEY_DOWN: u64 = 0x83;
@@ -28,13 +32,70 @@ struct ProcessInfo {
     memory_bytes: u64,
 }
 
+// When launched with a `--pipe` argument (by the GUI terminal), the shell does its
+// I/O over stdin/stdout (fd 0/1) — which the GUI has wired to pipes — instead of the
+// kernel console + keyboard. The normal console shell (no flag) is unchanged.
+static mut PIPE_MODE: bool = false;
+fn pipe_mode() -> bool { unsafe { PIPE_MODE } }
+
+fn has_pipe_flag(argc: u64, argv: u64) -> bool {
+    if argv == 0 { return false; }
+    let ptrs = argv as *const u64;
+    // argv here is the kernel's arg list (no argv[0]=path slot), so start at 0.
+    for i in 0..argc {
+        let p = unsafe { *ptrs.add(i as usize) } as *const u8;
+        if p.is_null() { continue; }
+        let target = b"--pipe";
+        let mut ok = true;
+        for (j, &t) in target.iter().enumerate() {
+            if unsafe { *p.add(j) } != t { ok = false; break; }
+        }
+        if ok && unsafe { *p.add(target.len()) } == 0 { return true; }
+    }
+    false
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
+pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
+    unsafe { PIPE_MODE = has_pipe_flag(argc, argv); }
     let mut buf = [0u8; BUF_SIZE];
     loop {
-        let len = read_line(&mut buf);
+        let len = if pipe_mode() { read_line_pipe(&mut buf) } else { read_line(&mut buf) };
         if len > 0 {
             execute(&buf[..len]);
+        }
+    }
+}
+
+// Simple line editor for pipe mode: read bytes from stdin, echo to stdout, handle
+// Enter and backspace. No history/cursor movement — the GUI terminal is a plain
+// dumb terminal. EOF on stdin (the terminal window closed) exits the shell.
+//
+// Uses non-blocking SYS_TRY_READ + a short sleep rather than a blocking read: a
+// blocking pipe read is completed by the *writer's* wakeup, which copies into our
+// buffer using the writer's address space (wrong CR3). Polling keeps the read in
+// our own context so the bytes land correctly.
+fn read_line_pipe(buf: &mut [u8]) -> usize {
+    sys_write(b"KazuOS> ");
+    let mut len = 0usize;
+    let mut chunk = [0u8; 32];
+    loop {
+        let n = sys_try_read(0, &mut chunk);
+        if n == u64::MAX { sys_exit(0); } // stdin closed → shell exits
+        if n == 0 {
+            syscall3(SYS_SLEEP, 15, SLEEP_UNIT_MS);
+            continue;
+        }
+        for i in 0..n as usize {
+            match chunk[i] {
+                b'\r' | b'\n' => { sys_write(b"\r\n"); return len; }
+                0x08 | 0x7f => {
+                    if len > 0 { len -= 1; sys_write(b"\x08 \x08"); }
+                }
+                ch => {
+                    if len < buf.len() { buf[len] = ch; len += 1; let c = [ch]; sys_write(&c); }
+                }
+            }
         }
     }
 }
@@ -231,7 +292,7 @@ fn execute(cmd: &[u8]) {
         return cmd_pipe(cmd1, cmd2);
     }
     // try /bin/<name>.kxe
-    let pid = exec_bin(cmd, STDIO_DEFAULT);
+    let pid = exec_bin(cmd, STDIO_INHERIT);
     if pid == 1 {
         sys_write(b"KazuOS: ");
         sys_write(cmd);
@@ -556,13 +617,31 @@ fn cmd_ls(cmd: &[u8]) {
         norm_buf[1..1 + path_raw.len()].copy_from_slice(path_raw);
         &norm_buf[..1 + path_raw.len()]
     };
-    let r = syscall3(SYS_LS, path.as_ptr() as u64, path.len() as u64);
+    const CAP: usize = 64;
+    let mut ents = [DirEnt { kind: 0, name: [0u8; 32] }; CAP];
+    let r = syscall4(SYS_READDIR, path.as_ptr() as u64, path.len() as u64, ents.as_mut_ptr() as u64);
     if r == u64::MAX {
         sys_write(b"ls: failed\r\n");
-    } else {
-        write_u64(r);
-        sys_write(b" entries\r\n");
+        return;
     }
+    let count = (r as usize).min(CAP);
+    for e in &ents[..count] {
+        sys_write(match e.kind {
+            1 => b"dir   ",
+            2 => b"dev   ",
+            _ => b"file  ",
+        });
+        let nlen = e.name.iter().position(|&b| b == 0).unwrap_or(e.name.len());
+        sys_write(&e.name[..nlen]);
+        sys_write(b"\r\n");
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DirEnt {
+    kind: u8,
+    name: [u8; 32],
 }
 
 fn cmd_exec(args: &[u8]) {
@@ -571,7 +650,7 @@ fn cmd_exec(args: &[u8]) {
         sys_write(b"usage: exec <path>\r\n");
         return;
     }
-    let pid = syscall3(SYS_EXEC, path.as_ptr() as u64, path.len() as u64);
+    let pid = syscall4(SYS_EXEC, path.as_ptr() as u64, path.len() as u64, STDIO_INHERIT);
     if pid == 1 {
         sys_write(b"KazuOS: ");
         sys_write(path);
@@ -625,7 +704,12 @@ fn write_u64(mut n: u64) {
 }
 
 fn sys_write(buf: &[u8]) {
-    syscall3(SYS_CONSOLE_WRITE, buf.as_ptr() as u64, buf.len() as u64);
+    if pipe_mode() {
+        sys_write_fd(1, buf); // GUI terminal: stdout is a pipe
+    } else {
+        // Console shell: write straight to the console.
+        syscall3(SYS_CONSOLE_WRITE, buf.as_ptr() as u64, buf.len() as u64);
+    }
 }
 
 fn syscall1(n: u64, a0: u64) -> u64 {
