@@ -3,10 +3,12 @@
 include!("../../crates/user_rt/runtime.rs");
 
 const STDIO_DEFAULT: u64 = 0xFFFF_FFFF;
-// Child inherits the shell's stdout (fd 1): default stdin, stdout = our fd 1. So a
-// command's output follows the shell's stdout — the console normally, or the GUI
-// terminal's pipe when the shell itself is running piped.
-const STDIO_INHERIT: u64 = 0xFFFF | (1 << 16);
+// Child inherits the shell's own stdin (fd 0) and stdout (fd 1), so a foreground child
+// reads and writes the same stream as the shell — the console for the boot shell, or
+// the GUI terminal's pipes when the shell runs under a terminal. (Forcing stdin to the
+// console default instead would starve a nested shell under the GUI, which receives no
+// console keys.) The shell waiting in SYS_WAIT is what makes the child the foreground.
+const STDIO_INHERIT: u64 = 0 | (1 << 16);
 
 const MAX_HISTORY: usize = 32;
 static mut HISTORY: [[u8; BUF_SIZE]; MAX_HISTORY] = [[0u8; BUF_SIZE]; MAX_HISTORY];
