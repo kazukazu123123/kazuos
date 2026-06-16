@@ -6,6 +6,10 @@ use crate::util::{SyncUnsafeCell, rdtsc};
 static mut TIMER_TICKS: u64 = 0;
 static mut KERNEL_TICKS: u64 = 0;
 static mut IDLE_TICKS: u64 = 0;
+// Monotonic total of user CPU time across all processes (including ones that have
+// since exited). Used as the %CPU denominator instead of summing live processes'
+// tick counters, which drops when a process exits and would skew the math.
+static mut USER_TICKS: u64 = 0;
 static mut USE_IOAPIC: bool = false;
 static mut KEYBOARD_POLLING: bool = false;
 
@@ -33,6 +37,10 @@ pub fn kernel_cpu_ticks() -> u64 {
 
 pub fn idle_cpu_ticks() -> u64 {
     unsafe { IDLE_TICKS }
+}
+
+pub fn user_cpu_ticks() -> u64 {
+    unsafe { USER_TICKS }
 }
 
 pub fn kernel_cpu_ticks_for_cpu(cpu: usize) -> u64 {
@@ -97,6 +105,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         if delta != 0 {
             if let Some(pid) = crate::scheduler::current_user_pid() {
                 crate::process::add_cpu_ticks(pid, delta);
+                USER_TICKS = USER_TICKS.saturating_add(delta);
                 if let Some(v) = (*USER_TICKS_PER_CPU.0.get()).get_mut(cpu) {
                     *v = v.saturating_add(delta);
                 }

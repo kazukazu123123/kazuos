@@ -92,15 +92,12 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             }
             0
         }
-        SYS_CONSOLE_CLEAR => { console::clear(); 0 }
-        SYS_CURSOR_SAVE => { console::save_cursor_pos(); 0 }
-        SYS_CURSOR_RESTORE => { console::restore_cursor_pos(); 0 }
+        // Console / cursor ops touch the framebuffer, so suppress them when another
+        // process owns it (a background console shell must not draw over a GUI).
+        SYS_CURSOR_SAVE => { if console_writable() { console::save_cursor_pos(); } 0 }
+        SYS_CURSOR_RESTORE => { if console_writable() { console::restore_cursor_pos(); } 0 }
         SYS_CURSOR_DRAW => {
-            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-            let fb_owner = crate::drivers::fb_owner::owner();
-            if fb_owner.is_none() || fb_owner == Some(caller) {
-                console::draw_saved_cursor(arg0 != 0);
-            }
+            if console_writable() { console::draw_saved_cursor(arg0 != 0); }
             0
         }
         SYS_FB_ACQUIRE => {
@@ -115,32 +112,6 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             let (cols, rows) = crate::terminal::console::console_size();
             ((rows as u64) << 32) | (cols as u64)
         }
-        SYS_FB_QUERY => {
-            let info_ptr = arg0 as *mut crate::drivers::fb_owner::FbInfo;
-            let owner_ptr = arg1 as *mut u64;
-            if let Some(p) = crate::console::fb_params() {
-                if !info_ptr.is_null() {
-                    unsafe {
-                        info_ptr.write(crate::drivers::fb_owner::FbInfo {
-                            base: crate::drivers::fb_owner::USER_FB_VA,
-                            width: p.width,
-                            height: p.height,
-                            stride: p.stride,
-                            format: p.format,
-                        });
-                    }
-                }
-                if !owner_ptr.is_null() {
-                    unsafe { owner_ptr.write(crate::drivers::fb_owner::owner().unwrap_or(u64::MAX)); }
-                }
-                0
-            } else {
-                if !owner_ptr.is_null() {
-                    unsafe { owner_ptr.write(u64::MAX); }
-                }
-                u64::MAX
-            }
-        }
 
         // Process / Lifecycle
         SYS_EXIT => {
@@ -152,6 +123,10 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         }
         SYS_EXEC => sys_exec(arg0, arg1, arg2),
         SYS_KILL => { process::kill_pid(arg0); 0 }
+        SYS_SIGINT_FG => {
+            let leaf = process::foreground_leaf(arg0);
+            if leaf != 0 && leaf != arg0 { process::send_sigint(leaf); 1 } else { 0 }
+        }
         SYS_WAIT => sys_wait(arg0),
         SYS_PROCESS_INFO => {
             if arg1 != 0 {
@@ -288,7 +263,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         // System / Misc
         SYS_CPU_INFO => match arg0 {
             0 => crate::handlers::interrupts::timer_ticks(),
-            1 => process::total_cpu_ticks(),
+            1 => crate::handlers::interrupts::user_cpu_ticks(),
             2 => crate::handlers::interrupts::kernel_cpu_ticks(),
             3 => crate::handlers::interrupts::idle_cpu_ticks(),
             4 => crate::smp::cpu_count() as u64,
@@ -856,6 +831,10 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
     } else {
         exec::spawn_user_with_fds_and_args(path, &args, caller, stdin_fd, stdout_fd)
     };
+    // Record the spawner as the child's parent so it's cleaned up if the parent exits.
+    if pid != 0 && pid != u64::MAX {
+        process::set_parent(pid, caller);
+    }
     pid
 }
 
@@ -972,6 +951,17 @@ fn sys_close(fd: u64) -> u64 {
 /// Keyboard input belongs to the framebuffer owner while one exists: a background
 /// process (e.g. the console shell that launched a graphical app) must not steal
 /// keys from the focused GUI by polling. True when someone else owns the framebuffer.
+/// True when the caller may draw to the console framebuffer: either nobody owns the
+/// framebuffer, or the caller is the owner. A background process (e.g. the console
+/// shell that launched a GUI) must not paint over the graphical owner.
+fn console_writable() -> bool {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    match crate::drivers::fb_owner::owner() {
+        None => true,
+        Some(owner) => owner == caller,
+    }
+}
+
 fn kbd_locked_out() -> bool {
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     matches!(crate::drivers::fb_owner::owner(), Some(o) if o != caller)
