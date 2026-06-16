@@ -66,6 +66,9 @@ pub(crate) struct Process {
     // a running thread (SMP use-after-free), so the thread self-exits the next
     // time it enters the kernel. See kill_pid / syscall_dispatch.
     pub(crate) kill_pending: bool,
+    // pid of the spawning process (0 = kernel). When a parent exits, its children
+    // are killed so they don't orphan (e.g. a GUI's terminal shell dies with it).
+    pub(crate) parent: u64,
     pub(crate) privilege: PrivilegeLevel,
     pub(crate) main_tid: Option<u64>,
     pub(crate) threads: Vec<u64>,
@@ -120,6 +123,7 @@ fn kernel_process() -> Process {
         sigint_catch: false,
         sigint_pending: false,
         kill_pending: false,
+        parent: 0,
         privilege: PrivilegeLevel::Driver,
         main_tid: None,
         threads: alloc::vec![],
@@ -156,6 +160,7 @@ fn create_process(image_name: &str, privilege: PrivilegeLevel, main_tid: u64) ->
             sigint_catch: false,
             sigint_pending: false,
             kill_pending: false,
+            parent: 0,
             privilege,
             main_tid: Some(main_tid),
             threads: alloc::vec![main_tid],
@@ -277,6 +282,7 @@ pub fn exit_current() {
                 p.state = ProcessState::Running;
             }
         } else {
+            kill_children(pid);
             crate::drivers::fb_owner::release(pid);
             crate::scheduler::clear_current_user(pid);
             crate::fd::close_all(pid);
@@ -455,6 +461,48 @@ pub fn take_kill_pending(pid: u64) -> bool {
 /// Ready. Because nothing is freed, the thread keeps running on its still-valid
 /// address space until it next enters the kernel, where `syscall_dispatch` sees
 /// `kill_pending` and self-exits via `exit_current()` on its own CPU (safe).
+/// Follow `root`'s wait chain (root waits on X, X waits on Y, ...) to the running
+/// leaf — the foreground process. Returns `root` itself if it isn't waiting on a pid.
+pub fn foreground_leaf(root: u64) -> u64 {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        let processes = &*PROCESSES.0.get();
+        let waits_on = |pid: u64| -> Option<u64> {
+            processes
+                .iter()
+                .find(|p| p.pid == pid)
+                .and_then(|p| p.main_tid)
+                .and_then(thread::wait_target)
+                .and_then(|t| if let WaitTarget::Pid(target) = t { Some(target) } else { None })
+        };
+        let mut cur = root;
+        for _ in 0..64 {
+            match waits_on(cur) {
+                Some(next) => cur = next,
+                None => break,
+            }
+        }
+        cur
+    })
+}
+
+pub fn set_parent(pid: u64, parent: u64) {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        if let Some(p) = (&mut *PROCESSES.0.get()).iter_mut().find(|p| p.pid == pid) {
+            p.parent = parent;
+        }
+    })
+}
+
+/// Kill every process whose parent is `pid` (used when the parent exits).
+fn kill_children(pid: u64) {
+    let children: alloc::vec::Vec<u64> = unsafe {
+        (*PROCESSES.0.get()).iter().filter(|p| p.parent == pid).map(|p| p.pid).collect()
+    };
+    for child in children {
+        kill_pid(child);
+    }
+}
+
 pub fn kill_pid(pid: u64) {
     crate::task::thread::with_threads_lock(|| {
         if pid == 0 {

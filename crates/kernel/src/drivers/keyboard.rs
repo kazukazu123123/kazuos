@@ -153,14 +153,13 @@ pub(crate) unsafe fn poll() {
 
 unsafe fn push_byte(ch: u8) {
     unsafe {
-        if ch == 0x03 {
-            // Ctrl+C goes to the graphical foreground (framebuffer owner) if any,
-            // otherwise to the text foreground process (the program the shell is
-            // currently waiting on). Falls through to the key buffer only when
-            // there is no foreground at all (e.g. shell prompt, background jobs).
-            if let Some(pid) =
-                crate::drivers::fb_owner::owner().or_else(crate::process::foreground_pid)
-            {
+        if ch == 0x03 && crate::drivers::fb_owner::owner().is_none() {
+            // Console mode: Ctrl+C interrupts the text foreground process (the program
+            // the shell is waiting on). With a graphical owner, Ctrl+C is NOT a signal
+            // to the compositor — it falls through as an ordinary key so the focused
+            // app (e.g. a terminal) can forward it to its own child. Killing the
+            // framebuffer owner here would take the whole desktop down.
+            if let Some(pid) = crate::process::foreground_pid() {
                 crate::process::send_sigint(pid);
                 return;
             }

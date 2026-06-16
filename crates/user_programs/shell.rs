@@ -89,6 +89,7 @@ fn read_line_pipe(buf: &mut [u8]) -> usize {
         for i in 0..n as usize {
             match chunk[i] {
                 b'\r' | b'\n' => { sys_write(b"\r\n"); return len; }
+                0x03 => { sys_write(b"^C\r\n"); return 0; } // Ctrl+C: cancel the line
                 0x08 | 0x7f => {
                     if len > 0 { len -= 1; sys_write(b"\x08 \x08"); }
                 }
@@ -490,7 +491,10 @@ fn cmd_help() {
 }
 
 fn cmd_clear() {
-    syscall1(SYS_CONSOLE_CLEAR, 0);
+    // Clear via an in-band ANSI sequence (clear screen + home cursor) so it works on
+    // whatever the shell's stdout is — the kernel console and the GUI terminal both
+    // interpret it — instead of an out-of-band console-only syscall.
+    sys_write(b"\x1b[2J\x1b[H");
 }
 
 fn cmd_mem() {
