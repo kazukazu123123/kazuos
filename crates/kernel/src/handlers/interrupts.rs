@@ -135,12 +135,6 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         } else {
             crate::process::current_tid()
         };
-        let current_pid = if current_tid != 0 {
-            crate::task::thread::thread_pid(current_tid).unwrap_or(0)
-        } else {
-            0
-        };
-
         if current_tid != 0 {
             if cs_ring == 3 {
                 crate::scheduler::save_user_context(current_tid, saved_rsp);
@@ -149,10 +143,11 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
                 crate::scheduler::save_kernel_context(current_tid, saved_rsp);
                 crate::task::thread::set_kernel_preempted(current_tid, true);
             }
+            // Re-ready only the preempted thread. Do NOT call process::set_ready(pid):
+            // that readies the process *main* thread, which on a multi-threaded process
+            // would spuriously wake a main thread that is blocked (e.g. in SYS_THREAD_JOIN)
+            // whenever any other thread of the process is preempted.
             crate::task::thread::set_ready(current_tid);
-            if current_pid != 0 {
-                crate::process::set_ready(current_pid);
-            }
         }
 
         let next_tid = crate::scheduler::schedule_next(current_tid);

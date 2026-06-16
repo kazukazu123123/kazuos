@@ -39,6 +39,7 @@ pub enum WaitTarget {
     None,
     Keyboard,
     Pid(u64),
+    Tid(u64), // joining a thread: wait until that tid exits
     Timer(u64),
     Tick,
     Ipc(u64),
@@ -258,6 +259,97 @@ pub fn spawn_user_process(
     })
 }
 
+// Start a new thread in the *current* process: same address space (cr3), fds and heap,
+// its own kernel stack, running `entry(arg)` on the caller-provided `stack_top`. On SMP
+// it is round-robin assigned a CPU, so it can run truly in parallel with the spawner.
+pub fn spawn_user_thread(entry: u64, arg: u64, stack_top: u64) -> u64 {
+    crate::task::thread::with_threads_lock(|| {
+        let pid = current_pid();
+        if pid == 0 {
+            return 0;
+        }
+        let cr3 = match thread::user_cr3(current_tid()) {
+            Some(c) => c,
+            None => return 0,
+        };
+        let level = privilege_level(pid);
+        let tid = thread::create_user_thread(pid, entry, stack_top, cr3, level, arg, 0);
+        if tid == 0 {
+            return 0;
+        }
+        add_thread_to_process(pid, tid);
+        thread::set_ready(tid);
+        tid
+    })
+}
+
+// Exit only the calling thread (the process and its other threads keep running). The
+// caller must have already checked this is not the last live thread.
+pub fn exit_current_thread() {
+    crate::task::thread::with_threads_lock(|| {
+        let pid = current_pid();
+        let tid = current_tid();
+        remove_thread_from_process(pid, tid);
+        crate::scheduler::clear_current_user(pid);
+        clear_current_pid();
+        if tid != 0 {
+            thread::set_state(tid, thread::ThreadState::Exited);
+            thread::wakeup_thread_waiters(tid); // wake SYS_THREAD_JOIN callers
+        }
+    })
+}
+
+// Block the *calling thread* (not the process main thread) on `target`. Used by the
+// blocking syscalls so a worker thread can wait without freezing the whole process.
+pub fn block_current(target: WaitTarget) {
+    crate::task::thread::with_threads_lock(|| {
+        if let Some(tid) = crate::scheduler::current_user_tid() {
+            thread::set_wait_target(tid, target);
+            thread::set_sleeping(tid);
+        }
+    })
+}
+
+// SYS_THREAD_JOIN: if `tid` is still alive, block the caller on it and return true (the
+// dispatcher then yields to the scheduler); if it already exited, return false.
+pub fn join_current(tid: u64) -> bool {
+    crate::task::thread::with_threads_lock(|| {
+        let alive = !matches!(
+            thread::state(tid),
+            Some(thread::ThreadState::Exited) | Some(thread::ThreadState::Empty) | None
+        );
+        if !alive {
+            return false;
+        }
+        if let Some(cur) = crate::scheduler::current_user_tid() {
+            thread::set_wait_target(cur, WaitTarget::Tid(tid));
+            thread::set_sleeping(cur);
+        }
+        true
+    })
+}
+
+// Number of live (not exited) threads belonging to `pid`.
+pub fn live_thread_count(pid: u64) -> usize {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (*PROCESSES.0.get())
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| {
+                p.threads
+                    .iter()
+                    .filter(|&&t| {
+                        !matches!(
+                            thread::state(t),
+                            Some(thread::ThreadState::Exited) | Some(thread::ThreadState::Empty) | None
+                        )
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    })
+}
+
 pub fn set_privilege(pid: u64, privilege: PrivilegeLevel) {
     crate::task::thread::with_threads_lock(|| {
         unsafe {
@@ -307,6 +399,7 @@ pub fn exit_current() {
         clear_current_pid();
         if tid != 0 {
             thread::set_state(tid, thread::ThreadState::Exited);
+            thread::wakeup_thread_waiters(tid); // wake any SYS_THREAD_JOIN on this thread
         }
     })
 }
@@ -557,7 +650,11 @@ pub fn kill_pid(pid: u64) {
 
 pub fn set_running(pid: u64) {
     crate::task::thread::with_threads_lock(|| {
-        crate::scheduler::set_current_user_pid(Some(pid));
+        // NOTE: do not touch the per-CPU current tid/pid here. The scheduler already
+        // set the exact thread it is launching via set_current_user_tid(); calling
+        // set_current_user_pid(Some(pid)) would reset the current tid to the process's
+        // *main* thread, so a non-main worker thread would run with the wrong current
+        // tid and its blocking syscalls would park the main thread instead of itself.
         unsafe {
             let processes = &mut *PROCESSES.0.get();
             if let Some(p) = processes.iter_mut().find(|p| p.pid == pid)
@@ -566,9 +663,11 @@ pub fn set_running(pid: u64) {
                 p.state = ProcessState::Running;
             }
         }
-        if let Some(tid) = main_tid(pid) {
+        // Mark the thread the scheduler is actually launching (the current one it just
+        // selected) Running — not the process main thread, which would be wrong for a
+        // worker thread and would clobber the per-CPU current tid back to main.
+        if let Some(tid) = crate::scheduler::current_user_tid() {
             thread::set_running(tid);
-            crate::scheduler::set_current_user_tid(Some(tid));
         }
     })
 }
@@ -881,6 +980,15 @@ pub fn set_blocking_rsp(pid: u64, rsp: u64) {
         if let Some(tid) = main_tid(pid) {
             thread::set_blocking_rsp(tid, rsp);
         }
+    })
+}
+
+// Save the blocking frame on a specific thread (the one that actually blocked), not the
+// process's main thread — required so a non-main worker thread resumes from where it
+// blocked instead of being relaunched from its entry point.
+pub fn set_blocking_rsp_tid(tid: u64, rsp: u64) {
+    crate::task::thread::with_threads_lock(|| {
+        thread::set_blocking_rsp(tid, rsp);
     })
 }
 
