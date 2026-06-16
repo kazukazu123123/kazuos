@@ -203,6 +203,24 @@ fn execute(cmd: &[u8]) {
     if cmd == b"ls" || cmd.starts_with(b"ls ") {
         return cmd_ls(cmd);
     }
+    if cmd.starts_with(b"touch ") {
+        return cmd_touch(trim(&cmd[6..]));
+    }
+    if cmd.starts_with(b"rm ") {
+        return cmd_rm(trim(&cmd[3..]));
+    }
+    if cmd.starts_with(b"mkdir ") {
+        return cmd_mkdir(trim(&cmd[6..]));
+    }
+    if cmd.starts_with(b"rmdir ") {
+        return cmd_rmdir(trim(&cmd[6..]));
+    }
+    if cmd.starts_with(b"cat ") {
+        return cmd_cat(trim(&cmd[4..]));
+    }
+    if cmd.starts_with(b"echo ") {
+        return cmd_echo(trim(&cmd[5..]));
+    }
     if cmd.starts_with(b"exec ") {
         return cmd_exec(&cmd[5..]);
     }
@@ -237,6 +255,84 @@ fn execute(cmd: &[u8]) {
 
 fn find_pipe(cmd: &[u8]) -> Option<usize> {
     cmd.iter().position(|&b| b == b'|')
+}
+
+// ── RAM rootfs commands ─────────────────────────────────────────────────────
+
+fn need_abs(path: &[u8]) -> bool {
+    if path.is_empty() || path[0] != b'/' {
+        sys_write(b"path must be absolute (start with /)\r\n");
+        return false;
+    }
+    true
+}
+
+fn cmd_touch(path: &[u8]) {
+    if !need_abs(path) { return; }
+    let fd = sys_create(path);
+    if fd == u64::MAX {
+        sys_write(b"touch: failed\r\n");
+        return;
+    }
+    sys_close(fd);
+}
+
+fn cmd_rm(path: &[u8]) {
+    if !need_abs(path) { return; }
+    if sys_unlink(path) == u64::MAX {
+        sys_write(b"rm: failed (not a file or not found)\r\n");
+    }
+}
+
+fn cmd_mkdir(path: &[u8]) {
+    if !need_abs(path) { return; }
+    if sys_mkdir(path) == u64::MAX {
+        sys_write(b"mkdir: failed (exists or missing parent)\r\n");
+    }
+}
+
+fn cmd_rmdir(path: &[u8]) {
+    if !need_abs(path) { return; }
+    if sys_rmdir(path) == u64::MAX {
+        sys_write(b"rmdir: failed (not empty or not a dir)\r\n");
+    }
+}
+
+fn cmd_cat(path: &[u8]) {
+    if !need_abs(path) { return; }
+    let fd = sys_open(path);
+    if fd == u64::MAX {
+        sys_write(b"cat: not found\r\n");
+        return;
+    }
+    let mut buf = [0u8; 256];
+    loop {
+        let n = sys_read(fd, &mut buf);
+        if n == 0 || n == u64::MAX { break; }
+        sys_write(&buf[..n as usize]);
+    }
+    sys_write(b"\r\n");
+    sys_close(fd);
+}
+
+fn cmd_echo(args: &[u8]) {
+    // "echo TEXT"          -> stdout
+    // "echo TEXT > /path"  -> write TEXT to a file (create/overwrite)
+    if let Some(pos) = args.iter().position(|&b| b == b'>') {
+        let text = trim(&args[..pos]);
+        let path = trim(&args[pos + 1..]);
+        if !need_abs(path) { return; }
+        let fd = sys_create(path);
+        if fd == u64::MAX {
+            sys_write(b"echo: cannot create file\r\n");
+            return;
+        }
+        sys_write_fd(fd, text);
+        sys_close(fd);
+    } else {
+        sys_write(args);
+        sys_write(b"\r\n");
+    }
 }
 
 fn exec_bin(cmd: &[u8], stdio_pack: u64) -> u64 {

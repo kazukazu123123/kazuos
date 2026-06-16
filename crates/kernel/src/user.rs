@@ -243,6 +243,10 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_WRITE => sys_write(arg0, arg1, arg2),
         SYS_IOCTL => sys_ioctl(arg0, arg1, arg2),
         SYS_PIPE => sys_pipe(arg0),
+        SYS_CREATE => sys_create(arg0, arg1),
+        SYS_UNLINK => sys_unlink(arg0, arg1),
+        SYS_MKDIR => sys_mkdir(arg0, arg1),
+        SYS_RMDIR => sys_rmdir(arg0, arg1),
 
         // Hardware / Driver
         SYS_PCI_INFO => sys_pci_info(arg0, arg1),
@@ -397,11 +401,7 @@ fn ls_path(path: &str) -> u64 {
         return dev_count as u64;
     }
 
-    let mut entries = [crate::vfs::DirEntry {
-        path: "",
-        kind: crate::vfs::FileType::File,
-        len: 0,
-    }; 16];
+    let mut entries = [crate::vfs::DirEntry::empty(); 16];
     let vfs_count = match crate::vfs::read_dir(path, &mut entries) {
         Ok(count) => {
             for entry in &entries[..count] {
@@ -411,9 +411,9 @@ fn ls_path(path: &str) -> u64 {
                 };
                 crate::console::screen_print(kind);
                 crate::console::screen_print("  ");
-                crate::console::screen_print(entry.path);
+                crate::console::screen_print(entry.name());
                 crate::console::screen_print("\r\n");
-                crate::serial_println!("{} {}", kind, entry.path);
+                crate::serial_println!("{} {}", kind, entry.name());
             }
             count
         }
@@ -863,6 +863,52 @@ fn sys_pipe(out_ptr: u64) -> u64 {
     }
 }
 
+/// Snapshot a user-space path string into kernel memory (under the caller's
+/// active CR3) before touching the filesystem.
+fn read_user_path(ptr: u64, len: u64) -> Option<alloc::string::String> {
+    if ptr == 0 || len == 0 || len > 256 {
+        return None;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) }.to_vec();
+    core::str::from_utf8(&bytes).ok().map(alloc::string::String::from)
+}
+
+fn sys_create(ptr: u64, len: u64) -> u64 {
+    let Some(path) = read_user_path(ptr, len) else { return u64::MAX };
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    let (node, generation) = match crate::vfs::create(&path) {
+        Ok(h) => h,
+        // create-or-truncate, so `echo ... > file` overwrites cleanly.
+        Err(crate::vfs::FsError::AlreadyExists) => match crate::vfs::lookup(&path) {
+            Ok(crate::vfs::VfsNode::File { node, generation, .. }) => {
+                crate::vfs::truncate(node, generation);
+                (node, generation)
+            }
+            _ => return u64::MAX,
+        },
+        Err(_) => return u64::MAX,
+    };
+    match fd::alloc_fd(caller, fd::FdEntry::File { node, generation, offset: 0 }) {
+        Some(fd) => fd as u64,
+        None => u64::MAX,
+    }
+}
+
+fn sys_unlink(ptr: u64, len: u64) -> u64 {
+    let Some(path) = read_user_path(ptr, len) else { return u64::MAX };
+    crate::vfs::unlink(&path).map_or(u64::MAX, |_| 0)
+}
+
+fn sys_mkdir(ptr: u64, len: u64) -> u64 {
+    let Some(path) = read_user_path(ptr, len) else { return u64::MAX };
+    crate::vfs::mkdir(&path).map_or(u64::MAX, |_| 0)
+}
+
+fn sys_rmdir(ptr: u64, len: u64) -> u64 {
+    let Some(path) = read_user_path(ptr, len) else { return u64::MAX };
+    crate::vfs::rmdir(&path).map_or(u64::MAX, |_| 0)
+}
+
 fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
     if path_ptr == 0 || path_len == 0 {
         return u64::MAX;
@@ -888,15 +934,8 @@ fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
                 }
             }
         }
-        Ok(crate::vfs::VfsNode::File { path: p, data }) => {
-            match fd::alloc_fd(
-                caller,
-                fd::FdEntry::File {
-                    path: p,
-                    offset: 0,
-                    len: data.len(),
-                },
-            ) {
+        Ok(crate::vfs::VfsNode::File { node, generation, len: _ }) => {
+            match fd::alloc_fd(caller, fd::FdEntry::File { node, generation, offset: 0 }) {
                 Some(fd) => fd as u64,
                 None => u64::MAX,
             }
@@ -953,33 +992,18 @@ fn sys_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
             unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
             n as u64
         }
-        Some(fd::FdEntry::File { path, offset, len }) => {
-            let data = match crate::vfs::read_file(path) {
-                Ok(d) => d,
-                Err(_) => return u64::MAX,
-            };
-            let remaining = len.saturating_sub(offset);
-            if remaining == 0 {
+        Some(fd::FdEntry::File { node, generation, offset }) => {
+            let want = buf_len as usize;
+            let mut kbuf = alloc::vec![0u8; want];
+            let n = crate::vfs::read_at(node, generation, offset, &mut kbuf);
+            if n == 0 {
                 return 0;
             }
-            let to_read = (buf_len as usize).min(remaining);
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    data.as_ptr().add(offset),
-                    buf_ptr as *mut u8,
-                    to_read,
-                );
+                core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n);
             }
-            let _ = fd::set_fd(
-                caller,
-                fd as usize,
-                fd::FdEntry::File {
-                    path,
-                    offset: offset + to_read,
-                    len,
-                },
-            );
-            to_read as u64
+            let _ = fd::set_fd(caller, fd as usize, fd::FdEntry::File { node, generation, offset: offset + n });
+            n as u64
         }
         Some(fd::FdEntry::Device { ops, handle }) => {
             let mut total = 0usize;
@@ -1038,6 +1062,14 @@ fn sys_write(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
             unsafe { core::ptr::copy_nonoverlapping(buf_ptr as *const u8, kbuf.as_mut_ptr(), buf_len as usize); }
             let n = crate::pipe::write(pipe_id, &kbuf);
             crate::process::notify_pipe_readers(pipe_id);
+            n as u64
+        }
+        Some(fd::FdEntry::File { node, generation, offset }) => {
+            let len = buf_len as usize;
+            let mut kbuf = alloc::vec![0u8; len];
+            unsafe { core::ptr::copy_nonoverlapping(buf_ptr as *const u8, kbuf.as_mut_ptr(), len); }
+            let n = crate::vfs::write_at(node, generation, offset, &kbuf);
+            let _ = fd::set_fd(caller, fd as usize, fd::FdEntry::File { node, generation, offset: offset + n });
             n as u64
         }
         Some(fd::FdEntry::Device { ops, handle }) => {
