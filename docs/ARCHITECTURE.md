@@ -261,3 +261,33 @@ Current drivers/support code:
 - Power shutdown/reboot
 - PC speaker beep
 
+## Driver Policy / Kernel Scope
+
+The long-term direction is a **minimal kernel**: ring0 *arbitrates* hardware but
+should not *operate* devices itself. The deciding question for "does this belong
+in the kernel?" is **not** "is it important?" (everything matters to the user) but
+**"does the kernel itself depend on it to run, boot, or report a failure?"**
+
+**Stays in ring0 (genuinely core):** memory management (PMM/VMM), scheduler,
+syscalls, IDT/GDT/TSS, interrupt controllers (LAPIC/IOAPIC/PIC), PIT, ACPI boot,
+serial debug output, exec/process, IPC, VFS core — plus the plumbing that lets
+ring3 drivers reach hardware: `SYS_IOPORT_REQUEST` (TSS I/O permission bitmap),
+`SYS_DMA_ALLOC`, `SYS_IRQ_WAIT`, `SYS_PCI_BAR_MAP`. A **minimal framebuffer blit**
+is also justified in ring0 so the kernel can show panic / early-boot diagnostics.
+
+**Belongs in ring3:** device drivers. They run as kernel modules — `.kkm` files
+built from `crates/user_modules/*.rs`, loaded via `SYS_MODULE_LOAD`, running as
+ring3 processes at `PrivilegeLevel::Driver` (which only gates *which syscalls are
+allowed*; all processes run ring3). `ps2mouse` is the reference example: it does
+PS/2 `in`/`out` from ring3 after requesting the ports, and delivers events over
+IPC. Rich console/terminal rendering (font shaping, scrollback) is also a ring3
+concern, distinct from the minimal panic blit above.
+
+**Rule of thumb for new drivers:** write them as ring3 `.kkm` modules, not as new
+files under `crates/kernel/src/drivers/`. The existing in-kernel drivers (`hda`,
+`keyboard`, framebuffer rendering, `beep`, `pci` enumeration, `power`) predate this
+policy; they work and need not be moved urgently, but they are candidates to migrate
+to ring3 over time. Large protocol/library stacks (e.g. a TLS library) must never
+live in ring0 — `panic = "abort"` means a driver panic in ring0 takes down the whole
+kernel.
+
