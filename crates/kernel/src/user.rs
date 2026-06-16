@@ -221,17 +221,12 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             let buf_len    = arg2 as usize;
             if buf_ptr == 0 || buf_len == 0 { return u64::MAX; }
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
-            match ipc::try_recv(channel_id, buf) {
+            let pid = crate::scheduler::current_user_pid().unwrap_or(0);
+            // try_recv registers the waiter and marks it sleeping atomically on Block.
+            match ipc::try_recv(channel_id, buf, pid) {
                 ipc::RecvResult::Ok(len) => len as u64,
                 ipc::RecvResult::Error   => u64::MAX,
-                ipc::RecvResult::Block   => {
-                    if let Some(pid) = crate::scheduler::current_user_pid() {
-                        ipc::add_recv_waiter(channel_id, pid);
-                        process::set_wait_target(pid, process::WaitTarget::Ipc(channel_id));
-                        process::set_sleeping(pid);
-                    }
-                    syscall::BLOCK_TO_SCHEDULER
-                }
+                ipc::RecvResult::Block   => syscall::BLOCK_TO_SCHEDULER,
             }
         }
         SYS_IPC_CLOSE => { ipc::close(arg0); 0 }
