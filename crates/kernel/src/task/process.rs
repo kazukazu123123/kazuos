@@ -839,6 +839,10 @@ pub fn wakeup_key_waiters(key: u8) -> usize {
     crate::task::thread::with_threads_lock(|| thread::wakeup_key_waiters(key))
 }
 
+pub fn wakeup_key_waiter_for_pid(pid: u64, key: u8) -> usize {
+    crate::task::thread::with_threads_lock(|| thread::wakeup_key_waiter_for_pid(pid, key))
+}
+
 pub fn wakeup_pid_waiters(exited_pid: u64) {
     crate::task::thread::with_threads_lock(|| thread::wakeup_pid_waiters(exited_pid))
 }
