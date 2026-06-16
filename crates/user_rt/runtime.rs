@@ -581,9 +581,10 @@ pub fn sys_signal_check() -> u64 {
 // caller (core::sync::atomic, or a spinlock) — there is no implicit locking.
 // ---------------------------------------------------------------------------
 
-/// Start a new thread running `entry(arg)` on a freshly allocated stack. `entry` must
-/// never return — finish it by calling `sys_thread_exit()`. Returns the new tid, or 0.
-pub fn spawn_thread(entry: extern "C" fn(u64) -> !, arg: u64) -> u64 {
+/// Internal helper for `thread_create`: start a thread running `entry(arg)` on a freshly
+/// allocated stack. `entry` must never return — it finishes via `sys_thread_exit()`.
+/// Returns the new tid, or 0. (Not public — use `thread_create` for the closure API.)
+fn spawn_thread(entry: extern "C" fn(u64) -> !, arg: u64) -> u64 {
     const STACK_SIZE: usize = 64 * 1024;
     let layout = core::alloc::Layout::from_size_align(STACK_SIZE, 16).unwrap();
     let base = unsafe { alloc::alloc::alloc(layout) };
@@ -637,4 +638,38 @@ pub fn sys_thread_join(tid: u64) -> u64 {
         );
     }
     r
+}
+
+/// Handle to a spawned thread; `join()` waits for it to finish (like std::thread).
+pub struct JoinHandle {
+    tid: u64,
+}
+
+impl JoinHandle {
+    pub fn tid(&self) -> u64 { self.tid }
+    pub fn join(self) { sys_thread_join(self.tid); }
+}
+
+// Trampoline: `arg` is a raw Box<Box<dyn FnOnce()>>; run the closure, then exit. The
+// inner Box makes the (fat) trait-object pointer fit in the single u64 the kernel passes.
+extern "C" fn thread_trampoline(arg: u64) -> ! {
+    let boxed = unsafe { alloc::boxed::Box::from_raw(arg as *mut alloc::boxed::Box<dyn FnOnce()>) };
+    let f: alloc::boxed::Box<dyn FnOnce()> = *boxed;
+    f();
+    sys_thread_exit();
+}
+
+/// Spawn a thread running the closure `f` (like `std::thread::spawn`); returns a handle
+/// to `join()`. The closure runs in the same address space — synchronise shared data
+/// with atomics or a spinlock. Returns `None` if the thread could not be created.
+pub fn thread_create<F: FnOnce() + Send + 'static>(f: F) -> Option<JoinHandle> {
+    let inner: alloc::boxed::Box<dyn FnOnce()> = alloc::boxed::Box::new(f);
+    let raw = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(inner));
+    let tid = spawn_thread(thread_trampoline, raw as u64);
+    if tid == 0 {
+        // Spawn failed: reclaim the boxed closure so it isn't leaked.
+        unsafe { drop(alloc::boxed::Box::from_raw(raw)); }
+        return None;
+    }
+    Some(JoinHandle { tid })
 }
