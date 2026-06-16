@@ -574,3 +574,102 @@ pub fn sys_signal_check() -> u64 {
     }
     r
 }
+
+// ---------------------------------------------------------------------------
+// Threads. A thread shares this process's address space, fds and heap; on SMP it
+// can run on another core in parallel. Shared data must be synchronised by the
+// caller (core::sync::atomic, or a spinlock) — there is no implicit locking.
+// ---------------------------------------------------------------------------
+
+/// Internal helper for `thread_create`: start a thread running `entry(arg)` on a freshly
+/// allocated stack. `entry` must never return — it finishes via `sys_thread_exit()`.
+/// Returns the new tid, or 0. (Not public — use `thread_create` for the closure API.)
+fn spawn_thread(entry: extern "C" fn(u64) -> !, arg: u64) -> u64 {
+    const STACK_SIZE: usize = 64 * 1024;
+    let layout = core::alloc::Layout::from_size_align(STACK_SIZE, 16).unwrap();
+    let base = unsafe { alloc::alloc::alloc(layout) };
+    if base.is_null() {
+        return 0;
+    }
+    // SysV expects rsp ≡ 8 (mod 16) at function entry (as if a return address was
+    // pushed); the kernel jumps straight to `entry` with rsp = stack_top, so bias it.
+    let stack_top = ((base as u64 + STACK_SIZE as u64) & !0xF) - 8;
+    sys_thread_spawn(entry as u64, arg, stack_top)
+}
+
+pub fn sys_thread_spawn(entry: u64, arg: u64, stack_top: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_THREAD_SPAWN => r,
+            in("rdi") entry,
+            in("rsi") arg,
+            in("rdx") stack_top,
+        );
+    }
+    r
+}
+
+pub fn sys_thread_exit() -> ! {
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            in("rax") SYS_THREAD_EXIT,
+            in("rdi") 0,
+            in("rsi") 0,
+            in("rdx") 0,
+            lateout("rax") _,
+        );
+    }
+    loop {}
+}
+
+/// Block until thread `tid` has exited (returns immediately if it already has).
+pub fn sys_thread_join(tid: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_THREAD_JOIN => r,
+            in("rdi") tid,
+            in("rsi") 0,
+            in("rdx") 0,
+        );
+    }
+    r
+}
+
+/// Handle to a spawned thread; `join()` waits for it to finish (like std::thread).
+pub struct JoinHandle {
+    tid: u64,
+}
+
+impl JoinHandle {
+    pub fn tid(&self) -> u64 { self.tid }
+    pub fn join(self) { sys_thread_join(self.tid); }
+}
+
+// Trampoline: `arg` is a raw Box<Box<dyn FnOnce()>>; run the closure, then exit. The
+// inner Box makes the (fat) trait-object pointer fit in the single u64 the kernel passes.
+extern "C" fn thread_trampoline(arg: u64) -> ! {
+    let boxed = unsafe { alloc::boxed::Box::from_raw(arg as *mut alloc::boxed::Box<dyn FnOnce()>) };
+    let f: alloc::boxed::Box<dyn FnOnce()> = *boxed;
+    f();
+    sys_thread_exit();
+}
+
+/// Spawn a thread running the closure `f` (like `std::thread::spawn`); returns a handle
+/// to `join()`. The closure runs in the same address space — synchronise shared data
+/// with atomics or a spinlock. Returns `None` if the thread could not be created.
+pub fn thread_create<F: FnOnce() + Send + 'static>(f: F) -> Option<JoinHandle> {
+    let inner: alloc::boxed::Box<dyn FnOnce()> = alloc::boxed::Box::new(f);
+    let raw = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(inner));
+    let tid = spawn_thread(thread_trampoline, raw as u64);
+    if tid == 0 {
+        // Spawn failed: reclaim the boxed closure so it isn't leaked.
+        unsafe { drop(alloc::boxed::Box::from_raw(raw)); }
+        return None;
+    }
+    Some(JoinHandle { tid })
+}

@@ -127,8 +127,10 @@ extern "C" fn syscall_block_fn() -> ! {
             options(nostack, preserves_flags),
         );
         let blocking_rsp = crate::user::blocking_rsp_tmp();
-        if let Some(pid) = crate::scheduler::current_user_pid() {
-            crate::process::set_blocking_rsp(pid, blocking_rsp);
+        // Save on the thread that actually blocked (current tid), not the process main
+        // thread — otherwise a worker thread can't resume where it blocked.
+        if let Some(tid) = crate::scheduler::current_user_tid() {
+            crate::process::set_blocking_rsp_tid(tid, blocking_rsp);
         }
         crate::scheduler::set_current_user_pid(None);
         crate::process::clear_current_pid();

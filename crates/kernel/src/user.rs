@@ -139,6 +139,25 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             syscall::EXIT_TO_KERNEL
         }
         SYS_EXEC => sys_exec(arg0, arg1, arg2),
+        SYS_THREAD_SPAWN => process::spawn_user_thread(arg0, arg1, arg2),
+        SYS_THREAD_EXIT => {
+            // Last thread of the process? Then exiting it exits the whole process.
+            let pid = crate::scheduler::current_user_pid().unwrap_or(0);
+            if pid != 0 && process::live_thread_count(pid) <= 1 {
+                crate::user::set_exiting_pid_tmp(pid);
+                process::exit_current();
+            } else {
+                process::exit_current_thread();
+            }
+            syscall::EXIT_TO_KERNEL
+        }
+        SYS_THREAD_JOIN => {
+            if process::join_current(arg0) {
+                syscall::BLOCK_TO_SCHEDULER
+            } else {
+                0 // already exited
+            }
+        }
         SYS_KILL => { process::kill_pid(arg0); 0 }
         SYS_SIGINT_FG => {
             let leaf = process::foreground_leaf(arg0);
@@ -263,8 +282,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             let caller = crate::scheduler::current_user_pid().unwrap_or(0);
             if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
             let irq = arg0 as u8;
-            process::set_wait_target(caller, process::WaitTarget::Irq(irq));
-            process::set_sleeping(caller);
+            process::block_current(process::WaitTarget::Irq(irq));
             syscall::BLOCK_TO_SCHEDULER
         }
         SYS_DMA_ALLOC => sys_dma_alloc(arg0, arg1),
@@ -324,11 +342,8 @@ fn sys_wait(pid: u64) -> u64 {
         Some(info) if matches!(info.state, crate::process::ProcessState::Exited) => 1,
         None => 1, // process already gone = done
         Some(_) => {
-            // Block until the target process exits.
-            if let Some(caller) = crate::scheduler::current_user_pid() {
-                crate::process::set_wait_target(caller, crate::process::WaitTarget::Pid(pid));
-                crate::process::set_sleeping(caller);
-            }
+            // Block the calling thread until the target process exits.
+            crate::process::block_current(crate::process::WaitTarget::Pid(pid));
             syscall::BLOCK_TO_SCHEDULER
         }
     }
@@ -340,10 +355,7 @@ fn sys_sleep(duration: u64, unit: u64) -> u64 {
     }
     // SLEEP_UNIT_TICK: block until the next timer interrupt fires.
     if unit == SLEEP_UNIT_TICK {
-        if let Some(pid) = crate::scheduler::current_user_pid() {
-            crate::process::set_wait_target(pid, crate::process::WaitTarget::Tick);
-            crate::process::set_sleeping(pid);
-        }
+        crate::process::block_current(crate::process::WaitTarget::Tick);
         return syscall::BLOCK_TO_SCHEDULER;
     }
     let tsc_per_ms = unsafe { TSC_PER_MS };
@@ -364,10 +376,7 @@ fn sys_sleep(duration: u64, unit: u64) -> u64 {
         }
     };
     let deadline = crate::util::rdtsc() + tsc;
-    if let Some(pid) = crate::scheduler::current_user_pid() {
-        crate::process::set_wait_target(pid, crate::process::WaitTarget::Timer(deadline));
-        crate::process::set_sleeping(pid);
-    }
+    crate::process::block_current(crate::process::WaitTarget::Timer(deadline));
     syscall::BLOCK_TO_SCHEDULER
 }
 

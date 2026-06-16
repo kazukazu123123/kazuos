@@ -91,6 +91,26 @@ parent: u64       — parent process ID (PPID); 0 = kernel
 
 Userspace can retrieve the full `ProcessInfo` (including `memory_bytes`, `cpu_ticks`, and the parent PID) for any process by calling `SYS_PROCESS_INFO(pid, buf)` with a 104-byte buffer.
 
+## Threads
+
+A process may run multiple threads in its single address space (shared code, heap and
+fds). On SMP they can run on different cores in parallel. Shared data must be synchronised
+by userspace (atomics or a spinlock); the kernel does no implicit locking.
+
+| Syscall | Args | Return |
+| --- | --- | --- |
+| `SYS_THREAD_SPAWN` | `arg0 = entry` (`extern "C" fn(u64)`), `arg1 = arg` (passed in rdi), `arg2 = stack_top` (caller-allocated, e.g. via `SYS_HEAP_ALLOC`) | new tid, or `0` on failure |
+| `SYS_THREAD_EXIT` | none | does not return; ends the calling thread (the last thread ending exits the process) |
+| `SYS_THREAD_JOIN` | `arg0 = tid` | blocks until that thread exits; returns immediately if it already has |
+
+The thread entry function must not return — finish it with `SYS_THREAD_EXIT`. The blocking
+syscalls (`SYS_SLEEP`, `SYS_WAIT`, `SYS_THREAD_JOIN`, `SYS_IRQ_WAIT`) block the calling
+thread, not the whole process.
+
+> Note: the numeric syscall table above is out of date relative to
+> `crates/kazuos_abi/src/syscall_numbers.rs`, which is the source of truth for syscall
+> numbers. Refer to that file for current values.
+
 ## `SYS_CPU_INFO` selectors
 
 | `arg0` | `arg1` | Return |

@@ -630,6 +630,21 @@ pub fn wakeup_pid_waiters(exited_pid: u64) {
     })
 }
 
+pub fn wakeup_thread_waiters(exited_tid: u64) {
+    with_threads_lock(|| unsafe {
+        let threads = &mut *THREADS.0.get();
+        for t in threads.iter_mut() {
+            if matches!(t.state, ThreadState::Sleeping)
+                && matches!(t.wait_target, WaitTarget::Tid(target) if target == exited_tid)
+            {
+                restore_ctx_from_blocking_frame(t, 0);
+                t.state = ThreadState::Ready;
+                t.wait_target = WaitTarget::None;
+            }
+        }
+    })
+}
+
 pub fn wakeup_ipc_waiter(tid: u64, retval: u64) {
     with_threads_lock(|| unsafe {
         let threads = &mut *THREADS.0.get();
