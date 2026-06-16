@@ -50,6 +50,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kazuos-abi"
+version = "0.1.0"
+
+[[package]]
 name = "kazuos-bootloader"
 version = "0.1.0"
 dependencies = [
@@ -63,6 +67,7 @@ name = "kazuos-kernel"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "kazuos-abi",
  "kazuos-shared",
  "ttf-parser",
 ]

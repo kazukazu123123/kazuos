@@ -12,7 +12,7 @@ User programs invoke the kernel via `int 0x80` with the syscall number in `rax`.
 | `rdx` | arg2 |
 | `rax` | return value |
 
-Constants live in `crates/kernel/src/syscall_numbers.rs` and are included by both kernel and user programs via `include!("...")`.
+Constants live in `crates/kazuos_abi/src/syscall_numbers.rs` and are included by both kernel and user programs via `include!("...")`.
 
 ## Syscall Details
 

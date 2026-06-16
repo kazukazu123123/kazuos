@@ -10,7 +10,7 @@ pub use alloc::borrow::ToOwned;
 
 use core::fmt::Write;
 
-include!("../../kernel/src/syscall_numbers.rs");
+include!("../../kazuos_abi/src/syscall_numbers.rs");
 
 pub struct KazuWriter;
 

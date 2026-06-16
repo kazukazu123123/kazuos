@@ -27,7 +27,7 @@ All user programs are `.rs` files in `crates/user_programs/`. They are compiled 
 #![no_std]
 #![no_main]
 
-include!("../../crates/kernel/src/syscall_numbers.rs");
+include!("../../crates/kazuos_abi/src/syscall_numbers.rs");
 
 #[no_mangle]
 pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {
@@ -58,7 +58,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 
 - `#![no_std]` and `#![no_main]` — no standard library or runtime
 - `_start(argc: u64, argv: u64)` as the entry point (set by `link.ld`)
-- `include!("../../crates/kernel/src/syscall_numbers.rs")` for syscall constants
+- `include!("../../crates/kazuos_abi/src/syscall_numbers.rs")` for syscall constants
 - `#[panic_handler]` — must be present
 
 ### Build Integration
@@ -75,7 +75,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 
 ### syscall_numbers.rs
 
-All syscall constants live in `crates/kernel/src/syscall_numbers.rs`. This file is the single source of truth, included via `include!()` by both the kernel and all user programs. Never hardcode syscall numbers in user programs.
+All syscall constants live in `crates/kazuos_abi/src/syscall_numbers.rs`. This file is the single source of truth, included via `include!()` by both the kernel and all user programs. Never hardcode syscall numbers in user programs.
 
 ### Multiple syscall arguments
 
@@ -119,7 +119,7 @@ These syscalls return `u64::MAX` for non-driver processes.
 #![no_std]
 #![no_main]
 
-include!("../../crates/kernel/src/syscall_numbers.rs");
+include!("../../crates/kazuos_abi/src/syscall_numbers.rs");
 
 #[no_mangle]
 pub extern "C" fn _start(_argc: u64, _argv: u64) -> ! {

@@ -48,7 +48,7 @@ pub fn set_blocking_rsp_tmp(value: u64) {
     }
 }
 
-include!("syscall_numbers.rs");
+pub use kazuos_abi::*;
 
 pub fn init() {
     syscall::register(syscall_dispatch, 0);

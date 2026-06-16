@@ -23,7 +23,7 @@ fn main() {
     // of the embedded initrd so syscall numbers and runtime wrappers stay in sync with the kernel.
     let workspace_root = Path::new(&manifest_dir).parent().unwrap();
     let syscall_numbers = workspace_root
-        .join("kernel")
+        .join("kazuos_abi")
         .join("src")
         .join("syscall_numbers.rs");
     let user_rt_runtime = workspace_root.join("user_rt").join("runtime.rs");
