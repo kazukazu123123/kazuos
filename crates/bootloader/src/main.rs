@@ -205,9 +205,10 @@ fn main() -> Status {
 }
 
 fn boot_menu() -> &'static str {
-    const ENTRIES: [(&str, &str); 2] = [
+    const ENTRIES: [(&str, &str); 3] = [
         ("KazuOS", ""),
         ("KazuOS (Verbose)", "verbose"),
+        ("KazuOS (Verbose + Heartbeat)", "verbose heartbeat"),
     ];
     let mut selected = 0usize;
     loop {
@@ -233,7 +234,7 @@ fn draw_menu(selected: usize) {
     clear_screen();
     uefi::println!("KazuOS Bootloader");
     uefi::println!("");
-    let entries = ["KazuOS", "KazuOS (Verbose)"];
+    let entries = ["KazuOS", "KazuOS (Verbose)", "KazuOS (Verbose + Heartbeat)"];
     for (i, entry) in entries.iter().enumerate() {
         if i == selected {
             uefi::println!("> {}", entry);

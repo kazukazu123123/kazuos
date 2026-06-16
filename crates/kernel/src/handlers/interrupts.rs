@@ -87,7 +87,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         // serial/thread lock blocks every CPU's beat) — letting the pipeline tell
         // "idle" from "frozen" instead of guessing from raw serial silence.
         let hb_ticks = TIMER_TICKS;
-        if hb_ticks % 4000 == 0 && crate::init::is_verbose() {
+        if hb_ticks % 4000 == 0 && crate::init::heartbeat_log() {
             crate::serial_println!("HEARTBEAT ticks={} cpu={}", hb_ticks, crate::smp::current_cpu_index());
         }
         if delta != 0 {

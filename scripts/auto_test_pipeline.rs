@@ -43,7 +43,9 @@ edition = "2024"
 //!   --after-wait N       seconds to keep running after the scenario (default 6)
 //!   --no-build           reuse the existing esp/ instead of rebuilding
 //!   --keep-alive         do not quit QEMU at the end
-//!   --verbose            pick the verbose boot menu entry
+//!   --verbose            pick the "Verbose" boot menu entry
+//!   --heartbeat          pick the "Verbose + Heartbeat" boot menu entry (enables
+//!                        the periodic HEARTBEAT liveness line; implies verbose)
 //!   --scenario FILE      run steps from a scenario file (see DSL above)
 //!   --send LINE          inline step: type LINE + Enter (repeatable, ordered)
 //!   --key NAME           inline step: press one key (repeatable, ordered)
@@ -58,9 +60,9 @@ edition = "2024"
 //!                        --liveness-pattern: FAIL if serial.log stops growing
 //!                        for N s. With it: FAIL if no liveness line for N s.
 //!   --liveness-pattern P treat freeze as "P stopped appearing" rather than raw
-//!                        serial silence. Use with the kernel's verbose HEARTBEAT
-//!                        (boot --verbose) so idle gaps don't false-positive:
-//!                        --verbose --liveness-pattern HEARTBEAT --idle-timeout 8
+//!                        serial silence. Use with the kernel's HEARTBEAT line
+//!                        (enabled by --heartbeat) so idle gaps don't false-positive:
+//!                        --heartbeat --liveness-pattern HEARTBEAT --idle-timeout 8
 //!   --wait-pattern S     serial substring marking shell readiness
 //!                        (default "KazuOS kernel started")
 //!   --early-pattern S    serial substring marking the bootloader
@@ -115,6 +117,7 @@ struct Cfg {
     no_build: bool,
     keep_alive: bool,
     verbose: bool,
+    heartbeat: bool,
     steps: Vec<Step>,
     repeat: u32,
     scenario: Option<PathBuf>,
@@ -136,6 +139,7 @@ fn parse_cfg() -> Result<Cfg, String> {
         no_build: false,
         keep_alive: false,
         verbose: false,
+        heartbeat: false,
         steps: Vec::new(),
         repeat: 1,
         scenario: None,
@@ -159,6 +163,7 @@ fn parse_cfg() -> Result<Cfg, String> {
             "--no-build" => c.no_build = true,
             "--keep-alive" => c.keep_alive = true,
             "--verbose" => c.verbose = true,
+            "--heartbeat" => c.heartbeat = true,
             "--scenario" => c.scenario = Some(PathBuf::from(val()?)),
             "--send" => c.steps.push(Step::Send(val()?)),
             "--key" => c.steps.push(Step::Key(val()?)),
@@ -402,7 +407,10 @@ fn drive(cfg: &Cfg, serial_log: &Path) -> DriveOutcome {
         println!("Warning: early pattern not found, trying anyway");
     }
     sleep(Duration::from_secs(1));
-    if cfg.verbose {
+    // Boot menu entries: 0=KazuOS, 1=Verbose, 2=Verbose + Heartbeat.
+    if cfg.heartbeat {
+        let _ = monitor_send(&["sendkey down".into(), "sendkey down".into(), "sendkey ret".into()], 200);
+    } else if cfg.verbose {
         let _ = monitor_send(&["sendkey down".into(), "sendkey ret".into()], 200);
     } else {
         let _ = monitor_send(&["sendkey ret".into()], 200);
