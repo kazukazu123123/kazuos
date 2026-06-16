@@ -70,3 +70,9 @@ pub const SYS_MODULE_LOAD:   u64 = 45;
 pub const SYS_MODULE_UNLOAD: u64 = 46;
 pub const SYS_MODULE_LIST:   u64 = 47;
 pub const SYS_MODULE_INFO:   u64 = 48;
+
+// Filesystem mutations (RAM rootfs)
+pub const SYS_CREATE: u64 = 49; // create an empty file, returns fd (RW)
+pub const SYS_UNLINK: u64 = 50; // delete a file
+pub const SYS_MKDIR:  u64 = 51; // create a directory
+pub const SYS_RMDIR:  u64 = 52; // remove an empty directory

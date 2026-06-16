@@ -7,7 +7,7 @@ pub const MAX_FD: usize = 16;
 #[derive(Clone, Copy)]
 pub enum FdEntry {
     Empty,
-    File { path: &'static str, offset: usize, len: usize },
+    File { node: u32, generation: u32, offset: usize },
     Device { ops: &'static DeviceOps, handle: u64 },
     ConsoleOut,
     ConsoleIn,

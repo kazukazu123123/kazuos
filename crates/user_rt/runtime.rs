@@ -331,6 +331,66 @@ pub fn sys_write_fd(fd: u64, buf: &[u8]) -> u64 {
     r
 }
 
+/// Create (or truncate) a file and return a writable fd, or u64::MAX on error.
+pub fn sys_create(path: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_CREATE => r,
+            in("rdi") path.as_ptr(),
+            in("rsi") path.len(),
+            in("rdx") 0,
+        );
+    }
+    r
+}
+
+/// Delete a file. Returns 0 on success, u64::MAX on error.
+pub fn sys_unlink(path: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_UNLINK => r,
+            in("rdi") path.as_ptr(),
+            in("rsi") path.len(),
+            in("rdx") 0,
+        );
+    }
+    r
+}
+
+/// Create a directory. Returns 0 on success, u64::MAX on error.
+pub fn sys_mkdir(path: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_MKDIR => r,
+            in("rdi") path.as_ptr(),
+            in("rsi") path.len(),
+            in("rdx") 0,
+        );
+    }
+    r
+}
+
+/// Remove an empty directory. Returns 0 on success, u64::MAX on error.
+pub fn sys_rmdir(path: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_RMDIR => r,
+            in("rdi") path.as_ptr(),
+            in("rsi") path.len(),
+            in("rdx") 0,
+        );
+    }
+    r
+}
+
 pub fn sys_exec(path: &[u8], stdio_pack: u64) -> u64 {
     let r: u64;
     unsafe {
