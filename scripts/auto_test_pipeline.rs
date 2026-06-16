@@ -65,7 +65,7 @@ edition = "2024"
 //!                        (default "KazuOS kernel started")
 //!   --early-pattern S    serial substring marking the bootloader
 //!                        (default "KazuOS Bootloader")
-//!   --audio ac97|hda|none   audio device (default ac97)
+//!   --audio hda|none     audio device (default hda)
 //!   --cpu-count N        number of CPUs (default 2)
 
 use std::fs;
@@ -146,7 +146,7 @@ fn parse_cfg() -> Result<Cfg, String> {
         liveness_pattern: None,
         wait_pattern: "KazuOS kernel started".into(),
         early_pattern: "KazuOS Bootloader".into(),
-        audio: "ac97".into(),
+        audio: "hda".into(),
         cpu_count: 2,
     };
     let mut default_fail_on = true;
@@ -337,7 +337,6 @@ fn run() -> Result<bool, String> {
         "-audiodev".into(), "none,id=snd0".into(),
     ]);
     match cfg.audio.as_str() {
-        "ac97" => args.extend(["-device".into(), "ac97,audiodev=snd0".into()]),
         "hda" => args.extend(["-device".into(), "intel-hda".into(), "-device".into(), "hda-duplex,audiodev=snd0".into()]),
         "none" => {}
         other => return Err(format!("bad --audio: {other}")),

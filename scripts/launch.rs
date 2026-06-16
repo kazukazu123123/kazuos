@@ -49,7 +49,6 @@ fn run() -> Result<(), String> {
     let audio_choice = menu(
         "Audio device",
         &[
-            "AC97        -- legacy AC97 audio",
             "Intel HDA   -- Intel High Definition Audio",
             "None        -- no audio device",
         ],
@@ -108,8 +107,7 @@ fn run() -> Result<(), String> {
         "-smp".into(), "4".into(),
     ]);
     match audio_choice {
-        0 => args.extend(["-device".into(), "AC97,audiodev=snd0".into()]),
-        1 => args.extend(["-device".into(), "intel-hda".into(), "-device".into(), "hda-duplex,audiodev=snd0".into()]),
+        0 => args.extend(["-device".into(), "intel-hda".into(), "-device".into(), "hda-duplex,audiodev=snd0".into()]),
         _ => {}
     }
     if debug_choice >= 1 {
