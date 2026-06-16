@@ -80,7 +80,7 @@ fn write_row(pid: u64, state: &[u8], pct10: u64, mem_kib: u64, name: &[u8]) {
 }
 
 fn sys_write(buf: &[u8]) {
-    syscall(SYS_CONSOLE_WRITE, buf.as_ptr() as u64, buf.len() as u64, 0);
+    syscall(SYS_WRITE, 1, buf.as_ptr() as u64, buf.len() as u64);
 }
 
 fn write_digit(d: u64) {

@@ -38,33 +38,33 @@ pub const SYS_IPC_TRY_RECV: u64 = 25; // non-blocking SYS_IPC_RECV (returns imme
 pub const SYS_IPC_CLOSE:    u64 = 26;
 
 // File I/O
-pub const SYS_OPEN:  u64 = 27;
-pub const SYS_CLOSE: u64 = 28;
-pub const SYS_READ:  u64 = 29;
-pub const SYS_WRITE: u64 = 30;
-pub const SYS_IOCTL: u64 = 31;
-pub const SYS_PIPE:  u64 = 32;
+pub const SYS_OPEN:     u64 = 27;
+pub const SYS_CLOSE:    u64 = 28;
+pub const SYS_READ:     u64 = 29;
+pub const SYS_TRY_READ: u64 = 30; // non-blocking SYS_READ (0 = would block, u64::MAX = EOF)
+pub const SYS_WRITE:    u64 = 31;
+pub const SYS_IOCTL:    u64 = 32;
+pub const SYS_PIPE:     u64 = 33;
 
 // Hardware / Driver
-pub const SYS_PCI_INFO:       u64 = 33;
-pub const SYS_IOPORT_REQUEST: u64 = 34;
-pub const SYS_IRQ_WAIT:       u64 = 35;
-pub const SYS_DMA_ALLOC:      u64 = 36;
-pub const SYS_DMA_FREE:       u64 = 37;
+pub const SYS_PCI_INFO:       u64 = 34;
+pub const SYS_IOPORT_REQUEST: u64 = 35;
+pub const SYS_IRQ_WAIT:       u64 = 36;
+pub const SYS_DMA_ALLOC:      u64 = 37;
+pub const SYS_DMA_FREE:       u64 = 38;
 
 // PCI
-pub const SYS_PCI_BAR_MAP:   u64 = 38;
-pub const SYS_PCI_BAR_UNMAP: u64 = 39;
+pub const SYS_PCI_BAR_MAP:   u64 = 39;
+pub const SYS_PCI_BAR_UNMAP: u64 = 40;
 
 // Keyboard
-pub const SYS_KEYBOARD_READ: u64 = 40;
 pub const SYS_KEYBOARD_POLL: u64 = 41;
 
 // System / Misc
 pub const SYS_CPU_INFO:  u64 = 42;
 pub const SYS_SHUTDOWN:  u64 = 43;
 pub const SYS_REBOOT:    u64 = 44;
-pub const SYS_LS:        u64 = 45;
+pub const SYS_READDIR:   u64 = 45; // enumerate a directory into a caller buffer (no kernel-side printing)
 
 // Kernel modules
 pub const SYS_MODULE_LOAD:   u64 = 46;

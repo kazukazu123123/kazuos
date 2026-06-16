@@ -248,6 +248,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_OPEN => sys_open(arg0, arg1),
         SYS_CLOSE => sys_close(arg0),
         SYS_READ => sys_read(arg0, arg1, arg2),
+        SYS_TRY_READ => sys_try_read(arg0, arg1, arg2),
         SYS_WRITE => sys_write(arg0, arg1, arg2),
         SYS_IOCTL => sys_ioctl(arg0, arg1, arg2),
         SYS_PIPE => sys_pipe(arg0),
@@ -280,17 +281,9 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_PCI_BAR_UNMAP => sys_pci_bar_unmap(arg0),
 
         // Keyboard
-        SYS_KEYBOARD_READ => {
-            if let Some(ch) = crate::drivers::keyboard::get_raw() { ch as u64 }
-            else {
-                if let Some(pid) = crate::scheduler::current_user_pid() {
-                    crate::process::set_wait_target(pid, crate::process::WaitTarget::Keyboard);
-                    crate::process::set_sleeping(pid);
-                }
-                syscall::BLOCK_TO_SCHEDULER
-            }
+        SYS_KEYBOARD_POLL => {
+            if kbd_locked_out() { 0 } else { crate::drivers::keyboard::get_raw().map(|c| c as u64).unwrap_or(0) }
         }
-        SYS_KEYBOARD_POLL => crate::drivers::keyboard::get_raw().map(|c| c as u64).unwrap_or(0),
 
         // System / Misc
         SYS_CPU_INFO => match arg0 {
@@ -309,7 +302,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         },
         SYS_SHUTDOWN => crate::drivers::power::shutdown(),
         SYS_REBOOT => crate::drivers::power::reboot(),
-        SYS_LS => sys_ls(arg0, arg1),
+        SYS_READDIR => sys_readdir(arg0, arg1, arg2),
 
         // Kernel modules
         SYS_MODULE_LOAD => {
@@ -386,54 +379,68 @@ fn sys_sleep(duration: u64, unit: u64) -> u64 {
     syscall::BLOCK_TO_SCHEDULER
 }
 
-fn sys_ls(ptr: u64, len: u64) -> u64 {
-    if ptr == 0 || len == 0 {
-        return ls_path("/");
-    }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    let path = core::str::from_utf8(bytes).unwrap_or("/");
-    ls_path(path)
+// Directory entry handed to user space. kind: 0 = file, 1 = directory, 2 = device.
+const READDIR_NAME_LEN: usize = 32;
+const READDIR_CAP: usize = 64;
+
+#[repr(C)]
+struct UserDirEntry {
+    kind: u8,
+    name: [u8; READDIR_NAME_LEN],
 }
 
-fn ls_path(path: &str) -> u64 {
+unsafe fn write_dirent(out: *mut UserDirEntry, idx: usize, kind: u8, name: &str) {
+    if idx >= READDIR_CAP { return; }
+    let mut e = UserDirEntry { kind, name: [0u8; READDIR_NAME_LEN] };
+    let b = name.as_bytes();
+    let m = b.len().min(READDIR_NAME_LEN - 1);
+    e.name[..m].copy_from_slice(&b[..m]);
+    unsafe { core::ptr::write(out.add(idx), e); }
+}
+
+/// Enumerate a directory into the caller's buffer (`out_ptr`: `[UserDirEntry; 64]`).
+/// Returns the entry count, or `u64::MAX` on error. The kernel only provides the
+/// mechanism — formatting and output are the caller's job (so `ls` output follows
+/// the program's stdout, e.g. into a pipe).
+fn sys_readdir(ptr: u64, len: u64, out_ptr: u64) -> u64 {
+    if out_ptr == 0 { return u64::MAX; }
+    let path = if ptr == 0 || len == 0 {
+        "/"
+    } else {
+        let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        core::str::from_utf8(bytes).unwrap_or("/")
+    };
+    let out = out_ptr as *mut UserDirEntry;
+    let mut n = 0usize;
+
     if path == "/dev" || path == "/dev/" {
-        let mut dev_count = 0usize;
         crate::devfs::for_each(|name| {
             let display = name.strip_prefix("/dev/").unwrap_or(name);
-            crate::console::screen_print("dev   ");
-            crate::console::screen_print(display);
-            crate::console::screen_print("\r\n");
-            crate::serial_println!("dev   {}", display);
-            dev_count += 1;
+            unsafe { write_dirent(out, n, 2, display); } // 2 = device
+            n += 1;
         });
-        return dev_count as u64;
+        return n.min(READDIR_CAP) as u64;
     }
 
-    let mut entries = [crate::vfs::DirEntry::empty(); 16];
-    let vfs_count = match crate::vfs::read_dir(path, &mut entries) {
+    let mut entries = [crate::vfs::DirEntry::empty(); READDIR_CAP];
+    match crate::vfs::read_dir(path, &mut entries) {
         Ok(count) => {
             for entry in &entries[..count] {
                 let kind = match entry.kind {
-                    crate::vfs::FileType::File => "file",
-                    crate::vfs::FileType::Directory => "dir ",
+                    crate::vfs::FileType::Directory => 1u8,
+                    crate::vfs::FileType::File => 0u8,
                 };
-                crate::console::screen_print(kind);
-                crate::console::screen_print("  ");
-                crate::console::screen_print(entry.name());
-                crate::console::screen_print("\r\n");
-                crate::serial_println!("{} {}", kind, entry.name());
+                unsafe { write_dirent(out, n, kind, entry.name()); }
+                n += 1;
             }
-            count
         }
         Err(_) => return u64::MAX,
-    };
-    if path == "/" {
-        crate::console::screen_print("dir   /dev\r\n");
-        crate::serial_println!("dir   /dev");
-        (vfs_count + 1) as u64
-    } else {
-        vfs_count as u64
     }
+    if path == "/" {
+        unsafe { write_dirent(out, n, 1, "dev"); }
+        n += 1;
+    }
+    n.min(READDIR_CAP) as u64
 }
 
 // DMA VA base for user-space driver mappings (distinct from code/stack region).
@@ -962,6 +969,45 @@ fn sys_close(fd: u64) -> u64 {
     }
 }
 
+/// Keyboard input belongs to the framebuffer owner while one exists: a background
+/// process (e.g. the console shell that launched a graphical app) must not steal
+/// keys from the focused GUI by polling. True when someone else owns the framebuffer.
+fn kbd_locked_out() -> bool {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    matches!(crate::drivers::fb_owner::owner(), Some(o) if o != caller)
+}
+
+/// Non-blocking read. Returns the byte count, `0` when no data is available right
+/// now (would block), or `u64::MAX` on EOF (pipe writer gone) or a bad fd. Lets a
+/// single-threaded program (e.g. the GUI terminal) poll a pipe without sleeping.
+fn sys_try_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
+    if buf_ptr == 0 || buf_len == 0 {
+        return 0;
+    }
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    match fd::get_fd(caller, fd as usize) {
+        Some(fd::FdEntry::ConsoleIn) => {
+            if kbd_locked_out() { return 0; }
+            if let Some(ch) = crate::drivers::keyboard::get_raw() {
+                unsafe { core::ptr::write(buf_ptr as *mut u8, ch); }
+                1
+            } else {
+                0
+            }
+        }
+        Some(fd::FdEntry::PipeRead(pipe_id)) => {
+            if crate::pipe::is_empty(pipe_id) {
+                return if crate::pipe::writer_closed(pipe_id) { u64::MAX } else { 0 };
+            }
+            let mut kbuf = alloc::vec![0u8; buf_len as usize];
+            let n = crate::pipe::read(pipe_id, &mut kbuf);
+            unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
+            n as u64
+        }
+        _ => u64::MAX,
+    }
+}
+
 fn sys_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
@@ -969,7 +1015,8 @@ fn sys_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     match fd::get_fd(caller, fd as usize) {
         Some(fd::FdEntry::ConsoleIn) => {
-            if let Some(ch) = crate::drivers::keyboard::get_raw() {
+            let ch = if kbd_locked_out() { None } else { crate::drivers::keyboard::get_raw() };
+            if let Some(ch) = ch {
                 unsafe { core::ptr::write(buf_ptr as *mut u8, ch); }
                 1
             } else {
