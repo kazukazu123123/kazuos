@@ -237,15 +237,21 @@ Current status:
 - MADT parsing enumerates local APIC IDs and detects CPU count
 - BSP sends INIT-SIPI-SIPI to start APs via the local APIC ICR
 - 16→32→64-bit trampoline copied to physical `0x8000` prepares each AP
-- APs load the kernel IDT and enter a halt loop in `ap_main`
+- Each AP sets up its own LAPIC, per-CPU GDT, TSS/RSP0, and IDT, starts its own
+  LAPIC timer, and enters the scheduler (`enter_next_process`) — every CPU runs
+  the scheduler, not just the BSP
 - Per-CPU `CpuData` array tracks `cpu_index`, `apic_id`, `current_tid`, and `idle` state
+- Threads are assigned a home CPU round-robin at creation (`assigned_cpu`) and are
+  pinned there; the scheduler only runs threads assigned to the current CPU
+- A CPU with no runnable thread sets its idle flag and `hlt`s until its next timer tick
 - `smpinfo` shell command reports CPU topology via `SYS_CPU_INFO`
 
 Limitations:
 
-- Only the BSP currently runs the scheduler; APs idle
-- APs do not yet enable interrupts or run their own LAPIC timer
-- Per-CPU TSS/RSP0 and per-CPU scheduling are future work
+- Thread→CPU assignment is round-robin at creation and fixed; there is no load
+  balancing or thread migration between CPUs, so work can pile up unevenly
+- No affinity API and no IPI-based cross-CPU rescheduling/wakeup
+- AP fault/panic handling is minimal
 
 ### Drivers
 
