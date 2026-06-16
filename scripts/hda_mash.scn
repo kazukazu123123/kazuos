@@ -1,0 +1,11 @@
+# Faithful HDA rapid start/stop repro.
+# Type the command once, then relaunch via shell history (Up + Enter) so we
+# don't depend on QEMU sendkey reliably re-typing "hdatest" each time.
+send hdatest
+repeat 15 {
+  wait 0.15
+  key ctrl-c
+  wait 0.1
+  key up
+  key ret
+}

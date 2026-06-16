@@ -53,9 +53,26 @@ pub fn set_keyboard_polling(value: bool) {
     }
 }
 
+/// Restore the CR3 that was active when an interrupt preempted code we are
+/// about to resume unchanged. No-op (no TLB flush) when it never changed.
+#[inline]
+fn restore_entry_cr3(entry_cr3: u64) {
+    if crate::vmm::active_cr3() != entry_cr3 {
+        unsafe { crate::vmm::switch_cr3(entry_cr3) };
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
     unsafe {
+        // CR3 active when we interrupted. A ring0 syscall runs on the caller's
+        // (user) CR3 because int 0x80 does not switch address spaces. If the
+        // bookkeeping below (process reaping, wakeups, etc.) switches CR3 to the
+        // kernel's, any path that resumes the *interrupted* context unchanged
+        // must restore this value first — otherwise the syscall continues a
+        // copy-from-user on the wrong CR3 and page-faults. Thread-switch paths
+        // install the target thread's CR3 themselves and are unaffected.
+        let entry_cr3 = crate::vmm::active_cr3();
         let now = rdtsc();
         let delta = if LAST_TSC == 0 {
             0
@@ -64,6 +81,15 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         };
         LAST_TSC = now;
         TIMER_TICKS += 1;
+        // Verbose-only liveness beat for the headless test harness. The timer
+        // keeps firing while idle (the idle loop only `hlt`s), so this continues
+        // during legitimate quiet periods but STOPS on a real total hang (a held
+        // serial/thread lock blocks every CPU's beat) — letting the pipeline tell
+        // "idle" from "frozen" instead of guessing from raw serial silence.
+        let hb_ticks = TIMER_TICKS;
+        if hb_ticks % 4000 == 0 && crate::init::is_verbose() {
+            crate::serial_println!("HEARTBEAT ticks={} cpu={}", hb_ticks, crate::smp::current_cpu_index());
+        }
         if delta != 0 {
             let cpu = crate::smp::current_cpu_index();
             if let Some(pid) = crate::scheduler::current_user_pid() {
@@ -123,6 +149,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
 
         if next_tid == 0 {
             crate::scheduler::set_current_user_tid(None);
+            restore_entry_cr3(entry_cr3);
             return 0;
         }
 
@@ -130,6 +157,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         crate::scheduler::set_idle(false);
 
         if cs_ring == 0 && next_tid == current_tid {
+            restore_entry_cr3(entry_cr3);
             return 0;
         }
 
@@ -142,6 +170,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
             && crate::task::thread::user_context(next_tid).is_some()
             && *crate::user::kernel_return_stack_ptr() == 0
         {
+            restore_entry_cr3(entry_cr3);
             return 0;
         }
 
@@ -193,6 +222,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn keyboard_handler_inner() {
+    let entry_cr3 = crate::vmm::active_cr3();
     unsafe {
         keyboard::poll();
         if USE_IOAPIC {
@@ -201,10 +231,12 @@ pub extern "C" fn keyboard_handler_inner() {
             pic::eoi(1);
         }
     }
+    restore_entry_cr3(entry_cr3);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn mouse_irq_handler_inner() {
+    let entry_cr3 = crate::vmm::active_cr3();
     unsafe {
         crate::process::wakeup_irq_waiter(12);
         if USE_IOAPIC {
@@ -213,10 +245,12 @@ pub extern "C" fn mouse_irq_handler_inner() {
             pic::eoi(12);
         }
     }
+    restore_entry_cr3(entry_cr3);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn hda_irq_handler_inner() {
+    let entry_cr3 = crate::vmm::active_cr3();
     unsafe {
         crate::drivers::hda::on_interrupt();
         if USE_IOAPIC {
@@ -228,6 +262,7 @@ pub extern "C" fn hda_irq_handler_inner() {
             }
         }
     }
+    restore_entry_cr3(entry_cr3);
 }
 
 global_asm!(

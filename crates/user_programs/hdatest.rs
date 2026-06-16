@@ -24,9 +24,9 @@ fn sys_ioctl(fd: u64, cmd: u64, arg: u64) -> u64 {
 
 /// Fixed-point sine oscillator for 440 Hz @ 48 kHz.
 /// Recurrence: y[n] = A*y[n-1] - y[n-2],  A = 2*cos(w).
-/// cos(2*pi*440/48000) ~= 0.998341698,  A/2 in Q30 ~= 1_072_300_001.
+/// cos(2*pi*440/48000) ~= 0.998341698,  A/2 in Q30 ~= 1_071_961_363.
 fn sine_sample() -> i16 {
-    const A_OVER_2_Q30: i64 = 1_072_300_001i64;
+    const A_OVER_2_Q30: i64 = 1_071_961_363i64;
     const SIN_W_AMP: i32 = 460; // AMPLITUDE * sin(2*pi*440/48000)
 
     static mut PREV: i32 = -SIN_W_AMP;

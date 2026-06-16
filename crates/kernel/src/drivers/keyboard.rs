@@ -18,8 +18,14 @@ struct KeyboardGuard {
 
 impl KeyboardGuard {
     fn new() -> Self {
+        // Disable interrupts BEFORE taking the lock. If we locked first, an IRQ
+        // landing on this CPU in the window before `cli` would re-enter the
+        // keyboard handler, which takes the same non-reentrant LOCK and would
+        // spin forever (single-CPU self-deadlock). Fields drop in declaration
+        // order, so `_irq` (re-enable) runs after the manual unlock in Drop.
+        let _irq = IrqGuard::new();
         LOCK.lock();
-        Self { _irq: IrqGuard::new() }
+        Self { _irq }
     }
 }
 

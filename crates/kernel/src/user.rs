@@ -55,6 +55,17 @@ pub fn init() {
 }
 
 extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> u64 {
+    // A remote kill that arrived while this thread was running was deferred (the
+    // killer could not safely free our address space underneath us). Now that we
+    // are back in the kernel on our own CPU, honor it: exit cleanly instead of
+    // servicing the syscall against soon-to-be-freed memory.
+    if let Some(pid) = crate::scheduler::current_user_pid() {
+        if process::take_kill_pending(pid) {
+            crate::user::set_exiting_pid_tmp(pid);
+            process::exit_current();
+            return syscall::EXIT_TO_KERNEL;
+        }
+    }
     match number {
         // Console / Display
         SYS_CONSOLE_WRITE => {
@@ -783,7 +794,16 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
     if ptr == 0 || len == 0 {
         return u64::MAX;
     }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    // Snapshot the caller's path+args into kernel memory immediately. Process
+    // creation below (create_address_space, page-table edits, arg push) is long
+    // and reads from `bytes` deep inside; if we kept the raw user pointer and an
+    // IRQ switched CR3 mid-build, those reads would hit the caller's user VA in
+    // the wrong address space and page-fault. Copying once up front (under the
+    // caller's CR3) makes all later reads come from kernel memory, visible in
+    // every address space.
+    let bytes_owned =
+        unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) }.to_vec();
+    let bytes: &[u8] = &bytes_owned;
     // New format: "path\0arg1\0arg2\0\0" — null-separated path and args.
     // Old format: just path bytes (no null) — no args.
     let path_end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());

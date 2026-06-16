@@ -2,12 +2,23 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 static LOCK: AtomicBool = AtomicBool::new(false);
 
+/// Run `f` while holding the serial lock with interrupts disabled on this CPU.
+///
+/// Interrupts MUST be off while the lock is held: the logger is called from
+/// interrupt handlers (e.g. the HDA IRQ), so if a normal-context caller held
+/// this lock with interrupts enabled and an IRQ landed on the same CPU, the
+/// handler's own `with_lock` would spin forever on a lock only the interrupted
+/// context can release — a single-CPU self-deadlock that freezes the machine.
+/// Disabling interrupts for the (short) critical section makes same-CPU
+/// reentrancy impossible; other CPUs still spin-wait harmlessly.
 pub fn with_lock<F: FnOnce()>(f: F) {
+    let flags = crate::util::irq_save();
     while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         core::arch::x86_64::_mm_pause();
     }
     f();
     LOCK.store(false, Ordering::Release);
+    crate::util::restore_flags(flags);
 }
 
 pub fn init() {

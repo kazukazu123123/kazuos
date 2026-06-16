@@ -23,6 +23,7 @@ const HDA_ICS: u32 = 0x68; // Immediate Command Status (bit0=ICB, bit1=IRV)
 // Stream descriptor register offsets (relative to stream base)
 const SD_CTL: u32 = 0x00;
 const SD_STS: u32 = 0x03;
+const SD_LPIB: u32 = 0x04; // Link Position In Buffer (RO, byte offset within CBL)
 const SD_CBL: u32 = 0x08;
 const SD_LVI: u32 = 0x0C;
 const SD_FMT: u32 = 0x12;
@@ -146,6 +147,8 @@ struct HdAudio {
     stream_channels: u8,
     chunks_written: u64,
     chunks_completed: u64,
+    last_lpib: u32,
+    play_wraps: u64,
     irq_count: u64,
     fifo_errors: u64,
     desc_errors: u64,
@@ -167,6 +170,8 @@ impl HdAudio {
             stream_channels: 2,
             chunks_written: 0,
             chunks_completed: 0,
+            last_lpib: 0,
+            play_wraps: 0,
             irq_count: 0,
             fifo_errors: 0,
             desc_errors: 0,
@@ -671,6 +676,31 @@ impl HdAudio {
         }
         let ctl = self.reg_read8(self.osd_base + SD_CTL);
         self.reg_write8(self.osd_base + SD_CTL, ctl & !0x02u8);
+
+        // Reset the per-session streaming bookkeeping. Without this, the next
+        // playback inherits stale counters: `chunks_written - chunks_completed`
+        // stays >= NUM_CHUNKS-1, so `space_available()` reports "full" forever,
+        // `write_stream` never starts the stream, no IOC interrupt ever fires,
+        // and the next writer sleeps on WaitTarget::Audio with no waker — a
+        // deterministic hang on the 2nd `hdatest` run. Zeroing here lets
+        // `space_available`'s saturating_sub report space again on a fresh start.
+        self.chunks_written = 0;
+        self.chunks_completed = 0;
+        self.last_lpib = 0;
+        self.play_wraps = 0;
+
+        // Release anyone still parked in `wait_for_space`: the stream is now
+        // stopped, so the interrupt they're waiting for will never come.
+        // Serialized via the shared thread lock (see `on_interrupt`).
+        crate::task::thread::with_threads_lock(|| unsafe {
+            let waiters = &mut *HDA_WAITERS.0.get();
+            for slot in waiters.iter_mut() {
+                if let Some(pid) = *slot {
+                    crate::process::set_ready(pid);
+                    *slot = None;
+                }
+            }
+        });
     }
 
     // ---- Streaming interface ----
@@ -686,13 +716,34 @@ impl HdAudio {
         self.reg_read8(self.osd_base + SD_CTL) & 0x02 != 0
     }
 
-    fn space_available(&self) -> bool {
+    /// Recompute how many chunks the DMA engine has actually consumed from the
+    /// hardware's Link Position In Buffer, rather than trusting the interrupt
+    /// count (BCIS interrupts can be coalesced/lost, which makes a pure counter
+    /// drift behind the real play position and causes periodic underruns).
+    fn refresh_play_position(&mut self) {
+        if self.osd_base == 0 {
+            return;
+        }
+        // LPIB is a byte offset that wraps at the cyclic buffer length (CBL).
+        let pos = self.reg_read32(self.osd_base + SD_LPIB) % PCM_BUF_BYTES;
+        if pos < self.last_lpib {
+            self.play_wraps += 1;
+        }
+        self.last_lpib = pos;
+        let total_bytes = self.play_wraps * PCM_BUF_BYTES as u64 + pos as u64;
+        self.chunks_completed = total_bytes / (CHUNK_SAMPLES as u64 * 4);
+    }
+
+    fn space_available(&mut self) -> bool {
         if !self.available {
             return false;
         }
+        self.refresh_play_position();
         // Keep one chunk ahead of the hardware: allow up to NUM_CHUNKS - 1
-        // chunks to be queued.
-        self.chunks_written - self.chunks_completed < (NUM_CHUNKS - 1) as u64
+        // chunks to be queued. saturating_sub handles the underrun case
+        // (DMA ran past what we wrote) by reporting space immediately so the
+        // producer can catch back up instead of deadlocking.
+        self.chunks_written.saturating_sub(self.chunks_completed) < (NUM_CHUNKS - 1) as u64
     }
 
     pub fn write_stream(&mut self, buf: &[u8]) -> usize {
@@ -786,40 +837,49 @@ impl HdAudio {
             return 0;
         }
 
-        // Register as a waiter first, then check. This avoids the lost-wake-up
-        // race where an interrupt fires between the check and going to sleep.
-        unsafe {
-            let waiters = &mut *HDA_WAITERS.0.get();
-            let mut added = false;
-            for slot in waiters.iter_mut() {
-                if slot.is_none() {
-                    *slot = Some(caller);
-                    added = true;
-                    break;
-                }
-            }
-            if !added {
-                return 0;
-            }
-        }
-
-        if self.space_available() {
-            // Space is already available: remove ourselves and return.
+        // Register + check-space + sleep must be atomic w.r.t. `on_interrupt`,
+        // which also walks HDA_WAITERS and flips waiter state. Without that, this
+        // races: we register, see no space, then an IRQ on another CPU runs
+        // `on_interrupt` -> `set_ready(caller)` and clears our slot while we're
+        // still Running; we then `set_sleeping(caller)`, overwriting the wake and
+        // leaving us Sleeping with no slot and no future waker -> lost wake-up,
+        // an intermittent hang under rapid run/stop. Hold the shared IRQ-safe
+        // thread lock so the interrupt side is serialized against us; it takes
+        // the same (reentrant) lock via `set_ready`.
+        crate::task::thread::with_threads_lock(|| {
             unsafe {
                 let waiters = &mut *HDA_WAITERS.0.get();
+                let mut added = false;
                 for slot in waiters.iter_mut() {
-                    if *slot == Some(caller) {
-                        *slot = None;
+                    if slot.is_none() {
+                        *slot = Some(caller);
+                        added = true;
                         break;
                     }
                 }
+                if !added {
+                    return 0;
+                }
             }
-            return 0;
-        }
 
-        crate::process::set_wait_target(caller, crate::process::WaitTarget::Audio);
-        crate::process::set_sleeping(caller);
-        crate::syscall::BLOCK_TO_SCHEDULER as i64
+            if self.space_available() {
+                // Space already available: remove ourselves and don't block.
+                unsafe {
+                    let waiters = &mut *HDA_WAITERS.0.get();
+                    for slot in waiters.iter_mut() {
+                        if *slot == Some(caller) {
+                            *slot = None;
+                            break;
+                        }
+                    }
+                }
+                return 0;
+            }
+
+            crate::process::set_wait_target(caller, crate::process::WaitTarget::Audio);
+            crate::process::set_sleeping(caller);
+            crate::syscall::BLOCK_TO_SCHEDULER as i64
+        })
     }
 
     pub fn on_interrupt(&mut self) {
@@ -839,12 +899,9 @@ impl HdAudio {
         // re-trigger on the next buffer completion.
         self.reg_write8(self.osd_base + SD_STS, 0x07);
 
-        // BCIS (buffer completion interrupt status) is the normal IOC path.
-        // Only count a completion when BCIS is set; other status bits are
-        // errors we want to track.
-        if sts & 0x02 != 0 {
-            self.chunks_completed += 1;
-        }
+        // Update completion from the real DMA position instead of counting
+        // BCIS edges, so a coalesced/missed interrupt can't desync us.
+        self.refresh_play_position();
         if sts & 0x01 != 0 {
             self.fifo_errors += 1;
         }
@@ -865,7 +922,10 @@ impl HdAudio {
             );
         }
 
-        unsafe {
+        // Serialized against `wait_for_space`'s register/check/sleep via the
+        // shared thread lock so a waiter can't be lost between registering and
+        // sleeping.
+        crate::task::thread::with_threads_lock(|| unsafe {
             let waiters = &mut *HDA_WAITERS.0.get();
             for slot in waiters.iter_mut() {
                 if let Some(pid) = *slot {
@@ -873,7 +933,7 @@ impl HdAudio {
                     *slot = None;
                 }
             }
-        }
+        });
     }
 }
 
