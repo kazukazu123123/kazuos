@@ -153,18 +153,23 @@ impl SavedLines {
 
 static mut SAVED: SavedLines = SavedLines::new();
 
+// The cross is indexed by a signed offset `d` from the centre, stored at buffer
+// position `i = d + half`. Saving, restoring, and drawing all use this same
+// mapping to real coordinates (centre + d), so off-screen arms are simply
+// skipped (the cursor is clipped at an edge) instead of the start being clamped
+// while the full span is still drawn — which made an arm overshoot past the
+// centre near the top/left edges.
 fn save_cross(info: &FbInfo, cx: u32, cy: u32) {
     unsafe {
         let s = core::ptr::addr_of_mut!(SAVED);
-        let half = CROSS_HALF as u32;
-        let span = 2 * half as usize + 1;
+        let half = CROSS_HALF;
+        let span = (2 * half + 1) as usize;
         for i in 0..span {
-            let px = cx.saturating_sub(half) + i as u32;
-            (*s).hbuf[i] = get_pixel(info, px, cy);
-        }
-        for i in 0..span {
-            let py = cy.saturating_sub(half) + i as u32;
-            (*s).vbuf[i] = get_pixel(info, cx, py);
+            let d = i as i32 - half;
+            let px = cx as i32 + d;
+            let py = cy as i32 + d;
+            (*s).hbuf[i] = if px >= 0 { get_pixel(info, px as u32, cy) } else { 0 };
+            (*s).vbuf[i] = if py >= 0 { get_pixel(info, cx, py as u32) } else { 0 };
         }
         (*s).x = cx;
         (*s).y = cy;
@@ -176,35 +181,29 @@ fn restore_cross(info: &FbInfo) {
     unsafe {
         let s = core::ptr::addr_of!(SAVED);
         if !(*s).valid { return; }
-        let half = CROSS_HALF as u32;
-        let span = 2 * half as usize + 1;
+        let half = CROSS_HALF;
+        let span = (2 * half + 1) as usize;
+        let cx = (*s).x;
+        let cy = (*s).y;
         for i in 0..span {
-            let px = (*s).x.saturating_sub(half) + i as u32;
-            put_pixel(info, px, (*s).y, (*s).hbuf[i]);
-        }
-        for i in 0..span {
-            let py = (*s).y.saturating_sub(half) + i as u32;
-            put_pixel(info, (*s).x, py, (*s).vbuf[i]);
+            let d = i as i32 - half;
+            let px = cx as i32 + d;
+            let py = cy as i32 + d;
+            if px >= 0 { put_pixel(info, px as u32, cy, (*s).hbuf[i]); }
+            if py >= 0 { put_pixel(info, cx, py as u32, (*s).vbuf[i]); }
         }
     }
 }
 
 fn draw_cross(info: &FbInfo, cx: u32, cy: u32, color: u32) {
-    let half = CROSS_HALF as u32;
-    let gap  = CROSS_GAP  as u32;
-    // horizontal arms
-    let x0 = cx.saturating_sub(half);
-    for dx in 0..(2 * half + 1) {
-        let px = x0 + dx;
-        if px >= cx.saturating_sub(gap) && px <= cx + gap { continue; }
-        put_pixel(info, px, cy, color);
-    }
-    // vertical arms
-    let y0 = cy.saturating_sub(half);
-    for dy in 0..(2 * half + 1) {
-        let py = y0 + dy;
-        if py >= cy.saturating_sub(gap) && py <= cy + gap { continue; }
-        put_pixel(info, cx, py, color);
+    let half = CROSS_HALF;
+    let gap  = CROSS_GAP;
+    for d in -half..=half {
+        if d.abs() <= gap { continue; } // centre gap
+        let px = cx as i32 + d;
+        let py = cy as i32 + d;
+        if px >= 0 { put_pixel(info, px as u32, cy, color); } // horizontal arm
+        if py >= 0 { put_pixel(info, cx, py as u32, color); } // vertical arm
     }
 }
 
