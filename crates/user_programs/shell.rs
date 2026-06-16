@@ -27,6 +27,7 @@ struct ProcessInfo {
     step: u64,
     cpu_ticks: u64,
     memory_bytes: u64,
+    parent: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -476,6 +477,7 @@ fn print_process_info(pid: u64, force_name: &[u8]) {
         step: 0,
         cpu_ticks: 0,
         memory_bytes: 0,
+        parent: 0,
     };
     let r = syscall3(SYS_PROCESS_INFO, pid, &mut info as *mut _ as u64);
     if r != 0 {
@@ -495,6 +497,8 @@ fn print_process_info(pid: u64, force_name: &[u8]) {
         .unwrap_or(NAME_LEN);
     sys_write(b"pid=");
     write_u64(info.pid);
+    sys_write(b" ppid=");
+    write_u64(info.parent);
     sys_write(b" state=");
     sys_write(state_name);
     sys_write(b" cpu=");
