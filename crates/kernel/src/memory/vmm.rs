@@ -91,6 +91,15 @@ pub fn current_cr3() -> u64 {
     unsafe { *CURRENT_PML4.0.get() }
 }
 
+/// Read this CPU's *actual* CR3 register (masked to the PML4 base). Unlike
+/// `current_cr3()` — which returns a single global cache shared by all CPUs and
+/// is therefore unreliable under SMP — this reflects the real address space
+/// active on the calling core. Use this when correctness across CPUs matters,
+/// e.g. saving/restoring CR3 around an interrupt.
+pub(crate) fn active_cr3() -> u64 {
+    unsafe { read_cr3() & ADDR_MASK }
+}
+
 pub unsafe fn create_address_space() -> Result<u64, MapError> {
     unsafe {
         let pml4 = alloc_table()?;

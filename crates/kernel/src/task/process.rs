@@ -61,6 +61,11 @@ pub(crate) struct Process {
     background: bool,
     pub(crate) sigint_catch: bool,
     pub(crate) sigint_pending: bool,
+    // Set when a remote agent requested this process die while its thread was
+    // still Running on some CPU. We cannot free its address space out from under
+    // a running thread (SMP use-after-free), so the thread self-exits the next
+    // time it enters the kernel. See kill_pid / syscall_dispatch.
+    pub(crate) kill_pending: bool,
     pub(crate) privilege: PrivilegeLevel,
     pub(crate) main_tid: Option<u64>,
     pub(crate) threads: Vec<u64>,
@@ -114,6 +119,7 @@ fn kernel_process() -> Process {
         background: false,
         sigint_catch: false,
         sigint_pending: false,
+        kill_pending: false,
         privilege: PrivilegeLevel::Driver,
         main_tid: None,
         threads: alloc::vec![],
@@ -149,6 +155,7 @@ fn create_process(image_name: &str, privilege: PrivilegeLevel, main_tid: u64) ->
             background: false,
             sigint_catch: false,
             sigint_pending: false,
+            kill_pending: false,
             privilege,
             main_tid: Some(main_tid),
             threads: alloc::vec![main_tid],
@@ -426,31 +433,47 @@ pub fn oom_victim(exclude: u64) -> Option<u64> {
     })
 }
 
+/// Consume the deferred-kill flag for `pid`. Returns true if a kill was pending,
+/// in which case the caller (the process's own thread, on its own CPU) should
+/// exit itself via the normal self-exit path.
+pub fn take_kill_pending(pid: u64) -> bool {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        if let Some(p) = (&mut *PROCESSES.0.get()).iter_mut().find(|p| p.pid == pid) {
+            let pending = p.kill_pending;
+            p.kill_pending = false;
+            pending
+        } else {
+            false
+        }
+    })
+}
+
+/// Request that `pid` die. We never free its fds/address space here: a remote
+/// caller (another CPU, or an IRQ) cannot safely tear down a process whose
+/// thread may still run — or be resumed from a saved blocking frame — against
+/// the freed memory (SMP use-after-free). Instead we just flag it and make it
+/// Ready. Because nothing is freed, the thread keeps running on its still-valid
+/// address space until it next enters the kernel, where `syscall_dispatch` sees
+/// `kill_pending` and self-exits via `exit_current()` on its own CPU (safe).
 pub fn kill_pid(pid: u64) {
     crate::task::thread::with_threads_lock(|| {
         if pid == 0 {
             return;
         }
         unsafe {
-            let processes = &*PROCESSES.0.get();
-            if let Some(p) = processes.iter().find(|p| p.pid == pid) {
+            let processes = &mut *PROCESSES.0.get();
+            if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
                 if p.privilege <= PrivilegeLevel::Driver {
                     return;
                 }
+                p.kill_pending = true;
+            } else {
+                return;
             }
         }
-        unsafe {
-            crate::drivers::fb_owner::release(pid);
-            crate::scheduler::clear_current_user(pid);
-            crate::fd::close_all(pid);
-            crate::user::free_dma_for_pid(pid);
-            crate::user::free_heap_for_pid(pid);
-            if let Some(cr3) = user_cr3(pid) {
-                crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
-                crate::vmm::free_user_address_space(cr3);
-            }
-            remove_process(pid);
-            wakeup_pid_waiters(pid);
+        // Wake it (if blocked) so its CPU schedules it and reaps it promptly.
+        if let Some(main) = main_tid(pid) {
+            thread::set_ready(main);
         }
     })
 }

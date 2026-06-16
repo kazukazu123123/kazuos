@@ -41,12 +41,12 @@ unsafe extern "C" fn fault_handler_inner(
             name, crate::smp::current_cpu_index(), crate::scheduler::current_user_tid().unwrap_or(0), pid, vector, error_code, frame.instruction_pointer
         );
         if pid != 0 {
-            unsafe {
-                let processes = &mut *crate::task::process::PROCESSES.0.get();
-                crate::drivers::fb_owner::release(pid);
-                crate::scheduler::clear_current_user(pid);
-                processes.retain(|p| p.pid != pid);
-            }
+            // Full teardown of the faulting process. The faulting thread is the
+            // current one on this CPU, so freeing its address space here is safe.
+            // (The old code only dropped the process record, leaking its threads
+            // and page tables and letting a dead thread be rescheduled.)
+            crate::user::set_exiting_pid_tmp(pid);
+            crate::task::process::exit_current();
         }
         crate::scheduler::enter_next_process();
     }

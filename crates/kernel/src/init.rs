@@ -221,6 +221,19 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform, hda_ir
                 {
                     ioapic.set_irq_ext(hda, 0x31, config.bsp_apic_id, 0);
                     ioapic.unmask_irq(hda);
+                    // The HDA IRQ is delivered via the IOAPIC -> LAPIC (vector
+                    // 0x31) regardless of keyboard mode, so its handler MUST end
+                    // with a LAPIC EOI. USE_IOAPIC selects that EOI path; it was
+                    // only set true in the non-polling branch below, so in
+                    // keyboard-polling mode the HDA handler used pic::eoi() and
+                    // left LAPIC ISR[0x31] permanently in-service — blocking all
+                    // same/lower-priority vectors (including the timer 0x30) on
+                    // the BSP. That wedged CPU0 on the first audio interrupt;
+                    // round-robin later parking a foreground task there looked
+                    // like a hang. Mark IOAPIC EOI now that an IOAPIC-routed IRQ
+                    // is live (keyboard/mouse stay masked in polling mode, so
+                    // their EOI path is unaffected).
+                    interrupts::set_use_ioapic(true);
                     crate::log_info!("IOAPIC HDA IRQ{} enabled", hda);
                 }
                 if !platform.keyboard_polling {

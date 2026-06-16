@@ -346,8 +346,11 @@ struct ConsoleGuard {
 
 impl ConsoleGuard {
     fn new() -> Self {
+        // Interrupts off before locking: prevents a same-CPU IRQ from re-entering
+        // and self-deadlocking on this non-reentrant lock (see KeyboardGuard).
+        let _irq = IrqGuard::new();
         CONSOLE_LOCK.lock();
-        Self { _irq: IrqGuard::new() }
+        Self { _irq }
     }
 }
 
