@@ -34,6 +34,12 @@ struct ProcessInfo {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
+    // Catch Ctrl+C so that at the prompt it cancels the current line instead of killing
+    // the shell. On the console the kernel turns Ctrl+C into a SIGINT to the foreground
+    // (us, when idle at the prompt); in a GUI terminal it arrives as a 0x03 byte on stdin
+    // (handled in read_line). When a command is running it's the foreground, so it gets
+    // the interrupt, not us.
+    syscall1(SYS_SIGNAL_CATCH, 1);
     let mut buf = [0u8; BUF_SIZE];
     loop {
         let len = read_line(&mut buf);
@@ -62,6 +68,11 @@ fn read_line(buf: &mut [u8]) -> usize {
 
     let mut chunk = [0u8; 32];
     loop {
+        // Ctrl+C on the console arrives as a caught SIGINT (not a stdin byte): cancel.
+        if syscall1(SYS_SIGNAL_CHECK, 0) == 1 {
+            sys_write(b"^C\r\n");
+            return 0;
+        }
         let n = sys_try_read(0, &mut chunk);
         if n == u64::MAX { sys_exit(0); } // stdin closed → shell exits
         if n == 0 {

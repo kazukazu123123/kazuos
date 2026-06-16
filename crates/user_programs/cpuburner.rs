@@ -2,85 +2,75 @@
 #![no_main]
 include!("../../crates/user_rt/runtime.rs");
 
-// cpuburner — saturate the CPU.
+use core::sync::atomic::{AtomicBool, Ordering};
+
+// cpuburner — saturate CPUs using worker threads.
 //
-//   cpuburner          burn one core in the foreground until Ctrl+C
-//   cpuburner <N>      spawn N worker processes (one per extra core) plus burn
-//                      in the foreground; Ctrl+C stops everything
-//   cpuburner worker   pure burn loop; meant to be spawned + killed by a parent
+//   cpuburner          burn with 1 thread until Ctrl+C
+//   cpuburner <N>      burn with N threads (one per core to use all of them)
+//
+// All burning happens in spawned threads of this process; Ctrl+C sets a shared stop
+// flag, the threads fall out of their loops, and we join them.
 
-const MAX_WORKERS: usize = 64;
+const MAX_THREADS: usize = 64;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
-    let arg0 = nth_arg(argc, argv, 0);
+static STOP: AtomicBool = AtomicBool::new(false);
 
-    // Worker mode: just burn until the parent kills us. No signal handling.
-    if matches!(arg0, Some(a) if eq(a, b"worker")) {
-        burn_forever();
-    }
-
-    // Determine how many worker processes to spawn (0 = foreground only).
-    let workers = match arg0 {
-        Some(a) => parse_u64(a).min(MAX_WORKERS as u64) as usize,
-        None => 0,
-    };
-
-    let mut pids = [0u64; MAX_WORKERS];
-    for slot in pids.iter_mut().take(workers) {
-        // "/bin/cpuburner\0worker\0\0"
-        let spec = b"/bin/cpuburner\0worker\0\0";
-        let pid = syscall(SYS_EXEC, spec.as_ptr() as u64, spec.len() as u64, 0xFFFF_FFFF);
-        *slot = pid;
-    }
-
-    sys_write(b"cpuburner: burning CPU");
-    if workers > 0 {
-        sys_write(b" (");
-        write_u64(workers as u64);
-        sys_write(b" worker(s) + foreground)");
-    }
-    sys_write(b" - press Ctrl+C to stop\r\n");
-
-    // Catch Ctrl+C so we can clean up the workers instead of being killed.
-    syscall(SYS_SIGNAL_CATCH, 1, 0, 0);
-
-    // Foreground burn loop, periodically checking for Ctrl+C.
+fn burn() {
+    let mut acc: u64 = 0x1234_5678_9ABC_DEF0;
+    let mut i: u64 = 0;
     loop {
-        let mut acc: u64 = 0x9E3779B97F4A7C15;
-        for i in 0..50_000_000u64 {
-            // Mix of arithmetic to keep the ALU busy and resist being optimised out.
+        // Burn a chunk, then check the stop flag (cheap relative to the chunk).
+        for _ in 0..2_000_000u64 {
             acc = acc.wrapping_mul(6364136223846793005).wrapping_add(i);
-            acc ^= acc >> 33;
+            acc ^= acc >> 29;
             core::hint::black_box(acc);
+            i = i.wrapping_add(1);
         }
-        core::hint::black_box(acc);
-        if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) == 1 {
+        if STOP.load(Ordering::Relaxed) {
             break;
         }
     }
+}
 
-    // Tear down workers.
-    for &pid in pids.iter().take(workers) {
-        if pid != 0 && pid != u64::MAX {
-            syscall(SYS_KILL, pid, 0, 0);
+#[unsafe(no_mangle)]
+pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
+    let n = match nth_arg(argc, argv, 0) {
+        Some(a) => parse_u64(a).clamp(1, MAX_THREADS as u64) as usize,
+        None => 1,
+    };
+
+    sys_write(b"cpuburner: burning with ");
+    write_u64(n as u64);
+    sys_write(b" thread(s) - press Ctrl+C to stop\r\n");
+
+    // Catch Ctrl+C so we stop the threads cleanly instead of being killed.
+    syscall(SYS_SIGNAL_CATCH, 1, 0, 0);
+
+    let mut handles: alloc::vec::Vec<JoinHandle> = alloc::vec::Vec::new();
+    for _ in 0..n {
+        if let Some(h) = thread_create(burn) {
+            handles.push(h);
         }
+    }
+
+    // Foreground: idle until Ctrl+C (the burning is in the threads).
+    loop {
+        if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) == 1 {
+            break;
+        }
+        syscall(SYS_SLEEP, 50, SLEEP_UNIT_MS, 0);
+    }
+
+    // Stop the burn loops and wait for the threads to finish.
+    STOP.store(true, Ordering::Relaxed);
+    for h in handles {
+        h.join();
     }
 
     sys_write(b"\r\ncpuburner: stopped\r\n");
     syscall(SYS_EXIT, 0, 0, 0);
     loop {}
-}
-
-fn burn_forever() -> ! {
-    let mut acc: u64 = 0x1234_5678_9ABC_DEF0;
-    let mut i: u64 = 0;
-    loop {
-        acc = acc.wrapping_mul(6364136223846793005).wrapping_add(i);
-        acc ^= acc >> 29;
-        core::hint::black_box(acc);
-        i = i.wrapping_add(1);
-    }
 }
 
 /// Return argv[n] as a byte slice, or None if out of range.
@@ -99,10 +89,6 @@ fn nth_arg(argc: u64, argv: u64, n: usize) -> Option<&'static [u8]> {
         }
         Some(core::slice::from_raw_parts(ptr as *const u8, len))
     }
-}
-
-fn eq(a: &[u8], b: &[u8]) -> bool {
-    a == b
 }
 
 fn parse_u64(s: &[u8]) -> u64 {

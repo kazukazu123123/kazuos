@@ -204,15 +204,20 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         while i < 5 {
             syscall(SYS_SLEEP, 100, SLEEP_UNIT_MS, 0);
             if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) != 0 { quit = true; break; }
-            // Drain pending keys; redraw immediately if the view scrolled.
+            // Drain pending keys from stdin (fd 0), not the console keyboard directly,
+            // so this works both on the console and inside a GUI terminal (where the
+            // compositor owns the keyboard and forwards keys down our stdin pipe).
             let mut moved = false;
+            let mut kb = [0u8; 16];
             loop {
-                let key = syscall(SYS_KEYBOARD_POLL, 0, 0, 0);
-                if key == 0 { break; }
-                match key as u8 {
-                    0x82 => { scroll = scroll.saturating_sub(1); moved = true; } // Up
-                    0x83 => { scroll += 1; moved = true; }                       // Down (clamped on redraw)
-                    _ => {}
+                let n = syscall(SYS_TRY_READ, 0, kb.as_mut_ptr() as u64, kb.len() as u64);
+                if n == 0 || n == u64::MAX { break; }
+                for &key in &kb[..n as usize] {
+                    match key {
+                        0x82 => { scroll = scroll.saturating_sub(1); moved = true; } // Up
+                        0x83 => { scroll += 1; moved = true; }                       // Down
+                        _ => {}
+                    }
                 }
             }
             if moved { break; }
