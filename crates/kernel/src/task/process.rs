@@ -69,6 +69,10 @@ pub(crate) struct Process {
     // pid of the spawning process (0 = kernel). When a parent exits, its children
     // are killed so they don't orphan (e.g. a GUI's terminal shell dies with it).
     pub(crate) parent: u64,
+    // Terminal size reported to this process (cols, rows). 0 = use the console size.
+    // A terminal emulator sets it on its shell; children inherit it.
+    pub(crate) term_cols: u16,
+    pub(crate) term_rows: u16,
     pub(crate) privilege: PrivilegeLevel,
     pub(crate) main_tid: Option<u64>,
     pub(crate) threads: Vec<u64>,
@@ -124,6 +128,8 @@ fn kernel_process() -> Process {
         sigint_pending: false,
         kill_pending: false,
         parent: 0,
+        term_cols: 0,
+        term_rows: 0,
         privilege: PrivilegeLevel::Driver,
         main_tid: None,
         threads: alloc::vec![],
@@ -161,6 +167,8 @@ fn create_process(image_name: &str, privilege: PrivilegeLevel, main_tid: u64) ->
             sigint_pending: false,
             kill_pending: false,
             parent: 0,
+            term_cols: 0,
+            term_rows: 0,
             privilege,
             main_tid: Some(main_tid),
             threads: alloc::vec![main_tid],
@@ -482,6 +490,26 @@ pub fn foreground_leaf(root: u64) -> u64 {
             }
         }
         cur
+    })
+}
+
+pub fn set_winsize(pid: u64, cols: u16, rows: u16) {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        if let Some(p) = (&mut *PROCESSES.0.get()).iter_mut().find(|p| p.pid == pid) {
+            p.term_cols = cols;
+            p.term_rows = rows;
+        }
+    })
+}
+
+/// (cols, rows) of the process's terminal, or (0, 0) if it should use the console.
+pub fn winsize(pid: u64) -> (u16, u16) {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (*PROCESSES.0.get())
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| (p.term_cols, p.term_rows))
+            .unwrap_or((0, 0))
     })
 }
 
