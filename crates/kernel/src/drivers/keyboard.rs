@@ -106,40 +106,48 @@ pub(crate) unsafe fn init() {
 pub(crate) unsafe fn poll() {
     let _guard = KeyboardGuard::new();
     unsafe {
-        let status = inb(0x64);
-        if status & 0x01 == 0 { return; }
-        if status & 0x20 != 0 { return; }
-        let sc = inb(0x60);
+        // Drain every keyboard byte currently pending, not just one: in polling
+        // mode poll() runs once per timer tick, so reading a single byte loses
+        // keystrokes when typing faster than the tick — the 8042 output buffer
+        // overflows. Cap the loop so a stuck controller can't wedge us here.
+        let mut iters = 0;
+        while iters < 32 {
+            iters += 1;
+            let status = inb(0x64);
+            if status & 0x01 == 0 { break; }  // no byte pending
+            if status & 0x20 != 0 { break; }  // mouse byte at head — leave it for the mouse
+            let sc = inb(0x60);
 
-        if sc == 0xE0 { *EXTENDED.0.get() = true; return; }
+            if sc == 0xE0 { *EXTENDED.0.get() = true; continue; }
 
-        if *EXTENDED.0.get() {
-            *EXTENDED.0.get() = false;
-            if sc & 0x80 != 0 { return; }
-            let ch = match sc { 0x4B => 0x80, 0x4D => 0x81, 0x48 => 0x82, 0x50 => 0x83, _ => 0 };
+            if *EXTENDED.0.get() {
+                *EXTENDED.0.get() = false;
+                if sc & 0x80 != 0 { continue; }
+                let ch = match sc { 0x4B => 0x80, 0x4D => 0x81, 0x48 => 0x82, 0x50 => 0x83, _ => 0 };
+                if ch != 0 { push_byte(ch); }
+                continue;
+            }
+
+            if sc == 0x2A || sc == 0x36 { *SHIFT.0.get() = true;  continue; }
+            if sc == 0xAA || sc == 0xB6 { *SHIFT.0.get() = false; *EXTENDED.0.get() = false; continue; }
+            if sc == 0x1D { *CTRL.0.get() = true;  continue; }
+            if sc == 0x9D { *CTRL.0.get() = false; continue; }
+            if sc & 0x80 != 0 { continue; }
+
+            if *CTRL.0.get() {
+                let base = SCANCODE[(sc & 0x7F) as usize];
+                if base >= b'a' && base <= b'z'      { push_byte(base - b'a' + 1); }
+                else if base >= b'A' && base <= b'Z' { push_byte(base - b'A' + 1); }
+                continue;
+            }
+
+            let ch = match sc {
+                0x39 => b' ',
+                _ if *SHIFT.0.get() => SCANCODE_SHIFT[(sc & 0x7F) as usize],
+                _ => SCANCODE[(sc & 0x7F) as usize],
+            };
             if ch != 0 { push_byte(ch); }
-            return;
         }
-
-        if sc == 0x2A || sc == 0x36 { *SHIFT.0.get() = true;  return; }
-        if sc == 0xAA || sc == 0xB6 { *SHIFT.0.get() = false; *EXTENDED.0.get() = false; return; }
-        if sc == 0x1D { *CTRL.0.get() = true;  return; }
-        if sc == 0x9D { *CTRL.0.get() = false; return; }
-        if sc & 0x80 != 0 { return; }
-
-        if *CTRL.0.get() {
-            let base = SCANCODE[(sc & 0x7F) as usize];
-            if base >= b'a' && base <= b'z'      { push_byte(base - b'a' + 1); }
-            else if base >= b'A' && base <= b'Z' { push_byte(base - b'A' + 1); }
-            return;
-        }
-
-        let ch = match sc {
-            0x39 => b' ',
-            _ if *SHIFT.0.get() => SCANCODE_SHIFT[(sc & 0x7F) as usize],
-            _ => SCANCODE[(sc & 0x7F) as usize],
-        };
-        if ch != 0 { push_byte(ch); }
     }
 }
 
