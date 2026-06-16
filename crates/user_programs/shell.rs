@@ -8,9 +8,6 @@ const STDIO_DEFAULT: u64 = 0xFFFF_FFFF;
 // terminal's pipe when the shell itself is running piped.
 const STDIO_INHERIT: u64 = 0xFFFF | (1 << 16);
 
-const KEY_UP:   u64 = 0x82;
-const KEY_DOWN: u64 = 0x83;
-
 const MAX_HISTORY: usize = 32;
 static mut HISTORY: [[u8; BUF_SIZE]; MAX_HISTORY] = [[0u8; BUF_SIZE]; MAX_HISTORY];
 static mut HISTORY_LENS: [usize; MAX_HISTORY] = [0usize; MAX_HISTORY];
@@ -32,52 +29,34 @@ struct ProcessInfo {
     memory_bytes: u64,
 }
 
-// When launched with a `--pipe` argument (by the GUI terminal), the shell does its
-// I/O over stdin/stdout (fd 0/1) — which the GUI has wired to pipes — instead of the
-// kernel console + keyboard. The normal console shell (no flag) is unchanged.
-static mut PIPE_MODE: bool = false;
-fn pipe_mode() -> bool { unsafe { PIPE_MODE } }
-
-fn has_pipe_flag(argc: u64, argv: u64) -> bool {
-    if argv == 0 { return false; }
-    let ptrs = argv as *const u64;
-    // argv here is the kernel's arg list (no argv[0]=path slot), so start at 0.
-    for i in 0..argc {
-        let p = unsafe { *ptrs.add(i as usize) } as *const u8;
-        if p.is_null() { continue; }
-        let target = b"--pipe";
-        let mut ok = true;
-        for (j, &t) in target.iter().enumerate() {
-            if unsafe { *p.add(j) } != t { ok = false; break; }
-        }
-        if ok && unsafe { *p.add(target.len()) } == 0 { return true; }
-    }
-    false
-}
-
 #[unsafe(no_mangle)]
-pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
-    unsafe { PIPE_MODE = has_pipe_flag(argc, argv); }
+pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut buf = [0u8; BUF_SIZE];
     loop {
-        let len = if pipe_mode() { read_line_pipe(&mut buf) } else { read_line(&mut buf) };
+        let len = read_line(&mut buf);
         if len > 0 {
             execute(&buf[..len]);
         }
     }
 }
 
-// Simple line editor for pipe mode: read bytes from stdin, echo to stdout, handle
-// Enter and backspace. No history/cursor movement — the GUI terminal is a plain
-// dumb terminal. EOF on stdin (the terminal window closed) exits the shell.
+// The one line editor, used over whatever stdin/stdout is — the kernel console or a
+// GUI terminal's pipes. It reads the stdin byte stream (arrows arrive as 0x80-0x83),
+// edits in place with history (↑/↓) and cursor movement (←/→), and redraws purely
+// with ANSI in a single write. The terminal on the other end (console or GUI) draws
+// its own caret, so the shell needs no cursor/keyboard syscalls.
 //
-// Uses non-blocking SYS_TRY_READ + a short sleep rather than a blocking read: a
-// blocking pipe read is completed by the *writer's* wakeup, which copies into our
-// buffer using the writer's address space (wrong CR3). Polling keeps the read in
-// our own context so the bytes land correctly.
-fn read_line_pipe(buf: &mut [u8]) -> usize {
-    sys_write(b"KazuOS> ");
+// Non-blocking SYS_TRY_READ + a short sleep is used rather than a blocking read so
+// the read always runs in our own address space (a blocking pipe read is completed
+// by the writer, which would copy into our buffer using the writer's CR3).
+fn read_line(buf: &mut [u8]) -> usize {
     let mut len = 0usize;
+    let mut pos = 0usize;
+    let mut hist_age: usize = 0;
+    let mut saved_buf = [0u8; BUF_SIZE];
+    let mut saved_len = 0usize;
+    redraw(buf, len, pos);
+
     let mut chunk = [0u8; 32];
     loop {
         let n = sys_try_read(0, &mut chunk);
@@ -88,143 +67,103 @@ fn read_line_pipe(buf: &mut [u8]) -> usize {
         }
         for i in 0..n as usize {
             match chunk[i] {
-                b'\r' | b'\n' => { sys_write(b"\r\n"); return len; }
+                0x0A | 0x0D => {
+                    redraw(buf, len, len);
+                    sys_write(b"\r\n");
+                    if len > 0 { push_history(buf, len); }
+                    return len;
+                }
                 0x03 => { sys_write(b"^C\r\n"); return 0; } // Ctrl+C: cancel the line
-                0x08 | 0x7f => {
-                    if len > 0 { len -= 1; sys_write(b"\x08 \x08"); }
-                }
-                ch => {
-                    if len < buf.len() { buf[len] = ch; len += 1; let c = [ch]; sys_write(&c); }
-                }
-            }
-        }
-    }
-}
-
-fn read_line(buf: &mut [u8]) -> usize {
-    let mut len = 0usize;
-    let mut pos = 0usize;
-    let mut cursor_on = true;
-    let mut blink_ticks = 0u32;
-    // hist_age=0: live input, 1=most recent, 2=second most recent, ...
-    let mut hist_age: usize = 0;
-    let mut saved_buf = [0u8; BUF_SIZE];
-    let mut saved_len = 0usize;
-
-    redraw(buf, len, pos, cursor_on);
-
-    loop {
-        let ch = syscall1(SYS_KEYBOARD_POLL, 0);
-        if ch == 0 {
-            syscall3(SYS_SLEEP, 50, SLEEP_UNIT_MS);
-            blink_ticks += 1;
-            if blink_ticks >= 10 {
-                blink_ticks = 0;
-                cursor_on = !cursor_on;
-                redraw(buf, len, pos, cursor_on);
-            }
-            continue;
-        }
-
-        blink_ticks = 0;
-        cursor_on = true;
-
-        match ch {
-            0x0A | 0x0D => {
-                redraw(buf, len, len, false);
-                sys_write(b"\n");
-                // push non-empty command to history
-                if len > 0 {
-                    unsafe {
-                        let count = *core::ptr::addr_of_mut!(HISTORY_COUNT);
-                        let slot = count % MAX_HISTORY;
-                        let dst = core::ptr::addr_of_mut!(HISTORY[slot]).cast::<u8>();
-                        core::ptr::copy_nonoverlapping(buf.as_ptr(), dst, len);
-                        *core::ptr::addr_of_mut!(HISTORY_LENS[slot]) = len;
-                        *core::ptr::addr_of_mut!(HISTORY_COUNT) = count + 1;
+                0x08 | 0x7F => {
+                    if pos > 0 {
+                        for j in pos - 1..len - 1 { buf[j] = buf[j + 1]; }
+                        len -= 1;
+                        pos -= 1;
                     }
                 }
-                return len;
-            }
-            0x08 | 0x7F => {
-                if pos > 0 {
-                    for i in pos - 1..len - 1 {
-                        buf[i] = buf[i + 1];
-                    }
-                    len -= 1;
-                    pos -= 1;
-                }
-            }
-            0x80 => { // left
-                if pos > 0 { pos -= 1; }
-            }
-            0x81 => { // right
-                if pos < len { pos += 1; }
-            }
-            KEY_UP => {
-                let count = unsafe { *core::ptr::addr_of!(HISTORY_COUNT) };
-                let max_age = count.min(MAX_HISTORY);
-                if hist_age < max_age {
-                    if hist_age == 0 {
-                        // save current input
-                        saved_buf[..len].copy_from_slice(&buf[..len]);
-                        saved_len = len;
-                    }
-                    hist_age += 1;
-                    unsafe {
-                        let count = *core::ptr::addr_of!(HISTORY_COUNT);
-                        let slot = (count - hist_age) % MAX_HISTORY;
-                        len = *core::ptr::addr_of!(HISTORY_LENS[slot]);
-                        let src = core::ptr::addr_of!(HISTORY[slot]).cast::<u8>();
-                        core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), len);
-                    }
-                    pos = len;
-                }
-            }
-            KEY_DOWN => {
-                if hist_age > 0 {
-                    hist_age -= 1;
-                    if hist_age == 0 {
-                        // restore saved input
-                        len = saved_len;
-                        buf[..len].copy_from_slice(&saved_buf[..len]);
-                    } else {
+                0x80 => { if pos > 0 { pos -= 1; } }          // left
+                0x81 => { if pos < len { pos += 1; } }        // right
+                0x82 => { // up (history older)
+                    let count = unsafe { *core::ptr::addr_of!(HISTORY_COUNT) };
+                    let max_age = count.min(MAX_HISTORY);
+                    if hist_age < max_age {
+                        if hist_age == 0 { saved_buf[..len].copy_from_slice(&buf[..len]); saved_len = len; }
+                        hist_age += 1;
                         unsafe {
-                            let count = *core::ptr::addr_of!(HISTORY_COUNT);
                             let slot = (count - hist_age) % MAX_HISTORY;
                             len = *core::ptr::addr_of!(HISTORY_LENS[slot]);
-                            let src = core::ptr::addr_of!(HISTORY[slot]).cast::<u8>();
-                            core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), len);
+                            core::ptr::copy_nonoverlapping(core::ptr::addr_of!(HISTORY[slot]).cast::<u8>(), buf.as_mut_ptr(), len);
                         }
+                        pos = len;
                     }
-                    pos = len;
                 }
-            }
-            c if c >= 0x20 && c < 0x7F => {
-                if len < buf.len() - 1 {
-                    for i in (pos..len).rev() {
-                        buf[i + 1] = buf[i];
+                0x83 => { // down (history newer)
+                    if hist_age > 0 {
+                        hist_age -= 1;
+                        if hist_age == 0 {
+                            len = saved_len;
+                            buf[..len].copy_from_slice(&saved_buf[..len]);
+                        } else {
+                            unsafe {
+                                let count = *core::ptr::addr_of!(HISTORY_COUNT);
+                                let slot = (count - hist_age) % MAX_HISTORY;
+                                len = *core::ptr::addr_of!(HISTORY_LENS[slot]);
+                                core::ptr::copy_nonoverlapping(core::ptr::addr_of!(HISTORY[slot]).cast::<u8>(), buf.as_mut_ptr(), len);
+                            }
+                        }
+                        pos = len;
                     }
-                    buf[pos] = c as u8;
-                    len += 1;
-                    pos += 1;
                 }
+                c if (0x20..0x7F).contains(&c) => {
+                    if len < buf.len() - 1 {
+                        for j in (pos..len).rev() { buf[j + 1] = buf[j]; }
+                        buf[pos] = c;
+                        len += 1;
+                        pos += 1;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
-
-        redraw(buf, len, pos, cursor_on);
+        redraw(buf, len, pos);
     }
 }
 
-fn redraw(buf: &[u8], len: usize, pos: usize, cursor_on: bool) {
-    sys_write(b"\r\x1b[K");
-    sys_write(b"KazuOS> ");
-    sys_write(&buf[..pos]);
-    syscall1(SYS_CURSOR_SAVE, 0);
-    sys_write(&buf[pos..len]);
-    if cursor_on {
-        syscall1(SYS_CURSOR_DRAW, 1);
+// ANSI redraw: rewrite the whole line and park the cursor at `pos` by moving it back
+// from the end. Assembled into a single write so the terminal repaints (and redraws
+// its caret) once per keystroke instead of flickering through partial states. Works
+// on anything that understands \r, ESC[K and ESC[<n>D — console and GUI terminal.
+const PROMPT: &[u8] = b"KazuOS> ";
+fn redraw(buf: &[u8], len: usize, pos: usize) {
+    let mut out = [0u8; BUF_SIZE + 32];
+    let mut k = 0;
+    let mut put = |bytes: &[u8], out: &mut [u8], k: &mut usize| {
+        for &b in bytes { if *k < out.len() { out[*k] = b; *k += 1; } }
+    };
+    put(b"\r\x1b[K", &mut out, &mut k);
+    put(PROMPT, &mut out, &mut k);
+    put(&buf[..len], &mut out, &mut k);
+    if pos < len {
+        // ESC[<n>D — move the cursor back to `pos`.
+        let n = len - pos;
+        let mut digits = [0u8; 10];
+        let mut v = n;
+        let mut d = 0;
+        while v > 0 { digits[d] = b'0' + (v % 10) as u8; v /= 10; d += 1; }
+        put(b"\x1b[", &mut out, &mut k);
+        for j in (0..d).rev() { if k < out.len() { out[k] = digits[j]; k += 1; } }
+        put(b"D", &mut out, &mut k);
+    }
+    sys_write(&out[..k]);
+}
+
+fn push_history(buf: &[u8], len: usize) {
+    unsafe {
+        let count = *core::ptr::addr_of_mut!(HISTORY_COUNT);
+        let slot = count % MAX_HISTORY;
+        core::ptr::copy_nonoverlapping(buf.as_ptr(), core::ptr::addr_of_mut!(HISTORY[slot]).cast::<u8>(), len);
+        *core::ptr::addr_of_mut!(HISTORY_LENS[slot]) = len;
+        *core::ptr::addr_of_mut!(HISTORY_COUNT) = count + 1;
     }
 }
 
@@ -708,12 +647,9 @@ fn write_u64(mut n: u64) {
 }
 
 fn sys_write(buf: &[u8]) {
-    if pipe_mode() {
-        sys_write_fd(1, buf); // GUI terminal: stdout is a pipe
-    } else {
-        // Console shell: write straight to the console.
-        syscall3(SYS_CONSOLE_WRITE, buf.as_ptr() as u64, buf.len() as u64);
-    }
+    // Always via stdout (fd 1): the console for the boot shell, a pipe under the GUI
+    // terminal. The terminal on the other end renders it (ANSI included).
+    sys_write_fd(1, buf);
 }
 
 fn syscall1(n: u64, a0: u64) -> u64 {
