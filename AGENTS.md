@@ -168,13 +168,13 @@ Keep arch-specific syscall assembly here. High-level syscall behavior can dispat
 
 High-level syscall dispatch (core logic).
 
-Syscall number constants live in `syscall_numbers.rs` (included via `include!`). Keep real exec/loading code in `exec.rs`, `process.rs`, or VFS/filesystem modules.
+Syscall number constants live in the `kazuos-abi` crate. Keep real exec/loading code in `exec.rs`, `process.rs`, or VFS/filesystem modules.
 
-### `syscall_numbers.rs`
+### `kazuos-abi` crate
 
-Single source of truth for all `SYS_*` constants.
+Single source of truth for all `SYS_*` constants — the kernel/user ABI.
 
-Location: `crates/kernel/src/syscall_numbers.rs`. Included by both the kernel (`user.rs`) and all user programs (`crates/user_programs/*.rs`) via `include!(..)`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
+Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`user.rs` does `pub use kazuos_abi::*;`). Standalone-compiled code that can't use Cargo deps — the user-space runtimes (`crates/user_rt/*.rs`) and, transitively, all user programs/modules — pulls the same file in with `include!("../kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
 
 ### `shell.rs`
 

@@ -7,3 +7,4 @@ edition = "2024"
 ab_glyph = { version = "0.2.32", default-features = false, features = ["libm"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["no-std-float"] }
 kazuos-shared = { path = "../shared" }
+kazuos-abi = { path = "../kazuos_abi" }
