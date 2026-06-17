@@ -3,10 +3,11 @@
 include!("../../crates/user_rt/runtime.rs");
 // v3: per-core CPU + clean framebuffer hand-off
 
-const NAME_LEN:  usize = 32;
-const MAX_PROCS: usize = 25;
-const MAX_CPUS:  usize = 16;
-const BAR_WIDTH: usize = 30;
+const NAME_LEN:    usize = 32;
+const MAX_PROCS:   usize = 25;
+const MAX_THREADS: usize = 64; // total threads tracked across all processes (for %CPU deltas)
+const MAX_TPP:     usize = 16; // threads enumerated per process
+const MAX_CPUS:    usize = 16;
 
 #[repr(C)]
 struct ProcessInfo {
@@ -22,6 +23,15 @@ const EMPTY_INFO: ProcessInfo = ProcessInfo {
     cpu_ticks: 0, memory_bytes: 0,
 };
 
+#[repr(C)]
+struct ThreadInfo {
+    tid: u64, pid: u64, state: u64, cpu_ticks: u64, assigned_cpu: u64,
+}
+
+const EMPTY_TINFO: ThreadInfo = ThreadInfo {
+    tid: 0, pid: 0, state: 0, cpu_ticks: 0, assigned_cpu: 0,
+};
+
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut prev_ker:   u64 = 0;
@@ -33,17 +43,30 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut prev_pids:  [u64; MAX_PROCS]  = [0; MAX_PROCS];
     let mut prev_ticks: [u64; MAX_PROCS]  = [0; MAX_PROCS];
     let mut prev_n:     usize = 0;
+    let mut prev_tids:   [u64; MAX_THREADS] = [0; MAX_THREADS];
+    let mut prev_tticks: [u64; MAX_THREADS] = [0; MAX_THREADS];
+    let mut prev_tn:     usize = 0;
 
-    syscall(SYS_CURSOR_SAVE, 0, 0, 0);
-    syscall(SYS_FB_ACQUIRE, 0, 0, 0);
+    // ktop is a plain text program: it draws with ANSI escape sequences over fd 1, so it
+    // works on the console and inside a GUI terminal alike, and must NOT grab the
+    // framebuffer. (Owning the framebuffer on the console suppresses the kernel's Ctrl+C
+    // -> SIGINT path, which is gated on there being no framebuffer owner, so ktop could
+    // never be interrupted.)
     syscall(SYS_SIGNAL_CATCH, 1, 0, 0);
 
     let cpu_count = syscall(SYS_CPU_INFO, 4, 0, 0) as usize;
     let cpu_count = cpu_count.min(MAX_CPUS);
 
-    // Console height drives how many process rows fit; the rest scrolls.
+    // Console size: height drives how many process rows fit (the rest scrolls); width
+    // drives the bar length and whether the verbose usr/ker/idle breakdown fits. GUI
+    // terminals are small (64x18), so everything must adapt rather than wrap.
     let console = syscall(SYS_CONSOLE_SIZE, 0, 0, 0);
     let rows = (console >> 32) as usize;
+    let cols = { let c = (console & 0xffff_ffff) as usize; if c == 0 { 80 } else { c } };
+    let wide = cols >= 72; // room for the per-source (usr/ker/idle) breakdown
+    // Bar width: reserve room for label + "] " + percentage (+ breakdown when wide).
+    let reserve = if wide { 44 } else { 18 };
+    let bar_w = cols.saturating_sub(reserve).clamp(6, 30);
     // Lines used by the fixed header (title..column header) and footer.
     let header_lines = 7 + cpu_count;
     let footer_lines = 2;
@@ -68,18 +91,20 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
         // --- draw ---
         sys_write(b"\x1b[2J\x1b[H");
-        sys_write(b"KazuOS ktop                       [Ctrl+C] quit\r\n");
-        sys_write(b"--------------------------------------------------\r\n");
+        sys_write(b"KazuOS ktop  [Ctrl+C] quit\r\n");
+        write_sep(cols);
 
         // Overall CPU bar
         let usr_p10 = pct10(du, dt);
         let ker_p10 = pct10(dk, dt);
         let idl_p10 = pct10(di, dt);
-        sys_write(b"CPU  ["); draw_bar(usr_p10 + ker_p10, 1000); sys_write(b"] ");
+        sys_write(b"CPU ["); draw_bar(usr_p10 + ker_p10, 1000, bar_w); sys_write(b"] ");
         write_pct(usr_p10 + ker_p10);
-        sys_write(b"   usr:");  write_pct(usr_p10);
-        sys_write(b" ker:");    write_pct(ker_p10);
-        sys_write(b" idle:");   write_pct(idl_p10);
+        if wide {
+            sys_write(b" usr:");  write_pct(usr_p10);
+            sys_write(b" ker:");  write_pct(ker_p10);
+            sys_write(b" idle:"); write_pct(idl_p10);
+        }
         sys_write(b"\r\n");
 
         // Per-core usage
@@ -102,11 +127,13 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
             sys_write(b" C");
             write_u64(ci);
-            sys_write(b" ["); draw_bar(u_p10 + k_p10, 1000); sys_write(b"] ");
+            sys_write(b" ["); draw_bar(u_p10 + k_p10, 1000, bar_w); sys_write(b"] ");
             write_pct(u_p10 + k_p10);
-            sys_write(b" u:"); write_pct(u_p10);
-            sys_write(b" k:"); write_pct(k_p10);
-            sys_write(b" i:"); write_pct(i_p10);
+            if wide {
+                sys_write(b" u:"); write_pct(u_p10);
+                sys_write(b" k:"); write_pct(k_p10);
+                sys_write(b" i:"); write_pct(i_p10);
+            }
             sys_write(b"\r\n");
 
             prev_idle_cpu[i] = idle_c;
@@ -117,16 +144,16 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
         // Memory bar
         let mem_p10 = pct10(use_kib, tot_kib);
-        sys_write(b"MEM  ["); draw_bar(mem_p10, 1000); sys_write(b"] ");
+        sys_write(b"MEM ["); draw_bar(mem_p10, 1000, bar_w); sys_write(b"] ");
         write_pct(mem_p10);
-        sys_write(b"   ");
+        sys_write(b" ");
         write_mib(use_kib);
-        sys_write(b" / ");
+        sys_write(b"/");
         write_mib(tot_kib);
         sys_write(b"\r\n");
 
-        sys_write(b"--------------------------------------------------\r\n");
-        sys_write(b"  PID  STATE    %CPU     MEM     NAME\r\n");
+        write_sep(cols);
+        sys_write(b"  PID STATE    %CPU    MEM   NAME\r\n");
 
         // Clamp scroll using the actual number of rows drawn last frame.
         let max_scroll = total_rows.saturating_sub(visible);
@@ -141,7 +168,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
             0
         };
         if row_idx >= scroll && row_idx < scroll + visible {
-            write_row(0, b"Running", ker_p10, k_mem, b"kernel");
+            write_row(0, b"Running", pct10_n(dk, dt, cpu_count as u64), k_mem, b"kernel");
         }
         row_idx += 1;
 
@@ -149,6 +176,9 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         let mut cur_pids:  [u64; MAX_PROCS] = [0; MAX_PROCS];
         let mut cur_ticks: [u64; MAX_PROCS] = [0; MAX_PROCS];
         let mut cur_n = 0usize;
+        let mut cur_tids:   [u64; MAX_THREADS] = [0; MAX_THREADS];
+        let mut cur_tticks: [u64; MAX_THREADS] = [0; MAX_THREADS];
+        let mut cur_tn = 0usize;
 
         let mut pid = syscall(SYS_PROCESS_NEXT, 0, 0, 0);
         while pid != u64::MAX && cur_n < MAX_PROCS {
@@ -157,7 +187,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
             if r == 0 {
                 let prev_t = lookup_prev(&prev_pids, &prev_ticks, prev_n, pid);
                 let dp = info.cpu_ticks.saturating_sub(prev_t);
-                let p_p10 = pct10(dp, dt);
+                let p_p10 = pct10_n(dp, dt, cpu_count as u64);
                 let state: &[u8] = match info.state {
                     1 | 2 => b"Running",
                     3 => b"Sleep  ",
@@ -171,6 +201,44 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
                 cur_pids[cur_n]  = pid;
                 cur_ticks[cur_n] = info.cpu_ticks;
                 cur_n += 1;
+
+                // Threads of this process. Only worth showing when there is more than one
+                // (a single-threaded process is already fully described by its row above).
+                let mut tids = [0u64; MAX_TPP];
+                let mut tn = 0usize;
+                let mut t = syscall(SYS_THREAD_NEXT, pid, 0, 0);
+                while t != u64::MAX && tn < MAX_TPP {
+                    tids[tn] = t;
+                    tn += 1;
+                    t = syscall(SYS_THREAD_NEXT, pid, t, 0);
+                }
+                if tn > 1 {
+                    let mut k = 0usize;
+                    while k < tn {
+                        let mut tinfo = EMPTY_TINFO;
+                        if syscall(SYS_THREAD_INFO, tids[k], &mut tinfo as *mut _ as u64, 0) == 0 {
+                            let prev_tt =
+                                lookup_prev(&prev_tids, &prev_tticks, prev_tn, tinfo.tid);
+                            let dtp = tinfo.cpu_ticks.saturating_sub(prev_tt);
+                            let tp10 = pct10_n(dtp, dt, cpu_count as u64);
+                            let tstate: &[u8] = match tinfo.state {
+                                1 | 2 => b"run ",
+                                3 => b"slp ",
+                                _ => b"?   ",
+                            };
+                            if row_idx >= scroll && row_idx < scroll + visible {
+                                write_thread_row(tinfo.tid, tstate, tp10, tinfo.assigned_cpu);
+                            }
+                            row_idx += 1;
+                            if cur_tn < MAX_THREADS {
+                                cur_tids[cur_tn]   = tinfo.tid;
+                                cur_tticks[cur_tn] = tinfo.cpu_ticks;
+                                cur_tn += 1;
+                            }
+                        }
+                        k += 1;
+                    }
+                }
             }
             pid = syscall(SYS_PROCESS_NEXT, pid, 0, 0);
         }
@@ -180,7 +248,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         let max_scroll = total_rows.saturating_sub(visible);
         if scroll > max_scroll { scroll = max_scroll; }
 
-        sys_write(b"--------------------------------------------------\r\n");
+        write_sep(cols);
         // Footer: scroll position / hint.
         sys_write(b"  ");
         write_u64((scroll + 1) as u64);
@@ -197,6 +265,9 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         prev_pids  = cur_pids;
         prev_ticks = cur_ticks;
         prev_n     = cur_n;
+        prev_tids   = cur_tids;
+        prev_tticks = cur_tticks;
+        prev_tn     = cur_tn;
 
         // wait ~500ms, check for Ctrl+C and arrow-key scrolling every 100ms
         let mut quit = false;
@@ -226,16 +297,16 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         if quit { break; }
     }
 
-    syscall(SYS_CURSOR_RESTORE, 0, 0, 0);
-    syscall(SYS_FB_RELEASE, 0, 0, 0);
+    // Leave the screen clean for whatever drew before us (the shell reprints its prompt).
+    sys_write(b"\x1b[2J\x1b[H");
     syscall(SYS_EXIT, 0, 0, 0);
     loop {}
 }
 
-fn lookup_prev(pids: &[u64; MAX_PROCS], ticks: &[u64; MAX_PROCS], n: usize, pid: u64) -> u64 {
+fn lookup_prev(keys: &[u64], ticks: &[u64], n: usize, key: u64) -> u64 {
     let mut i = 0usize;
     while i < n {
-        if pids[i] == pid { return ticks[i]; }
+        if keys[i] == key { return ticks[i]; }
         i += 1;
     }
     0
@@ -245,12 +316,27 @@ fn pct10(part: u64, total: u64) -> u64 {
     if total > 0 { (part * 1000 / total).min(1000) } else { 0 }
 }
 
-fn draw_bar(pct10: u64, max: u64) {
-    let filled = (pct10 * BAR_WIDTH as u64 / max) as usize;
-    let filled = filled.min(BAR_WIDTH);
+// Per-process CPU%, top-style: scaled so one fully-used core = 100% and the cap is
+// cpu_count * 100% (e.g. 400% on 4 cores). `total` is the system-wide tick delta across
+// all cores, so multiplying by `n` normalises back to per-core utilisation.
+fn pct10_n(part: u64, total: u64, n: u64) -> u64 {
+    if total > 0 { (part * 1000 * n / total).min(n * 1000) } else { 0 }
+}
+
+fn draw_bar(pct10: u64, max: u64, width: usize) {
+    let filled = ((pct10 * width as u64 / max) as usize).min(width);
     let mut i = 0usize;
-    while i < filled        { sys_write(b"#"); i += 1; }
-    while i < BAR_WIDTH     { sys_write(b" "); i += 1; }
+    while i < filled { sys_write(b"#"); i += 1; }
+    while i < width  { sys_write(b" "); i += 1; }
+}
+
+// A separator line of dashes as wide as the terminal (capped so a huge width can't
+// blow the small stack buffer).
+fn write_sep(cols: usize) {
+    let n = cols.min(96);
+    let dashes = [b'-'; 96];
+    sys_write(&dashes[..n]);
+    sys_write(b"\r\n");
 }
 
 fn write_pct(p10: u64) {
@@ -278,6 +364,20 @@ fn write_row(pid: u64, state: &[u8], pct10: u64, mem_kib: u64, name: &[u8]) {
     write_padded(mem_kib, 6);
     sys_write(b"KiB  ");
     sys_write(name);
+    sys_write(b"\r\n");
+}
+
+fn write_thread_row(tid: u64, state: &[u8], pct10: u64, cpu: u64) {
+    sys_write(b"      `- t");
+    write_padded(tid, 3);
+    sys_write(b"  ");
+    sys_write(state);
+    sys_write(b"  ");
+    write_padded(pct10 / 10, 3);
+    sys_write(b".");
+    sys_write(&[b'0' + (pct10 % 10) as u8]);
+    sys_write(b"%  cpu");
+    write_u64(cpu);
     sys_write(b"\r\n");
 }
 
