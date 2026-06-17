@@ -60,7 +60,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
     // are back in the kernel on our own CPU, honor it: exit cleanly instead of
     // servicing the syscall against soon-to-be-freed memory.
     if let Some(pid) = crate::scheduler::current_user_pid() {
-        if process::take_kill_pending(pid) {
+        if process::is_kill_pending(pid) {
             crate::user::set_exiting_pid_tmp(pid);
             process::exit_current();
             return syscall::EXIT_TO_KERNEL;

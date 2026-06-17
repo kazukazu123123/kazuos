@@ -375,6 +375,26 @@ pub fn privilege_level(pid: u64) -> PrivilegeLevel {
 }
 
 pub fn exit_current() {
+    // If other threads of this process are still alive (e.g. cpuburner's burn workers
+    // running on other CPUs), tearing the process down here would free the shared
+    // address space and sibling thread structs out from under them — an SMP
+    // use-after-free. Instead flag the process for reaping and exit only the calling
+    // thread; whichever thread exits last falls through to the real teardown below.
+    // The count check and self-exit happen under one lock acquisition so two threads
+    // racing to exit can't both decide they aren't last (which would leak the process).
+    let self_only = crate::task::thread::with_threads_lock(|| {
+        let pid = current_pid();
+        if pid != 0 && live_thread_count(pid) > 1 {
+            set_kill_pending(pid);
+            exit_current_thread();
+            true
+        } else {
+            false
+        }
+    });
+    if self_only {
+        return;
+    }
     crate::task::thread::with_threads_lock(|| unsafe {
         let pid = current_pid();
         let tid = current_tid();
@@ -541,17 +561,24 @@ pub fn oom_victim(exclude: u64) -> Option<u64> {
     })
 }
 
-/// Consume the deferred-kill flag for `pid`. Returns true if a kill was pending,
-/// in which case the caller (the process's own thread, on its own CPU) should
-/// exit itself via the normal self-exit path.
-pub fn take_kill_pending(pid: u64) -> bool {
+/// True if `pid` has been flagged to die. Peeked (not consumed): the flag stays set
+/// until the process is actually torn down, so every thread of the process — not just
+/// the first one to notice — reaps itself.
+pub fn is_kill_pending(pid: u64) -> bool {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (&*PROCESSES.0.get())
+            .iter()
+            .find(|p| p.pid == pid)
+            .map_or(false, |p| p.kill_pending)
+    })
+}
+
+/// Flag `pid` to die. Its threads self-exit (in syscall_dispatch or the timer) the next
+/// time each enters the kernel; the last one out performs the real teardown.
+pub fn set_kill_pending(pid: u64) {
     crate::task::thread::with_threads_lock(|| unsafe {
         if let Some(p) = (&mut *PROCESSES.0.get()).iter_mut().find(|p| p.pid == pid) {
-            let pending = p.kill_pending;
-            p.kill_pending = false;
-            pending
-        } else {
-            false
+            p.kill_pending = true;
         }
     })
 }

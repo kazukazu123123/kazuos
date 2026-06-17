@@ -113,35 +113,25 @@ pub fn clear_current_user(pid: u64) {
 }
 
 pub fn schedule_next(current_tid: u64) -> u64 {
+    use crate::task::thread::{Thread, ThreadState};
     crate::task::thread::with_threads_lock(|| {
         let cpu = cpu_idx();
         unsafe {
             let threads = &*crate::task::thread::THREADS.0.get();
-            if let Some(next) = threads
+            let ready = |t: &&Thread| t.assigned_cpu == cpu && matches!(t.state, ThreadState::Ready);
+            // Pure round-robin among this CPU's Ready threads: the one after current_tid
+            // first, else the lowest tid. Every Ready thread therefore runs once per cycle,
+            // which is starvation-free by construction. (Strict priority was tried and
+            // removed: a high-priority thread that becomes Ready every tick — e.g. a
+            // polling driver doing sleep_tick — would win every scheduling decision and
+            // permanently starve ordinary threads sharing its CPU.)
+            threads
                 .iter()
-                .filter(|t| {
-                    t.assigned_cpu == cpu
-                        && matches!(t.state, crate::task::thread::ThreadState::Ready)
-                        && t.tid > current_tid
-                })
+                .filter(|t| ready(t) && t.tid > current_tid)
                 .map(|t| t.tid)
                 .min()
-            {
-                return next;
-            }
-            if let Some(next) = threads
-                .iter()
-                .filter(|t| {
-                    t.assigned_cpu == cpu
-                        && matches!(t.state, crate::task::thread::ThreadState::Ready)
-                        && t.tid > 0
-                })
-                .map(|t| t.tid)
-                .min()
-            {
-                return next;
-            }
-            0
+                .or_else(|| threads.iter().filter(ready).map(|t| t.tid).min())
+                .unwrap_or(0)
         }
     })
 }
@@ -232,6 +222,31 @@ pub unsafe fn setup_user_frame_for_timer_on_temp_stack(ctx: crate::process::User
         p.add(17).write(ctx.rflags | 0x200);
         p.add(18).write(ctx.rsp);
         p.add(19).write(crate::gdt::USER_DATA as u64);
+    }
+    frame_bottom
+}
+
+// Build a ring0 frame on the per-CPU temp stack that the timer epilogue iretq's into
+// the idle loop. Used when the timer reaps the CPU's only runnable thread (a killed
+// worker) and there is nothing else to schedule: we must not iretq back into the
+// reaped — now exited — thread, so we land in idle_loop instead until work arrives.
+pub unsafe fn setup_idle_frame_on_temp_stack() -> u64 {
+    let stack_top = unsafe { user_return_stack_top() };
+    let frame_bottom = stack_top - 160;
+    let mut idle_rsp = unsafe { *crate::user::kernel_return_stack_ptr() };
+    if idle_rsp == 0 {
+        idle_rsp = frame_bottom;
+    }
+    unsafe {
+        let p = frame_bottom as *mut u64;
+        for i in 0..15 {
+            p.add(i).write(0);
+        }
+        p.add(15).write(idle_loop as *const () as usize as u64);
+        p.add(16).write(crate::gdt::KERNEL_CODE as u64);
+        p.add(17).write(0x200);
+        p.add(18).write(idle_rsp);
+        p.add(19).write(crate::gdt::KERNEL_DATA as u64);
     }
     frame_bottom
 }
