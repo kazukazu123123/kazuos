@@ -427,8 +427,11 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
     // shell closes write end so cmd2 sees EOF when cmd1 exits
     syscall1(SYS_CLOSE, write_fd);
 
-    // spawn cmd2 with stdin = read_fd
-    let stdio2 = read_fd | (0xFFFF << 16);
+    // spawn cmd2 with stdin = read_fd, stdout = our own stdout (fd 1). Inheriting fd 1
+    // rather than defaulting to the console (0xFFFF) matters under the GUI: the console
+    // writes to the framebuffer, which is suppressed while the compositor owns it, so a
+    // pipeline's output would vanish. fd 1 is the terminal pipe the shell already writes to.
+    let stdio2 = read_fd | (1 << 16);
     let pid2 = exec_bin(cmd2, stdio2);
 
     // shell closes read end
