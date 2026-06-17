@@ -14,56 +14,67 @@ User programs call the kernel with `int 0x80`.
 
 ## Syscalls
 
+The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.rs`.
+
 | Number | Name | Arguments | Return |
 | --- | --- | --- | --- |
-| `1` | `SYS_CONSOLE_WRITE` | `arg0 = userspace buffer pointer`, `arg1 = byte length` | `0` (writes UTF-8 text to framebuffer) |
-| `2` | `SYS_CONSOLE_CLEAR` | none | `0` |
-| `3` | `SYS_CURSOR_SAVE` | none | `0` |
-| `4` | `SYS_CURSOR_DRAW` | `arg0 = visible (0/1)` | `0` |
-| `5` | `SYS_CURSOR_RESTORE` | none | `0` |
-| `6` | `SYS_FB_ACQUIRE` | `arg0 = *mut FbInfo` | `0` on success; `u64::MAX` if framebuffer already held |
-| `7` | `SYS_FB_RELEASE` | none | `0` |
-| `8` | `SYS_CONSOLE_SIZE` | none | `(rows << 32) \| cols` |
-| `9` | `SYS_FB_QUERY` | `arg0 = *mut FbInfo`, `arg1 = *mut u64 owner_pid` | `0` on success; `u64::MAX` if no framebuffer |
-| `10` | `SYS_EXIT` | none | does not return normally |
-| `11` | `SYS_EXEC` | `arg0 = path pointer`, `arg1 = path byte length` | new pid, or `0`/`u64::MAX`/`1` (driver) on error |
-| `12` | `SYS_KILL` | `arg0 = pid` | `0` |
-| `13` | `SYS_WAIT` | `arg0 = pid` | blocks until target exits; returns `1` |
-| `14` | `SYS_PROCESS_INFO` | `arg0 = selector`, `arg1 = buffer` | selector-dependent |
-| `15` | `SYS_PROCESS_NEXT` | `arg0 = previous pid` | next pid, or `u64::MAX` if none |
-| `16` | `SYS_SLEEP` | `arg0 = duration`, `arg1 = SLEEP_UNIT_MS` (0) or `SLEEP_UNIT_US` (1) | `0` after blocking |
-| `17` | `SYS_MEM_INFO` | none | `(total_kib << 32) \| used_kib`, or `0` |
-| `18` | `SYS_HEAP_ALLOC` | `arg0 = size` | user VA (page-aligned, zeroed), or `u64::MAX` on error |
-| `19` | `SYS_HEAP_FREE` | `arg0 = VA from SYS_HEAP_ALLOC` | `0` on success; `u64::MAX` on error |
-| `20` | `SYS_SIGNAL_CATCH` | `arg0 = 1 to catch, 0 to reset` | `0` |
-| `21` | `SYS_SIGNAL_CHECK` | none | `1` if Ctrl+C since last check, else `0` |
-| `22` | `SYS_IPC_OPEN` | `arg0 = name ptr`, `arg1 = name len` | channel id (1-based), or `u64::MAX` on error |
-| `23` | `SYS_IPC_SEND` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | `0` on success; blocks if full; `u64::MAX` on error |
-| `24` | `SYS_IPC_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written; blocks; `u64::MAX` on error |
-| `25` | `SYS_IPC_CLOSE` | `arg0 = channel id` | `0` |
-| `26` | `SYS_OPEN` | `arg0 = path ptr`, `arg1 = path len` | fd (1-based), or `u64::MAX` on error |
-| `27` | `SYS_CLOSE` | `arg0 = fd` | `0` |
-| `28` | `SYS_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, or `u64::MAX` on error |
-| `29` | `SYS_WRITE` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, or `u64::MAX` on error |
-| `30` | `SYS_IOCTL` | `arg0 = fd`, `arg1 = request`, `arg2 = arg` | device-specific, or `u64::MAX` |
-| `31` | `SYS_PIPE` | `arg0 = *mut [u64; 2]` | `0` on success; `u64::MAX` on error |
-| `32` | `SYS_PCI_INFO` | `arg0 = index`, `arg1 = *mut PciDeviceInfo` | count, or `u64::MAX` on error |
-| `33` | `SYS_IOPORT_REQUEST` | `arg0 = port`, `arg1 = count` | `0` (driver only) |
-| `34` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks (driver only) |
-| `35` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA; `u64::MAX` on error (driver only) |
-| `36` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
-| `37` | `SYS_PCI_BAR_MAP` | `arg0 = BDF ((bus << 16) \| (dev << 8) \| func)`, `arg1 = BAR index (0-5)` | user VA on success; `u64::MAX` on error (driver only) |
-| `38` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
-| `39` | `SYS_KEYBOARD_READ` | none | key byte (blocking). Arrow keys: `0x80`=Left, `0x81`=Right |
-| `40` | `SYS_KEYBOARD_POLL` | none | key byte if available, or `0` (non-blocking) |
-| `41` | `SYS_CPU_INFO` | `arg0 = selector`, `arg1 = per-cpu index when noted` | selector-dependent |
-| `42` | `SYS_SHUTDOWN` | none | does not return |
-| `43` | `SYS_REBOOT` | none | does not return |
-| `44` | `SYS_LS` | `arg0 = path ptr or 0 for /`, `arg1 = path len` | entry count, or `u64::MAX` on error |
-| `45` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
-| `46` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
-| `47` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count |
-| `48` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
+| `1` | `SYS_CONSOLE_WRITE` | `arg0 = buffer pointer`, `arg1 = byte length` | `0` (writes UTF-8 text to the framebuffer console) |
+| `2` | `SYS_CURSOR_SAVE` | none | `0` (saves console cursor position) |
+| `3` | `SYS_CURSOR_DRAW` | none | `0` (draws the text cursor) |
+| `4` | `SYS_CURSOR_RESTORE` | none | `0` (restores saved cursor position) |
+| `5` | `SYS_FB_ACQUIRE` | `arg0 = *mut FbInfo` | `0` on success; `u64::MAX` if framebuffer already held |
+| `6` | `SYS_FB_RELEASE` | none | `0` |
+| `7` | `SYS_CONSOLE_SIZE` | `arg0 = 0` gets; `arg0 != 0` sets (`cols = arg0 & 0xFFFF`, `rows = arg0 >> 16`, `arg1 = target pid`, 0 = self) | get: `(rows << 32) \| cols` |
+| `8` | `SYS_EXIT` | `arg0 = exit code` | does not return |
+| `9` | `SYS_EXEC` | `arg0 = "path\0arg1\0arg2\0"` pointer, `arg1 = byte length`, `arg2 = stdio pack (`stdin_fd \| (stdout_fd << 16)`, `0xFFFF` = console)` | new pid, or `0`/`u64::MAX`/`1` (driver) on error |
+| `10` | `SYS_THREAD_SPAWN` | `arg0 = entry`, `arg1 = arg` (in rdi), `arg2 = stack_top` | new tid, or `0` on failure |
+| `11` | `SYS_THREAD_EXIT` | none | does not return (last thread exits the process) |
+| `12` | `SYS_THREAD_JOIN` | `arg0 = tid` | blocks until that thread exits; `0` if already exited |
+| `13` | `SYS_THREAD_NEXT` | `arg0 = pid`, `arg1 = previous tid` (0 to start) | next tid `>` arg1 of that pid, or `u64::MAX` if none |
+| `14` | `SYS_THREAD_INFO` | `arg0 = tid`, `arg1 = *mut ThreadInfo` | `0` on success; `u64::MAX` if no such tid |
+| `15` | `SYS_KILL` | `arg0 = pid` | `0` |
+| `16` | `SYS_WAIT` | `arg0 = pid` | blocks until target exits; returns `1` |
+| `17` | `SYS_PROCESS_INFO` | `arg0 = selector`, `arg1 = buffer` | selector-dependent (see below) |
+| `18` | `SYS_PROCESS_NEXT` | `arg0 = previous pid` | next pid, or `u64::MAX` if none |
+| `19` | `SYS_SLEEP` | `arg0 = duration`, `arg1 = unit: `SLEEP_UNIT_MS`(0) / `SLEEP_UNIT_US`(1) / `SLEEP_UNIT_TICK`(2)` | `0` after blocking |
+| `20` | `SYS_MEM_INFO` | none | `(total_kib << 32) \| used_kib`, or `0` |
+| `21` | `SYS_HEAP_ALLOC` | `arg0 = size` | user VA (page-aligned, zeroed), or `u64::MAX` on error |
+| `22` | `SYS_HEAP_FREE` | `arg0 = VA from SYS_HEAP_ALLOC` | `0` on success; `u64::MAX` on error |
+| `23` | `SYS_SIGNAL_CATCH` | `arg0 = 1 to catch, 0 to reset` | `0` |
+| `24` | `SYS_SIGNAL_CHECK` | none | `1` if Ctrl+C since last check, else `0` |
+| `25` | `SYS_IPC_OPEN` | `arg0 = name ptr`, `arg1 = name len` | channel id (1-based), or `u64::MAX` on error |
+| `26` | `SYS_IPC_SEND` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | `0` on success; blocks if full; `u64::MAX` on error |
+| `27` | `SYS_IPC_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written; blocks; `u64::MAX` on error |
+| `28` | `SYS_IPC_TRY_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, `0` if empty (non-blocking), `u64::MAX` on error |
+| `29` | `SYS_IPC_CLOSE` | `arg0 = channel id` | `0` |
+| `30` | `SYS_OPEN` | `arg0 = path ptr`, `arg1 = path len` | fd (1-based), or `u64::MAX` on error |
+| `31` | `SYS_CLOSE` | `arg0 = fd` | `0` |
+| `32` | `SYS_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, or `u64::MAX` on error |
+| `33` | `SYS_TRY_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, `0` = would block, `u64::MAX` = EOF/error (non-blocking) |
+| `34` | `SYS_WRITE` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, or `u64::MAX` on error |
+| `35` | `SYS_IOCTL` | `arg0 = fd`, `arg1 = request`, `arg2 = arg` | device-specific, or `u64::MAX` |
+| `36` | `SYS_PIPE` | `arg0 = *mut [u64; 2]` (filled with `[read_fd, write_fd]`) | `0` on success; `u64::MAX` on error |
+| `37` | `SYS_PCI_INFO` | `arg0 = index`, `arg1 = *mut PciDeviceInfo` | count, or `u64::MAX` on error |
+| `38` | `SYS_IOPORT_REQUEST` | `arg0 = port`, `arg1 = count` | `0` (driver only) |
+| `39` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks until the IRQ fires; `u64::MAX` if interrupted (driver only) |
+| `40` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA; `u64::MAX` on error (driver only) |
+| `41` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
+| `42` | `SYS_PCI_BAR_MAP` | `arg0 = BDF ((bus << 16) \| (dev << 8) \| func)`, `arg1 = BAR index (0-5)` | user VA on success; `u64::MAX` on error (driver only) |
+| `43` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
+| `44` | `SYS_KEYBOARD_POLL` | none | key byte if available, or `0` (non-blocking) |
+| `45` | `SYS_CPU_INFO` | `arg0 = selector`, `arg1 = per-cpu index when noted` | selector-dependent (see below) |
+| `46` | `SYS_SHUTDOWN` | none | does not return |
+| `47` | `SYS_REBOOT` | none | does not return |
+| `48` | `SYS_READDIR` | `arg0 = path ptr` (or 0 for `/`), `arg1 = path len`, `arg2 = caller buffer` | entry count, or `u64::MAX` on error |
+| `49` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
+| `50` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
+| `51` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count (48-byte entries) |
+| `52` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
+| `53` | `SYS_CREATE` | `arg0 = path ptr`, `arg1 = path len` | fd (RW) on success; `u64::MAX` on error |
+| `54` | `SYS_UNLINK` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
+| `55` | `SYS_MKDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
+| `56` | `SYS_RMDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
+| `57` | `SYS_SIGINT_FG` | `arg0 = pid` | `1` if a foreground descendant was signaled, `0` if `arg0` is itself the wait-chain leaf |
 
 ## `SYS_PROCESS_INFO` selectors
 
@@ -102,14 +113,27 @@ by userspace (atomics or a spinlock); the kernel does no implicit locking.
 | `SYS_THREAD_SPAWN` | `arg0 = entry` (`extern "C" fn(u64)`), `arg1 = arg` (passed in rdi), `arg2 = stack_top` (caller-allocated, e.g. via `SYS_HEAP_ALLOC`) | new tid, or `0` on failure |
 | `SYS_THREAD_EXIT` | none | does not return; ends the calling thread (the last thread ending exits the process) |
 | `SYS_THREAD_JOIN` | `arg0 = tid` | blocks until that thread exits; returns immediately if it already has |
+| `SYS_THREAD_NEXT` | `arg0 = pid`, `arg1 = previous tid` (0 to start) | lowest tid `>` arg1 belonging to that pid, or `u64::MAX` when there are no more |
+| `SYS_THREAD_INFO` | `arg0 = tid`, `arg1 = *mut ThreadInfo` | `0` on success; `u64::MAX` if no such tid |
 
 The thread entry function must not return — finish it with `SYS_THREAD_EXIT`. The blocking
 syscalls (`SYS_SLEEP`, `SYS_WAIT`, `SYS_THREAD_JOIN`, `SYS_IRQ_WAIT`) block the calling
 thread, not the whole process.
 
-> Note: the numeric syscall table above is out of date relative to
-> `crates/kazuos_abi/src/syscall_numbers.rs`, which is the source of truth for syscall
-> numbers. Refer to that file for current values.
+A process's CPU time (`ProcessInfo.cpu_ticks`) is the sum of its threads': each timer tick
+is credited to the thread that was actually running, so a multi-threaded program can read
+up to `cpu_count * 100%` of total CPU.
+
+`SYS_THREAD_NEXT` / `SYS_THREAD_INFO` enumerate the threads of any process (used by `ktop`).
+`ThreadInfo` layout (`#[repr(C)]`, 40 bytes):
+
+```
+tid: u64          — thread ID
+pid: u64          — owning process ID
+state: u64        — 1=Ready, 2=Running, 3=Sleeping
+cpu_ticks: u64    — accumulated TSC ticks for this thread
+assigned_cpu: u64 — the CPU this thread is pinned to
+```
 
 ## `SYS_CPU_INFO` selectors
 
@@ -153,14 +177,6 @@ On success the kernel:
 
 On failure (another non-shell process already owns the framebuffer) returns `u64::MAX` and does not modify the buffer.
 
-### `SYS_FB_QUERY`
-
-Reads framebuffer parameters and current owner without acquiring.
-
-`arg0` = `*mut FbInfo` (may be null to skip), `arg1` = `*mut u64` receiving owner PID (or `u64::MAX` if unowned; may be null).
-
-Returns `0` on success, `u64::MAX` if no framebuffer exists. Does not modify ownership.
-
 ### `SYS_FB_RELEASE`
 
 Releases ownership and restores the saved back buffer (the shell's screen).  
@@ -183,8 +199,10 @@ different process returns `u64::MAX`; the caller must retry later or exit.
 
 ## CPU accounting
 
-CPU usage is currently tracked as cooperative scheduler ticks per process.
-Use `SYS_CPU_INFO` with selector `1` for total process CPU ticks and selector `pid` for a process's own tick count.
+CPU usage is tracked as TSC ticks, accumulated per timer tick to the thread that was
+running. A process's `cpu_ticks` is the sum of its threads'. Use `SYS_CPU_INFO` selector
+`1` for total user ticks, selector `pid` for a process's own ticks, and selectors `8`/`9`/`10`
+with a CPU index for per-core idle/kernel/user ticks.
 
 ## `int 0x80` gate type
 
@@ -220,7 +238,7 @@ blocking_rsp+144 user_ss
 
 ## Blocking syscalls
 
-`SYS_KEYBOARD_READ` (and any other syscall that returns `BLOCK_TO_SCHEDULER`) suspends the calling process:
+A blocking `SYS_READ` on console input (and any other syscall that returns `BLOCK_TO_SCHEDULER`) suspends the calling thread:
 
 1. `syscall_int80_asm` saves the full frame pointer (`rsp+8`) to `BLOCKING_RSP_TMP`.
 2. The kernel switches to the per-process kernel stack, saves `blocking_rsp` in the process table, and calls `enter_next_process`.
