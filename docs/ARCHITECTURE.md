@@ -2,7 +2,7 @@
 
 ## Overview
 
-KazuOS is currently a small monolithic-style x86_64 hobby OS. Most core services live in kernel space: boot initialization, memory management, interrupt handling, shell, early process tracking, syscalls, and drivers.
+KazuOS is currently a small monolithic-style x86_64 hobby OS. Core services live in kernel space: boot initialization, memory management, interrupt handling, processes/threads/scheduling, syscalls, VFS, and IPC. The shell and apps run in ring3, and device drivers are increasingly ring3 `.kkm` modules (see Driver Policy below).
 
 The long-term direction can still move toward a hybrid architecture by introducing clearer boundaries between the kernel core, VFS, process manager, memory manager, and drivers.
 
@@ -13,7 +13,7 @@ The long-term direction can still move toward a hybrid architecture by introduci
 3. Bootloader collects framebuffer, memory map, RSDP, heap, and command line into `BootInfo`.
 4. Bootloader exits UEFI boot services.
 5. Kernel `_start` sets the kernel stack and enters `kernel_main`.
-6. Kernel initializes GDT, syscalls, console, PMM, VMM, IDT, ACPI, interrupts, VFS/initramfs, then starts the shell.
+6. Kernel initializes GDT, syscalls, console, PMM, VMM, IDT, ACPI, interrupts, SMP (APs), VFS/initramfs, then spawns the initial user process, which brings up the shell.
 
 ## Current Kernel Components
 
@@ -41,7 +41,7 @@ Responsibilities:
 - Initialize syscall layer
 - Run kernel initialization
 - Initialize VFS/initramfs
-- Start shell
+- Spawn the initial user process (which starts the shell)
 
 ### Initialization
 
@@ -62,7 +62,7 @@ Responsibilities:
 
 #### PMM
 
-Located in `crates/kernel/src/pmm.rs`.
+Located in `crates/kernel/src/memory/pmm.rs` (re-exported via `crate::pmm`).
 
 Physical Memory Manager tracks frames with a bitmap.
 
@@ -72,29 +72,28 @@ Current features:
 - Allocate/free 4 KiB frames
 - Allocate/free contiguous frames
 - Return memory stats
+- Per-process memory accounting (`ProcessInfo.memory_bytes`)
 
 Limitations:
 
-- No per-process memory accounting yet
 - No page cache
 - No swapping
 
 #### VMM
 
-Located in `crates/kernel/src/vmm.rs`.
+Located in `crates/kernel/src/memory/vmm.rs` (re-exported via `crate::vmm`).
 
-Virtual Memory Manager maps pages into the current page table.
+Virtual Memory Manager maps pages into per-process page tables.
 
 Current features:
 
-- Basic page mapping
-- Basic unmapping
+- Page mapping / unmapping
 - Virtual-to-physical translation
-- User demo fixed mapping
+- Per-process address spaces (`create_address_space`, `free_user_address_space`) with CR3 switching
+- User heap and DMA mappings
 
 Limitations:
 
-- No process-specific address spaces yet
 - No demand paging
 - No mature page fault recovery
 
@@ -153,19 +152,9 @@ The 8-byte pad after the 14 register pushes corrects the SysV 16-byte call align
 
 When a syscall blocks (`BLOCK_TO_SCHEDULER`), `blocking_rsp` is set to `rsp+8` (the r15 slot), skipping the alignment pad. The blocking resume path in `enter_next_process` pops r15..rbp then `iretq` directly from that pointer.
 
-Current syscall IDs:
-
-- `1`: console write
-- `2`: console clear
-- `3`: exit process (`SYS_EXIT`)
-- `4`: memory info
-- `5`: CPU info
-- `6`: process info
-- `7`: VFS `ls`
-- `8`: file-backed `exec`
-- `9`: keyboard read (blocking)
-- `16`: framebuffer acquire
-- `17`: framebuffer release
+The full syscall list and ABI live in `crates/kazuos_abi/src/syscall_numbers.rs` (source of
+truth for numbers) and `docs/USER_ABI.md` (human-readable). Do not duplicate the numeric
+table here — it drifts.
 
 Limitations:
 
@@ -180,22 +169,26 @@ Current status:
 
 - Full ring-3 user processes via KXE binary format
 - `int 0x80` trap gate with SysV-compatible register save/restore
-- Preemptive scheduler with per-process kernel stacks and TSS RSP0 updates
-- Blocking syscalls (`SYS_KEYBOARD_READ`) suspend the process and resume on wakeup
+- Preemptive SMP scheduler with per-thread kernel stacks and TSS RSP0 updates
+- User-space threads (`SYS_THREAD_SPAWN`/`EXIT`/`JOIN`) sharing one address space
+- Blocking syscalls (e.g. a console `SYS_READ`) suspend the calling thread and resume on wakeup
 - `SYS_EXIT` terminates the process and returns to the scheduler
 - `SYS_EXEC` loads a KXE binary from VFS and spawns a new process
 
 ### Process Tracking and Scheduler
 
-Located in `crates/kernel/src/task/process.rs` and `crates/kernel/src/task/scheduler.rs`.
+Located in `crates/kernel/src/task/process.rs`, `crates/kernel/src/task/thread.rs`, and
+`crates/kernel/src/task/scheduler.rs`.
 
 Current status:
 
-- Dynamic process table with per-process kernel stacks (64 KiB each)
-- `pid=0` is kernel; user processes start at pid=1
-- Preemptive round-robin scheduler driven by LAPIC timer
+- The scheduling unit is the **thread**; a process may own several threads in one address
+  space. Each thread has its own 64 KiB kernel stack and `user_context`.
+- Dynamic process table; `pid=0` is kernel, user processes start at pid=1
+- Preemptive per-CPU round-robin scheduler driven by each CPU's LAPIC timer (no priority —
+  strict priority was tried and removed because it starved threads)
 - Timer can preempt both ring-3 (user) and ring-0 (kernel mid-syscall) contexts
-- Per-process `user_context` saves all GP registers + rip/rsp/rflags/cr3
+- Per-thread `user_context` saves all GP registers + rip/rsp/rflags/cr3
 - `blocking_rsp` saves the full `int 0x80` register frame for direct blocking resume
 - `kernel_preempted` flag distinguishes mid-syscall preemption from user-mode preemption
 
@@ -206,27 +199,17 @@ Three resume paths in `enter_next_process`:
 
 ### Shell
 
-Located in `crates/kernel/src/user_programs/shell.rs` (user-space KXE binary).
+Located in `crates/user_programs/shell.rs` (a ring3 user-space KXE binary — **not** a kernel
+module). It communicates with the kernel only via `int 0x80` syscalls.
 
-The shell runs entirely in ring 3 and communicates with the kernel via `int 0x80` syscalls.
+Built-in commands include `help`, `clear`, `ls`, `cat`, `mem`, `ps`, `sysinfo`, `smpinfo`,
+`exec`, the filesystem mutations (`touch`/`rm`/`mkdir`/`rmdir`), `shutdown`, and `reboot`,
+plus `cmd1 | cmd2` pipelines and `&` background jobs. Other programs in
+`crates/user_programs/` (`ps`, `ktop`, `cpuburner`, `gui`, …) are launched by name.
 
-Current commands:
+Planned:
 
-- `help`
-- `clear`
-- `ls [path]`
-- `mem`
-- `ps` (spawns `/bin/ps.kxe` via `SYS_EXEC`)
-- `sysinfo`
-- `smpinfo`
-- `exec <path>`
-- `shutdown`
-- `reboot`
-
-Planned commands:
-
-- `cat`
-- background execution with `&`
+- richer job control
 
 ### SMP
 
