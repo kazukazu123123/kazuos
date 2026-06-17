@@ -158,11 +158,10 @@ fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 
 Programs can draw pixels directly using these syscalls:
 
-1. `SYS_FB_QUERY` — read FB parameters (width, height, stride, format) and current owner without acquiring
-2. `SYS_FB_ACQUIRE` — gain exclusive access (auto-clears to black, maps FB into process address space)
-3. `SYS_FB_RELEASE` — release ownership (auto-restores the saved shell screen on exit)
+1. `SYS_FB_ACQUIRE` — gain exclusive access (auto-clears to black, maps FB into process address space)
+2. `SYS_FB_RELEASE` — release ownership (auto-restores the saved shell screen on exit)
 
-See `SYSCALL.md` for details on `FbInfo` layout.
+See `USER_ABI.md` for details on `FbInfo` layout.
 
 ### Example: Drawing a Pixel
 

@@ -114,50 +114,33 @@ Current modules include:
 
 Drivers should expose small safe wrappers when possible and keep port/MMIO/asm details inside the driver module.
 
-### `pmm.rs`
+### `memory/`
 
-Physical memory manager.
+Memory management. The real code lives here; `pmm.rs`, `vmm.rs`, and `allocator.rs` at the
+crate root are thin `pub use` re-export shims.
 
-Responsibilities:
+- `memory/pmm.rs` — physical memory manager: frame bitmap, frame alloc/free (single +
+  contiguous), memory stats. No virtual-memory logic here.
+- `memory/vmm.rs` — virtual memory manager: page map/unmap, address translation,
+  per-process address spaces (`create_address_space`, `free_user_address_space`), user
+  mapping helpers, CR3 switching.
+- `memory/allocator.rs` — the kernel heap allocator (initialized in `init.rs`).
 
-- frame bitmap
-- frame allocation/free
-- memory stats
+### `task/`
 
-Do not add virtual-memory logic here.
+Processes, threads, and scheduling. The real code lives here; `process.rs` and
+`scheduler.rs` at the crate root are `pub use` re-export shims.
 
-### `vmm.rs`
-
-Virtual memory manager.
-
-Responsibilities:
-
-- page mapping/unmapping
-- address translation
-- user page mapping helpers until process address spaces exist
-
-Future process page table management should be kept here or in a dedicated address-space module.
-
-### `process.rs`
-
-Process table and process metadata.
-
-Current responsibilities:
-
-- `pid=0` kernel process
-- dynamic process table backed by heap allocation after allocator init
-- PID allocation
-- image name
-- state tracking
-- lightweight scheduling metadata
-- per-process CPU tick accounting
-
-Future responsibilities:
-
-- parent/child
-- exit code
-- process address space
-- scheduling metadata
+- `task/process.rs` — process table & metadata: `pid=0` kernel process, dynamic heap-backed
+  table, PID allocation, image name, state, parent/PPID, per-process memory accounting,
+  kill/exit teardown (cooperative, last-thread-owned; see the SMP notes in code).
+- `task/thread.rs` — threads (a process can run several in one address space). Per-thread
+  64 KiB kernel stack, `user_context`, `assigned_cpu` (round-robin at creation, pinned),
+  state, per-thread CPU ticks, spawn/exit/join, thread enumeration. `THREADS` is guarded by
+  a reentrant lock (`with_threads_lock`).
+- `task/scheduler.rs` — per-CPU preemptive round-robin (`schedule_next`), context-switch
+  frame setup, `enter_next_process`. Strict priority was tried and removed (it starved
+  threads); keep scheduling starvation-free.
 
 ### `syscall.rs`
 
@@ -177,11 +160,22 @@ Single source of truth for all `SYS_*` constants — the kernel/user ABI.
 
 Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`user.rs` does `pub use kazuos_abi::*;`). Standalone-compiled code that can't use Cargo deps — the user-space runtimes (`crates/user_rt/*.rs`) and, transitively, all user programs/modules — pulls the same file in with `include!("../kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
 
-### `shell.rs`
+### shell (user program, not a kernel module)
 
-Interactive shell commands.
+The shell is a ring3 KXE user program at `crates/user_programs/shell.rs`, not a kernel
+module. It talks to the kernel only via `int 0x80` syscalls. Other built-in user programs
+(`ps`, `ktop`, `cpuburner`, `gui`, …) also live in `crates/user_programs/`. Do not add shell
+or app logic to the kernel.
 
-Shell should call subsystem APIs. Do not implement hardware/protocol logic directly in shell.
+### Other core kernel modules
+
+- `smp.rs` — AP bring-up (INIT-SIPI-SIPI, trampoline), per-CPU `CpuData`, APIC-id↔index.
+- `gdt.rs` / `idt.rs` — per-CPU GDT/TSS and the IDT.
+- `task/` — see above (processes, threads, scheduler).
+- `kmod.rs` — ring3 kernel modules (`.kkm`): load/unload/list (`SYS_MODULE_*`).
+- `ipc.rs` / `pipe.rs` / `fd.rs` — named IPC channels, pipes, and the per-process fd table.
+- `terminal/` (+ `tty.rs`, `console.rs` shim) — text console rendering and TTY; `devfs.rs`
+  and `vfs.rs` — device/virtual filesystem.
 
 ### `exec.rs`
 
@@ -227,16 +221,19 @@ Suggested:
 
 ## Architectural Direction
 
-Preferred implementation order for major features:
+Already implemented: VFS core, initramfs, shell `ls`/`cat`, `/bin` executables (KXE),
+per-process address spaces, a preemptive SMP round-robin scheduler, user-space threads
+(spawn/exit/join), ring3 driver modules (`.kkm`), IPC, pipes, and `gui` compositor.
 
-1. VFS core
-2. ramfs/procfs
-3. shell `ls` / `cat`
-4. executable abstraction under `/bin`
-5. process address spaces
-6. scheduler
-7. shell background jobs with `&`
-8. richer device drivers
+Remaining direction, roughly in priority order:
+
+1. ramfs / procfs (a writable RAM fs and a process/info fs)
+2. shell background jobs with `&` (partially present; foreground/job control)
+3. migrate the remaining in-kernel drivers to ring3 `.kkm` (see Driver Policy in
+   `docs/ARCHITECTURE.md`)
+4. richer device drivers (net, disk-backed FS)
+5. scheduler refinements (load-aware placement / migration; optional priority **with
+   aging** — never strict priority, which starves)
 
 ## Error and Debug Output
 
@@ -279,6 +276,5 @@ If QEMU fails, inspect:
 
 ## Documentation
 
-Keep `ARCHITECTURE.md` updated when subsystem boundaries or roadmap change.
-Keep `TODO.md` updated when adding planned kernel features.
-Keep `docs/USER_ABI.md` updated when adding or changing syscalls, syscall arguments, return values, or process/user ABI behavior.
+Keep `docs/ARCHITECTURE.md` updated when subsystem boundaries or roadmap change.
+Keep `docs/USER_ABI.md` updated when adding or changing syscalls, syscall arguments, return values, or process/user ABI behavior. It is the human-readable companion to `crates/kazuos_abi/src/syscall_numbers.rs`, which is the source of truth for syscall numbers.
