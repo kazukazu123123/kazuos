@@ -8,7 +8,9 @@ const STDIO_DEFAULT: u64 = 0xFFFF_FFFF;
 // the GUI terminal's pipes when the shell runs under a terminal. (Forcing stdin to the
 // console default instead would starve a nested shell under the GUI, which receives no
 // console keys.) The shell waiting in SYS_WAIT is what makes the child the foreground.
-const STDIO_INHERIT: u64 = 0 | (1 << 16);
+// stdin = fd 0, stdout = fd 1, plus a controlling-terminal handle (fd 3) so interactive
+// children (e.g. a pager whose fd 0 is a pipe) can still read the keyboard.
+const STDIO_INHERIT: u64 = 0 | (1 << 16) | STDIO_CTTY;
 
 const MAX_HISTORY: usize = 32;
 static mut HISTORY: [[u8; BUF_SIZE]; MAX_HISTORY] = [[0u8; BUF_SIZE]; MAX_HISTORY];
@@ -431,7 +433,7 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
     // rather than defaulting to the console (0xFFFF) matters under the GUI: the console
     // writes to the framebuffer, which is suppressed while the compositor owns it, so a
     // pipeline's output would vanish. fd 1 is the terminal pipe the shell already writes to.
-    let stdio2 = read_fd | (1 << 16);
+    let stdio2 = read_fd | (1 << 16) | STDIO_CTTY;
     let pid2 = exec_bin(cmd2, stdio2);
 
     // shell closes read end
@@ -439,6 +441,14 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
 
     if pid2 != 0 && pid2 != 1 && pid2 != u64::MAX {
         syscall1(SYS_WAIT, pid2);
+    }
+    // Reap the producer. If cmd2 was interrupted (Ctrl+C kills the foreground leaf, cmd2)
+    // cmd1 would otherwise keep running as an orphan, writing into a now-readerless pipe;
+    // under rapid Ctrl+C those orphans pile up and starve later spawns. cmd2 has finished
+    // reading by now (it exited), so killing cmd1 here never truncates output. A no-op if
+    // cmd1 already exited.
+    if pid1 != 0 && pid1 != 1 && pid1 != u64::MAX {
+        syscall1(SYS_KILL, pid1);
     }
 }
 

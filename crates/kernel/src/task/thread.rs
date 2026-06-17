@@ -750,6 +750,14 @@ pub fn notify_pipe_readers(pipe_id: u64) {
                         if switch { crate::vmm::switch_cr3(reader_cr3); }
                         let n = crate::pipe::read_raw(pipe_id, buf_ptr, buf_len as usize);
                         if switch { crate::vmm::switch_cr3(cur_cr3); }
+                        // The reader may have been woken inside the window between marking
+                        // itself Sleeping and the syscall stub committing its blocking_rsp
+                        // (under SMP, the writer runs on another CPU). In that case
+                        // restore_ctx_from_blocking_frame can't reach the saved frame yet, so
+                        // also stash the return value: once blocking_rsp is committed, the
+                        // resume path (take_blocking_rsp + take_blocking_retval) returns it.
+                        // Otherwise the read would wrongly return a stale value and look like EOF.
+                        t.blocking_retval = n as u64;
                         restore_ctx_from_blocking_frame(t, n as u64);
                         t.state = ThreadState::Ready;
                         t.wait_target = WaitTarget::None;

@@ -62,10 +62,13 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     loop {
         redraw(top, total_lines, rows);
 
-        // Wait for a key
+        // Wait for a key from the controlling terminal (fd 3). Our stdin (fd 0) is the
+        // piped data, so paging keys come from the tty handle the shell handed us — which
+        // works on the console and inside a GUI terminal alike.
         let key = loop {
-            let k = syscall(SYS_KEYBOARD_POLL, 0, 0, 0);
-            if k != 0 { break k as u8; }
+            let mut kb = [0u8; 1];
+            let n = syscall(SYS_TRY_READ, 3, kb.as_mut_ptr() as u64, 1);
+            if n == 1 { break kb[0]; }
             syscall(SYS_SLEEP, 30, SLEEP_UNIT_MS, 0);
         };
 

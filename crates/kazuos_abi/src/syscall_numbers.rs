@@ -86,6 +86,13 @@ pub const SYS_RMDIR:  u64 = 56; // remove an empty directory
 // Lets a terminal interrupt the command its shell is currently waiting on.
 pub const SYS_SIGINT_FG: u64 = 57;
 
+// SYS_EXEC stdio pack: bits[0..16] = stdin fd, bits[16..32] = stdout fd (0xFFFF on either
+// = console default). When this bit is also set, the child additionally gets fd 3 as a
+// controlling-terminal handle — a dup of the *caller's* fd 0 (the shell's keyboard source:
+// ConsoleIn on the console, the compositor's key pipe under the GUI). An interactive
+// program (e.g. a pager) reads fd 3 for keys even when its fd 0 is a redirected data pipe.
+pub const STDIO_CTTY: u64 = 1 << 48;
+
 // Note: SYS_CONSOLE_SIZE is also the terminal-size get/set call. arg0 == 0 gets the
 // caller's terminal size; arg0 != 0 sets it (cols = arg0 & 0xFFFF, rows = arg0 >> 16,
 // target pid = arg1, 0 = self), letting a terminal set the size its shell sees.

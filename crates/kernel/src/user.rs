@@ -884,6 +884,14 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
         if cols != 0 && rows != 0 {
             process::set_winsize(pid, cols, rows);
         }
+        // Give the child a controlling-terminal handle at fd 3: a dup of the caller's
+        // fd 0 (its keyboard source). Lets an interactive child (e.g. a pager) read keys
+        // even when its own fd 0 is a redirected data pipe.
+        if stdio_pack & STDIO_CTTY != 0 {
+            if let Some(tty) = crate::fd::get_fd(caller, 0) {
+                crate::fd::alloc_fd_at(pid, 3, tty);
+            }
+        }
     }
     if pid == 0 || pid == u64::MAX {
         crate::log_warn!("sys_exec: spawn failed for '{}' (caller={}, stdio={:#x})", path, caller, stdio_pack);
@@ -1080,24 +1088,32 @@ fn sys_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
             }
         }
         Some(fd::FdEntry::PipeRead(pipe_id)) => {
-            if crate::pipe::is_empty(pipe_id) {
-                if crate::pipe::writer_closed(pipe_id) {
-                    return 0; // EOF
+            // Decide read-vs-EOF-vs-block atomically. pipe and thread state share the same
+            // reentrant lock, so holding it across the whole decision serialises us against
+            // a concurrent writer's write+close+notify. Otherwise (separate lock acquisitions
+            // for is_empty / writer_closed / set_sleeping) a writer that writes-then-exits in
+            // the gap makes us return EOF while its bytes sit unread in the buffer — the data
+            // loss that truncated `cmd | less` output under load.
+            crate::task::thread::with_threads_lock(|| {
+                if !crate::pipe::is_empty(pipe_id) {
+                    let mut kbuf = alloc::vec![0u8; buf_len as usize];
+                    let n = crate::pipe::read(pipe_id, &mut kbuf);
+                    unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
+                    n as u64
+                } else if crate::pipe::writer_closed(pipe_id) {
+                    0 // EOF: empty and no writers can ever add more
+                } else {
+                    if let Some(pid) = crate::scheduler::current_user_pid() {
+                        crate::process::set_wait_target(pid, crate::process::WaitTarget::PipeRead {
+                            pipe_id,
+                            buf_ptr,
+                            buf_len,
+                        });
+                        crate::process::set_sleeping(pid);
+                    }
+                    syscall::BLOCK_TO_SCHEDULER
                 }
-                if let Some(pid) = crate::scheduler::current_user_pid() {
-                    crate::process::set_wait_target(pid, crate::process::WaitTarget::PipeRead {
-                        pipe_id,
-                        buf_ptr,
-                        buf_len,
-                    });
-                    crate::process::set_sleeping(pid);
-                }
-                return syscall::BLOCK_TO_SCHEDULER;
-            }
-            let mut kbuf = alloc::vec![0u8; buf_len as usize];
-            let n = crate::pipe::read(pipe_id, &mut kbuf);
-            unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
-            n as u64
+            })
         }
         Some(fd::FdEntry::File { node, generation, offset }) => {
             let want = buf_len as usize;
@@ -1211,6 +1227,10 @@ static PCI_CACHE: crate::util::SyncUnsafeCell<alloc::vec::Vec<crate::drivers::pc
     crate::util::SyncUnsafeCell::new(alloc::vec::Vec::new());
 static PCI_CACHE_READY: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+// Serializes the one-time cache build. Without it, two CPUs racing on the cold cache both
+// see READY=false and push into the same Vec concurrently, corrupting it (garbage length /
+// reallocation race) — which is why `lspci` showed a varying or empty device list.
+static PCI_CACHE_LOCK: crate::util::SpinLock = crate::util::SpinLock::new();
 
 #[repr(C)]
 pub struct PciDeviceInfo {
@@ -1226,16 +1246,29 @@ pub struct PciDeviceInfo {
     pub header_type: u8,
 }
 
-fn sys_pci_info(index: u64, out_ptr: u64) -> u64 {
+/// Scan PCI once into the cache. Called eagerly at boot (single-threaded, before APs and
+/// user processes run) so the scan never races concurrent PCI access — and lazily as a
+/// fallback. The lock makes the build atomic so two cold callers can't double-scan and
+/// corrupt the cache Vec.
+pub fn build_pci_cache() {
     use crate::drivers::pci;
     use core::sync::atomic::Ordering;
-
+    if PCI_CACHE_READY.load(Ordering::Acquire) {
+        return;
+    }
+    PCI_CACHE_LOCK.lock();
     if !PCI_CACHE_READY.load(Ordering::Acquire) {
         let cache = unsafe { &mut *PCI_CACHE.0.get() };
+        cache.clear();
         let kind = if pci::pcie_available() { pci::ScanKind::Pcie } else { pci::ScanKind::Pci };
         pci::scan(kind, |dev| cache.push(dev));
         PCI_CACHE_READY.store(true, Ordering::Release);
     }
+    PCI_CACHE_LOCK.unlock();
+}
+
+fn sys_pci_info(index: u64, out_ptr: u64) -> u64 {
+    build_pci_cache();
 
     let cache = unsafe { &*PCI_CACHE.0.get() };
     let idx = index as usize;

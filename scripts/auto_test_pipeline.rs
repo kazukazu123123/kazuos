@@ -579,6 +579,7 @@ fn text_to_sendkeys(text: &str) -> Vec<String> {
             '-' => "minus".to_string(),
             '_' => "shift-minus".to_string(),
             '&' => "shift-7".to_string(),
+            '|' => "shift-backslash".to_string(),
             c => c.to_string(),
         };
         out.push(format!("sendkey {key}"));
