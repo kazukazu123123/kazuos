@@ -97,6 +97,7 @@ pub const KERNEL_STACK_SIZE: usize = 65536;
 pub(crate) static THREADS: SyncUnsafeCell<Vec<Thread>> = SyncUnsafeCell::new(Vec::new());
 static NEXT_TID: SyncUnsafeCell<u64> = SyncUnsafeCell::new(1);
 static INITIALIZED: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
+static NEXT_ASSIGN_CPU: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 static THREADS_LOCK: crate::util::ReentrantSpinLock = crate::util::ReentrantSpinLock::new();
 
@@ -171,9 +172,15 @@ pub fn create_kernel_thread(
         let kernel_rsp = setup_kernel_task_stack(stack_base, entry, arg);
         let tid = *NEXT_TID.0.get();
         *NEXT_TID.0.get() = tid + 1;
-        // Assign to the least-loaded CPU so busy threads (e.g. cpuburner workers) spread
-        // across idle cores instead of colliding with the GUI's threads on one core.
-        let assigned_cpu = least_loaded_cpu();
+        // Round-robin CPU assignment. This spreads a burst of new threads (e.g.
+        // cpuburner's N workers spawned back-to-back) evenly across all cores — N
+        // consecutive threads land on N distinct CPUs. A load-based scheme was tried and
+        // removed: it counted the still-Running spawning thread (a coordinator that
+        // immediately sleeps) as load on its CPU, so it skewed assignment and left some
+        // cores idle while doubling up others.
+        let cpu_count = crate::smp::cpu_count().max(1);
+        let assigned_cpu =
+            NEXT_ASSIGN_CPU.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % cpu_count;
         crate::vserial_println!("THREAD: create tid={} pid={} assigned_cpu={}", tid, pid, assigned_cpu);
         let threads = &mut *THREADS.0.get();
         threads.push(Thread {
@@ -677,34 +684,6 @@ pub fn wakeup_pid_waiters(exited_pid: u64) {
             }
         }
     })
-}
-
-// Pick the least-loaded CPU for a new thread: the one with the fewest runnable threads
-// already assigned. Only Ready/Running threads count as load — Sleeping threads (blocked
-// on input, IPC, join, or sleeping) don't compete for the CPU, so counting them would
-// skew assignment in the common case where most threads are idle and blocked. This
-// spreads compute-bound work (e.g. cpuburner's workers) across idle cores at creation
-// time without needing thread migration. Must be called with the threads lock held.
-pub fn least_loaded_cpu() -> usize {
-    let cpu_count = crate::smp::cpu_count().max(1);
-    let mut load = [0usize; crate::smp::MAX_CPUS];
-    unsafe {
-        let threads = &*THREADS.0.get();
-        for t in threads.iter() {
-            if matches!(t.state, ThreadState::Ready | ThreadState::Running)
-                && t.assigned_cpu < cpu_count
-            {
-                load[t.assigned_cpu] += 1;
-            }
-        }
-    }
-    let mut best = 0usize;
-    for c in 1..cpu_count {
-        if load[c] < load[best] {
-            best = c;
-        }
-    }
-    best
 }
 
 pub fn wakeup_thread_waiters(exited_tid: u64) {
