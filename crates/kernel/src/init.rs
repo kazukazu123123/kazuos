@@ -53,6 +53,10 @@ pub fn run(boot_info: &'static BootInfo) -> InitState {
     crate::logln!("Platform: {:?}", platform.hypervisor);
     let interrupt_config = init_acpi(boot_info.rsdp);
     init_interrupts(interrupt_config, platform, hda_irq);
+    // Build the PCI device cache now, while we are still single-threaded (no APs, no user
+    // processes), so the scan can never race concurrent PCI config access — which had made
+    // `lspci` return a truncated/empty device list.
+    crate::user::build_pci_cache();
     unsafe {
         crate::smp::detect_cpus(boot_info.rsdp);
     }

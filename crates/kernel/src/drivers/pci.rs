@@ -217,26 +217,42 @@ fn build_device(bus: u8, device: u8, function: u8, vendor_device: u32) -> Device
     }
 }
 
-fn read_u32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    let address = (1u32 << 31)
+// The CONFIG_ADDRESS/CONFIG_DATA pair is a stateful two-step protocol: write the target
+// address, then read/write the data port. If two CPUs interleave, or an interrupt slips
+// in between the two ports, the data access lands on whatever address the other party
+// last wrote — returning garbage. Serialize every config access (IRQs off + a global
+// spinlock) so the address+data steps are atomic.
+static PCI_CONFIG_LOCK: crate::util::SpinLock = crate::util::SpinLock::new();
+
+fn config_address(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    (1u32 << 31)
         | ((bus as u32) << 16)
         | ((device as u32) << 11)
         | ((function as u32) << 8)
-        | ((offset as u32) & 0xFC);
-    unsafe {
+        | ((offset as u32) & 0xFC)
+}
+
+fn read_u32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    let address = config_address(bus, device, function, offset);
+    let flags = crate::util::irq_save();
+    PCI_CONFIG_LOCK.lock();
+    let v = unsafe {
         outd(CONFIG_ADDRESS, address);
         ind(CONFIG_DATA)
-    }
+    };
+    PCI_CONFIG_LOCK.unlock();
+    crate::util::restore_flags(flags);
+    v
 }
 
 fn write_u32(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
-    let address = (1u32 << 31)
-        | ((bus as u32) << 16)
-        | ((device as u32) << 11)
-        | ((function as u32) << 8)
-        | ((offset as u32) & 0xFC);
+    let address = config_address(bus, device, function, offset);
+    let flags = crate::util::irq_save();
+    PCI_CONFIG_LOCK.lock();
     unsafe {
         outd(CONFIG_ADDRESS, address);
         outd(CONFIG_DATA, value);
     }
+    PCI_CONFIG_LOCK.unlock();
+    crate::util::restore_flags(flags);
 }
