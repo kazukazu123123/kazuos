@@ -86,7 +86,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         // must restore this value first — otherwise the syscall continues a
         // copy-from-user on the wrong CR3 and page-faults. Thread-switch paths
         // install the target thread's CR3 themselves and are unaffected.
-        let entry_cr3 = crate::vmm::active_cr3();
+        let mut entry_cr3 = crate::vmm::active_cr3();
         let now = rdtsc();
         let cpu = crate::smp::current_cpu_index();
         let last = (*LAST_TSC_PER_CPU.0.get())[cpu];
@@ -135,7 +135,27 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         } else {
             crate::process::current_tid()
         };
-        if current_tid != 0 {
+        // Reap a thread whose process was flagged to die. A compute-bound worker (e.g.
+        // cpuburner's burn loop) never calls a syscall, so it never reaches
+        // syscall_dispatch's deferred-kill check — the timer is its only entry into the
+        // kernel. If we let such a thread keep running, the process's main thread could
+        // tear the process down (freeing the shared address space) while this worker is
+        // still executing against it on another CPU. Reaping here, and switching to the
+        // kernel CR3 immediately, closes that use-after-free window.
+        let mut current_reaped = false;
+        if cs_ring == 3 && current_tid != 0 {
+            if let Some(pid) = crate::scheduler::current_user_pid() {
+                if pid != 0 && crate::process::is_kill_pending(pid) {
+                    crate::user::set_exiting_pid_tmp(pid);
+                    crate::process::exit_current();
+                    crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
+                    entry_cr3 = crate::vmm::kernel_cr3();
+                    current_reaped = true;
+                }
+            }
+        }
+
+        if !current_reaped && current_tid != 0 {
             if cs_ring == 3 {
                 crate::scheduler::save_user_context(current_tid, saved_rsp);
                 crate::task::thread::set_kernel_preempted(current_tid, false);
@@ -157,6 +177,13 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         if next_tid == 0 {
             crate::scheduler::set_current_user_tid(None);
             restore_entry_cr3(entry_cr3);
+            // We just reaped the thread whose context we interrupted; returning 0 would
+            // iretq straight back into it. Land in the idle loop instead.
+            if current_reaped {
+                crate::process::clear_current_pid();
+                crate::scheduler::set_idle(true);
+                return crate::scheduler::setup_idle_frame_on_temp_stack();
+            }
             return 0;
         }
 
