@@ -104,7 +104,14 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         }
         if delta != 0 {
             if let Some(pid) = crate::scheduler::current_user_pid() {
-                crate::process::add_cpu_ticks(pid, delta);
+                // Credit the thread that was actually running, not the process main
+                // thread — otherwise a multi-threaded process's whole CPU time piles onto
+                // its (often idle) main thread, so a busy worker reads 0% while the main
+                // reads hundreds of %. Per-process CPU is summed from its threads on read.
+                let _ = pid;
+                if let Some(tid) = crate::scheduler::current_user_tid() {
+                    crate::task::thread::add_cpu_ticks(tid, delta);
+                }
                 USER_TICKS = USER_TICKS.saturating_add(delta);
                 if let Some(v) = (*USER_TICKS_PER_CPU.0.get()).get_mut(cpu) {
                     *v = v.saturating_add(delta);

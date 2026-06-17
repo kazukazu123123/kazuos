@@ -939,7 +939,7 @@ pub fn info(pid: u64) -> Option<ProcessInfo> {
                 let cpu_ticks = if p.pid == 0 {
                     crate::handlers::interrupts::kernel_cpu_ticks()
                 } else {
-                    main_tid(p.pid).and_then(thread::cpu_ticks).unwrap_or(0)
+                    thread::cpu_ticks_for_pid(p.pid)
                 };
                 ProcessInfo {
                     pid: p.pid,

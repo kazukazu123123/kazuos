@@ -447,6 +447,55 @@ pub fn remove_thread(tid: u64) {
     })
 }
 
+#[repr(C)]
+pub struct ThreadInfo {
+    pub tid: u64,
+    pub pid: u64,
+    pub state: u64,
+    pub cpu_ticks: u64,
+    pub assigned_cpu: u64,
+}
+
+pub fn thread_info(tid: u64) -> Option<ThreadInfo> {
+    with_threads_lock(|| unsafe {
+        (*THREADS.0.get())
+            .iter()
+            .find(|t| t.tid == tid && !matches!(t.state, ThreadState::Empty))
+            .map(|t| ThreadInfo {
+                tid: t.tid,
+                pid: t.pid,
+                state: t.state as u64,
+                cpu_ticks: t.cpu_ticks,
+                assigned_cpu: t.assigned_cpu as u64,
+            })
+    })
+}
+
+/// Sum of CPU ticks across all of `pid`'s threads. A process's CPU time is the sum of
+/// its threads', so a multi-threaded program reads up to cpu_count*100%.
+pub fn cpu_ticks_for_pid(pid: u64) -> u64 {
+    with_threads_lock(|| unsafe {
+        (*THREADS.0.get())
+            .iter()
+            .filter(|t| t.pid == pid && !matches!(t.state, ThreadState::Empty))
+            .map(|t| t.cpu_ticks)
+            .fold(0u64, |a, b| a.saturating_add(b))
+    })
+}
+
+/// Lowest tid > `prev_tid` belonging to process `pid` (pass 0 to start), for enumeration.
+pub fn next_thread_in_pid(pid: u64, prev_tid: u64) -> Option<u64> {
+    with_threads_lock(|| unsafe {
+        (*THREADS.0.get())
+            .iter()
+            .filter(|t| {
+                t.pid == pid && t.tid > prev_tid && !matches!(t.state, ThreadState::Empty)
+            })
+            .map(|t| t.tid)
+            .min()
+    })
+}
+
 pub fn first_tid() -> Option<u64> {
     with_threads_lock(|| unsafe {
         (*THREADS.0.get())

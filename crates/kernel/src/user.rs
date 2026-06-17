@@ -158,6 +158,25 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
                 0 // already exited
             }
         }
+        SYS_THREAD_NEXT => crate::task::thread::next_thread_in_pid(arg0, arg1).unwrap_or(u64::MAX),
+        SYS_THREAD_INFO => {
+            if arg1 != 0 {
+                match crate::task::thread::thread_info(arg0) {
+                    Some(info) => {
+                        unsafe {
+                            core::ptr::write_unaligned(
+                                arg1 as *mut crate::task::thread::ThreadInfo,
+                                info,
+                            );
+                        }
+                        0
+                    }
+                    None => u64::MAX,
+                }
+            } else {
+                u64::MAX
+            }
+        }
         SYS_KILL => { process::kill_pid(arg0); 0 }
         SYS_SIGINT_FG => {
             let leaf = process::foreground_leaf(arg0);
