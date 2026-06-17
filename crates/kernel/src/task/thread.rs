@@ -630,17 +630,19 @@ pub fn wakeup_pid_waiters(exited_pid: u64) {
     })
 }
 
-// Pick the least-loaded CPU for a new thread: the one with the fewest live threads
-// already assigned. This spreads load at creation time (e.g. cpuburner's worker
-// threads land on idle cores instead of piling onto the GUI's cores) without needing
-// thread migration. Must be called with the threads lock held.
+// Pick the least-loaded CPU for a new thread: the one with the fewest runnable threads
+// already assigned. Only Ready/Running threads count as load — Sleeping threads (blocked
+// on input, IPC, join, or sleeping) don't compete for the CPU, so counting them would
+// skew assignment in the common case where most threads are idle and blocked. This
+// spreads compute-bound work (e.g. cpuburner's workers) across idle cores at creation
+// time without needing thread migration. Must be called with the threads lock held.
 pub fn least_loaded_cpu() -> usize {
     let cpu_count = crate::smp::cpu_count().max(1);
     let mut load = [0usize; crate::smp::MAX_CPUS];
     unsafe {
         let threads = &*THREADS.0.get();
         for t in threads.iter() {
-            if !matches!(t.state, ThreadState::Empty | ThreadState::Exited)
+            if matches!(t.state, ThreadState::Ready | ThreadState::Running)
                 && t.assigned_cpu < cpu_count
             {
                 load[t.assigned_cpu] += 1;
