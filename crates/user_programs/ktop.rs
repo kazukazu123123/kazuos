@@ -90,8 +90,13 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         let use_kib = mem & 0xffff_ffff;
 
         // --- draw ---
-        sys_write(b"\x1b[2J\x1b[H");
-        sys_write(b"KazuOS ktop  [Ctrl+C] quit\r\n");
+        // Home the cursor instead of clearing the screen: each line below ends with
+        // \x1b[K (erase to EOL) and the list area is padded to a constant height, so every
+        // frame fully overwrites the previous one. This avoids the per-frame full clear
+        // (which made the GUI terminal repaint and re-present the whole window every
+        // refresh); now only rows whose text actually changed get redrawn.
+        sys_write(b"\x1b[H");
+        sys_write(b"KazuOS ktop  [Ctrl+C] quit\x1b[K\r\n");
         write_sep(cols);
 
         // Overall CPU bar
@@ -105,10 +110,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
             sys_write(b" ker:");  write_pct(ker_p10);
             sys_write(b" idle:"); write_pct(idl_p10);
         }
-        sys_write(b"\r\n");
+        sys_write(b"\x1b[K\r\n");
 
         // Per-core usage
-        sys_write(b"Cores:\r\n");
+        sys_write(b"Cores:\x1b[K\r\n");
         let mut i = 0usize;
         while i < cpu_count {
             let ci = i as u64;
@@ -134,7 +139,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
                 sys_write(b" k:"); write_pct(k_p10);
                 sys_write(b" i:"); write_pct(i_p10);
             }
-            sys_write(b"\r\n");
+            sys_write(b"\x1b[K\r\n");
 
             prev_idle_cpu[i] = idle_c;
             prev_ker_cpu[i]  = ker_c;
@@ -150,10 +155,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         write_mib(use_kib);
         sys_write(b"/");
         write_mib(tot_kib);
-        sys_write(b"\r\n");
+        sys_write(b"\x1b[K\r\n");
 
         write_sep(cols);
-        sys_write(b"  PID STATE    %CPU    MEM   NAME\r\n");
+        sys_write(b"  PID STATE    %CPU    MEM   NAME\x1b[K\r\n");
 
         // Clamp scroll using the actual number of rows drawn last frame.
         let max_scroll = total_rows.saturating_sub(visible);
@@ -248,6 +253,12 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         let max_scroll = total_rows.saturating_sub(visible);
         if scroll > max_scroll { scroll = max_scroll; }
 
+        // Pad the list to a constant height so the footer always lands on the same line
+        // and rows vacated by a shrinking list are blanked (we no longer clear the screen).
+        let printed = total_rows.min(scroll + visible).saturating_sub(scroll);
+        let mut pad = visible.saturating_sub(printed);
+        while pad > 0 { sys_write(b"\x1b[K\r\n"); pad -= 1; }
+
         write_sep(cols);
         // Footer: scroll position / hint.
         sys_write(b"  ");
@@ -256,7 +267,11 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         write_u64((scroll + visible).min(row_idx) as u64);
         sys_write(b"/");
         write_u64(row_idx as u64);
-        sys_write(b"  [Up/Down] scroll  [Ctrl+C] quit\r\n");
+        sys_write(b"  [Up/Down] scroll  [Ctrl+C] quit\x1b[K\r\n");
+
+        // Emit the whole frame in one syscall so it lands in the pipe as a unit and the
+        // GUI terminal composites it in a single pass instead of painting it row by row.
+        flush();
 
         // update prev
         prev_ker   = ker;
@@ -299,6 +314,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
     // Leave the screen clean for whatever drew before us (the shell reprints its prompt).
     sys_write(b"\x1b[2J\x1b[H");
+    flush();
     syscall(SYS_EXIT, 0, 0, 0);
     loop {}
 }
@@ -336,7 +352,7 @@ fn write_sep(cols: usize) {
     let n = cols.min(96);
     let dashes = [b'-'; 96];
     sys_write(&dashes[..n]);
-    sys_write(b"\r\n");
+    sys_write(b"\x1b[K\r\n");
 }
 
 fn write_pct(p10: u64) {
@@ -364,7 +380,7 @@ fn write_row(pid: u64, state: &[u8], pct10: u64, mem_kib: u64, name: &[u8]) {
     write_padded(mem_kib, 6);
     sys_write(b"KiB  ");
     sys_write(name);
-    sys_write(b"\r\n");
+    sys_write(b"\x1b[K\r\n");
 }
 
 fn write_thread_row(tid: u64, state: &[u8], pct10: u64, cpu: u64) {
@@ -378,11 +394,51 @@ fn write_thread_row(tid: u64, state: &[u8], pct10: u64, cpu: u64) {
     sys_write(&[b'0' + (pct10 % 10) as u8]);
     sys_write(b"%  cpu");
     write_u64(cpu);
-    sys_write(b"\r\n");
+    sys_write(b"\x1b[K\r\n");
 }
 
+// ktop draws a whole frame as hundreds of tiny pieces (every bar segment, digit and
+// label is its own call). Sending each as a separate SYS_WRITE means hundreds of ring
+// transitions per frame, and each pipe write takes the kernel's global thread lock, so
+// under the GUI terminal the frame trickles in and paints top-to-bottom. Instead, append
+// every piece to one buffer and emit the frame in a single SYS_WRITE via flush().
+// A fixed staging buffer (no heap: ktop otherwise never allocates, and a growable Vec
+// here risks an unbounded/garbage-sized allocation). One frame is well under this; if it
+// ever overflows we flush early, which still beats a syscall per character.
+const OUT_CAP: usize = 8192;
+struct OutBuf {
+    data: core::cell::UnsafeCell<[u8; OUT_CAP]>,
+    len: core::cell::UnsafeCell<usize>,
+}
+unsafe impl Sync for OutBuf {}
+static OUT: OutBuf = OutBuf {
+    data: core::cell::UnsafeCell::new([0u8; OUT_CAP]),
+    len: core::cell::UnsafeCell::new(0),
+};
+
 fn sys_write(buf: &[u8]) {
-    syscall(SYS_WRITE, 1, buf.as_ptr() as u64, buf.len() as u64);
+    unsafe {
+        let len = &mut *OUT.len.get();
+        if *len + buf.len() > OUT_CAP { flush(); }
+        if buf.len() > OUT_CAP {
+            syscall(SYS_WRITE, 1, buf.as_ptr() as u64, buf.len() as u64);
+            return;
+        }
+        let data = &mut *OUT.data.get();
+        data[*len..*len + buf.len()].copy_from_slice(buf);
+        *len += buf.len();
+    }
+}
+
+fn flush() {
+    unsafe {
+        let len = &mut *OUT.len.get();
+        if *len > 0 {
+            let data = &*OUT.data.get();
+            syscall(SYS_WRITE, 1, data.as_ptr() as u64, *len as u64);
+            *len = 0;
+        }
+    }
 }
 
 fn write_u64(mut n: u64) {
