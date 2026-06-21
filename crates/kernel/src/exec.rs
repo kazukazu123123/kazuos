@@ -5,7 +5,7 @@ use crate::{process, vfs};
 const KXE_MAGIC: &[u8; 4] = b"KXE\0";
 const USER_BASE: u64 = 0x0000_0080_0000_0000;
 const USER_STACK_TOP: u64 = 0x0000_0080_8000_0000;
-const USER_STACK_SIZE: u64 = 0x4000;
+const USER_STACK_SIZE: u64 = 0x10000;
 
 pub const KXE_FLAG_MODULE: u32 = 1;
 

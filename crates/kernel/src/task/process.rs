@@ -295,6 +295,12 @@ pub fn exit_current_thread() {
         if tid != 0 {
             thread::set_state(tid, thread::ThreadState::Exited);
             thread::wakeup_thread_waiters(tid); // wake SYS_THREAD_JOIN callers
+            // Reap the exited thread: drop its THREADS entry and reclaim its 64 KiB
+            // kernel stack (deferred — we're still running on it). Removing the slot is
+            // the same pattern remove_process already uses for the current thread.
+            let stack_base = thread::kernel_stack_base(tid).unwrap_or(0);
+            thread::remove_thread(tid);
+            thread::defer_free_kernel_stack(stack_base);
         }
     })
 }
@@ -403,6 +409,10 @@ pub fn exit_current() {
                 p.state = ProcessState::Running;
             }
         } else {
+            // Capture the last thread's stack before remove_process drops its slot, so we
+            // can reclaim it below (the sibling threads already reclaimed theirs on their
+            // own exit_current_thread).
+            let stack_base = thread::kernel_stack_base(tid).unwrap_or(0);
             kill_children(pid);
             crate::drivers::fb_owner::release(pid);
             crate::scheduler::clear_current_user(pid);
@@ -415,6 +425,7 @@ pub fn exit_current() {
             }
             remove_process(pid);
             wakeup_pid_waiters(pid);
+            thread::defer_free_kernel_stack(stack_base);
         }
         clear_current_pid();
         if tid != 0 {
@@ -447,9 +458,15 @@ pub fn send_sigint(pid: u64) {
                 if p.sigint_catch {
                     p.sigint_pending = true;
                     if let Some(tid) = p.main_tid {
-                        if matches!(thread::state(tid), Some(thread::ThreadState::Sleeping))
-                            && thread::take_blocking_rsp(tid).is_some()
-                        {
+                        // Wake a thread parked in a blocking syscall (e.g. SYS_SLEEP).
+                        // apply_blocking_return_if_pending restores its saved frame when
+                        // blocking_rsp is already committed; if it isn't yet (the SMP
+                        // window between set_sleeping and the stub committing the rsp),
+                        // the scheduler's blocking_rsp resume path picks it up once
+                        // committed. Do NOT take_blocking_rsp first: that clears the rsp
+                        // and makes apply a no-op, leaving the thread to resume on a stale
+                        // context (corrupt RSP) — which hung cpuburner on Ctrl+C.
+                        if matches!(thread::state(tid), Some(thread::ThreadState::Sleeping)) {
                             thread::apply_blocking_return_if_pending(tid);
                             thread::set_ready(tid);
                             thread::set_wait_target(tid, WaitTarget::None);
