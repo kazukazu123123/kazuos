@@ -295,6 +295,12 @@ pub fn exit_current_thread() {
         if tid != 0 {
             thread::set_state(tid, thread::ThreadState::Exited);
             thread::wakeup_thread_waiters(tid); // wake SYS_THREAD_JOIN callers
+            // Reap the exited thread: drop its THREADS entry and reclaim its 64 KiB
+            // kernel stack (deferred — we're still running on it). Removing the slot is
+            // the same pattern remove_process already uses for the current thread.
+            let stack_base = thread::kernel_stack_base(tid).unwrap_or(0);
+            thread::remove_thread(tid);
+            thread::defer_free_kernel_stack(stack_base);
         }
     })
 }
@@ -403,6 +409,10 @@ pub fn exit_current() {
                 p.state = ProcessState::Running;
             }
         } else {
+            // Capture the last thread's stack before remove_process drops its slot, so we
+            // can reclaim it below (the sibling threads already reclaimed theirs on their
+            // own exit_current_thread).
+            let stack_base = thread::kernel_stack_base(tid).unwrap_or(0);
             kill_children(pid);
             crate::drivers::fb_owner::release(pid);
             crate::scheduler::clear_current_user(pid);
@@ -415,6 +425,7 @@ pub fn exit_current() {
             }
             remove_process(pid);
             wakeup_pid_waiters(pid);
+            thread::defer_free_kernel_stack(stack_base);
         }
         clear_current_pid();
         if tid != 0 {

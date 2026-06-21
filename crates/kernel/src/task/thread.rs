@@ -1,5 +1,6 @@
-use alloc::alloc::{Layout, alloc_zeroed};
+use alloc::alloc::{Layout, alloc_zeroed, dealloc};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::task::process::{PrivilegeLevel, WaitTarget};
 use crate::util::SyncUnsafeCell;
@@ -461,6 +462,35 @@ pub fn remove_thread(tid: u64) {
         let threads = &mut *THREADS.0.get();
         threads.retain(|t| t.tid != tid);
     })
+}
+
+// Per-CPU deferred reclamation of exited threads' kernel stacks. A thread can't free
+// the stack it is currently executing on, and — because a thread is pinned to one CPU
+// (assigned_cpu) — only that CPU ever ran it. So on exit we stash the dying thread's
+// stack here and free whatever this CPU stashed *previously*: by now this CPU has
+// switched onto a different stack, so the earlier one is provably idle and safe to
+// dealloc, and no other CPU can be on it. Keeping a stack stashed (still allocated)
+// until then also prevents its address being handed back out before we free it. At
+// most one stack per CPU stays un-reclaimed (freed by the next exit on that CPU).
+static PENDING_STACK_FREE: [AtomicU64; crate::smp::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+
+unsafe fn free_kernel_stack(stack_base: u64) {
+    if stack_base == 0 {
+        return;
+    }
+    if let Ok(layout) = Layout::from_size_align(KERNEL_STACK_SIZE, 4096) {
+        unsafe { dealloc(stack_base as *mut u8, layout) };
+    }
+}
+
+/// Stash `stack_base` for deferred reclamation and free this CPU's previously stashed
+/// stack. Call from a thread-exit path while still running on the exiting thread's
+/// stack — the freed stack is always a different, already-switched-off one.
+pub fn defer_free_kernel_stack(stack_base: u64) {
+    let cpu = crate::smp::current_cpu_index();
+    let prev = PENDING_STACK_FREE[cpu].swap(stack_base, Ordering::AcqRel);
+    unsafe { free_kernel_stack(prev) };
 }
 
 #[repr(C)]
