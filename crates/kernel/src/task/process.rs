@@ -447,9 +447,15 @@ pub fn send_sigint(pid: u64) {
                 if p.sigint_catch {
                     p.sigint_pending = true;
                     if let Some(tid) = p.main_tid {
-                        if matches!(thread::state(tid), Some(thread::ThreadState::Sleeping))
-                            && thread::take_blocking_rsp(tid).is_some()
-                        {
+                        // Wake a thread parked in a blocking syscall (e.g. SYS_SLEEP).
+                        // apply_blocking_return_if_pending restores its saved frame when
+                        // blocking_rsp is already committed; if it isn't yet (the SMP
+                        // window between set_sleeping and the stub committing the rsp),
+                        // the scheduler's blocking_rsp resume path picks it up once
+                        // committed. Do NOT take_blocking_rsp first: that clears the rsp
+                        // and makes apply a no-op, leaving the thread to resume on a stale
+                        // context (corrupt RSP) — which hung cpuburner on Ctrl+C.
+                        if matches!(thread::state(tid), Some(thread::ThreadState::Sleeping)) {
                             thread::apply_blocking_return_if_pending(tid);
                             thread::set_ready(tid);
                             thread::set_wait_target(tid, WaitTarget::None);

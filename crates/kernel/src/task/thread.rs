@@ -326,7 +326,16 @@ pub fn set_state(tid: u64, state: ThreadState) {
         ThreadState::Ready => set_ready(tid),
         ThreadState::Running => set_running(tid),
         ThreadState::Sleeping => set_sleeping(tid),
-        _ => {}
+        // Exited/Empty are terminal and must be forced regardless of the current
+        // state (the set_ready/running/sleeping helpers refuse to move *out* of
+        // them). Skipping this left a just-exited thread looking alive, so a later
+        // SYS_THREAD_JOIN on it blocked forever (cpuburner hung on Ctrl+C).
+        ThreadState::Exited | ThreadState::Empty => unsafe {
+            let threads = &mut *THREADS.0.get();
+            if let Some(thread) = threads.iter_mut().find(|t| t.tid == tid) {
+                thread.state = state;
+            }
+        },
     })
 }
 
