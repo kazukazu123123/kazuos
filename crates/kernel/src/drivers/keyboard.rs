@@ -2,13 +2,46 @@ use crate::util::{IrqGuard, SpinLock, SyncUnsafeCell};
 use core::arch::asm;
 
 const BUF_SIZE: usize = 1024;
+const EBUF_SIZE: usize = 512;
+
+// Key-event word layout (returned by SYS_KEYBOARD_POLL). Low 8 bits are the key code:
+// a translated character for text keys, or one of the KEY_* codes below for non-text
+// keys (arrows, modifiers, Esc, F-keys). The high bits are flags.
+pub const KEY_RELEASE: u16 = 0x100; // set on release (clear on press)
+pub const MOD_SHIFT:   u16 = 0x200; // modifier state at event time
+pub const MOD_CTRL:    u16 = 0x400;
+pub const MOD_ALT:     u16 = 0x800;
+
+// Non-text key codes (low byte). 0x80..0x83 are the arrows (kept stable).
+pub const KEY_LEFT:   u16 = 0x80;
+pub const KEY_RIGHT:  u16 = 0x81;
+pub const KEY_UP:     u16 = 0x82;
+pub const KEY_DOWN:   u16 = 0x83;
+pub const KEY_LSHIFT: u16 = 0x84;
+pub const KEY_RSHIFT: u16 = 0x85;
+pub const KEY_LCTRL:  u16 = 0x86;
+pub const KEY_RCTRL:  u16 = 0x87;
+pub const KEY_LALT:   u16 = 0x88;
+pub const KEY_RALT:   u16 = 0x89;
+pub const KEY_CAPS:   u16 = 0x8A;
+pub const KEY_ESC:    u16 = 0x8B;
+pub const KEY_F1:     u16 = 0x90; // F1..F12 are KEY_F1 + (n - 1), i.e. 0x90..0x9B
 
 static BUF:      SyncUnsafeCell<[u8; BUF_SIZE]> = SyncUnsafeCell::new([0; BUF_SIZE]);
 static HEAD:     SyncUnsafeCell<usize>           = SyncUnsafeCell::new(0);
 static TAIL:     SyncUnsafeCell<usize>           = SyncUnsafeCell::new(0);
 static SHIFT:    SyncUnsafeCell<bool>            = SyncUnsafeCell::new(false);
 static CTRL:     SyncUnsafeCell<bool>            = SyncUnsafeCell::new(false);
+static ALT:      SyncUnsafeCell<bool>            = SyncUnsafeCell::new(false);
 static EXTENDED: SyncUnsafeCell<bool>            = SyncUnsafeCell::new(false);
+
+// Event stream (press + release), consumed only by the graphical focus owner. The plain
+// BUF above stays a press-only stream of translated characters for text/console readers
+// (the shell), which have no use for key-up events. An event is the translated key code
+// in the low byte, OR'd with KEY_RELEASE on release.
+static EBUF:  SyncUnsafeCell<[u16; EBUF_SIZE]> = SyncUnsafeCell::new([0; EBUF_SIZE]);
+static EHEAD: SyncUnsafeCell<usize>            = SyncUnsafeCell::new(0);
+static ETAIL: SyncUnsafeCell<usize>            = SyncUnsafeCell::new(0);
 
 static LOCK: SpinLock = SpinLock::new();
 
@@ -97,8 +130,12 @@ pub(crate) unsafe fn init() {
         *BUF.0.get()      = [0; BUF_SIZE];
         *HEAD.0.get()     = 0;
         *TAIL.0.get()     = 0;
+        *EBUF.0.get()     = [0; EBUF_SIZE];
+        *EHEAD.0.get()    = 0;
+        *ETAIL.0.get()    = 0;
         *SHIFT.0.get()    = false;
         *CTRL.0.get()     = false;
+        *ALT.0.get()      = false;
         *EXTENDED.0.get() = false;
     }
 }
@@ -120,33 +157,60 @@ pub(crate) unsafe fn poll() {
 
             if sc == 0xE0 { *EXTENDED.0.get() = true; continue; }
 
+            let release = sc & 0x80 != 0;
+            let base = sc & 0x7F;
+
             if *EXTENDED.0.get() {
                 *EXTENDED.0.get() = false;
-                if sc & 0x80 != 0 { continue; }
-                let ch = match sc { 0x4B => 0x80, 0x4D => 0x81, 0x48 => 0x82, 0x50 => 0x83, _ => 0 };
-                if ch != 0 { push_byte(ch); }
+                // Extended (E0-prefixed) keys: arrows, plus the right-hand Ctrl/Alt.
+                match base {
+                    0x1D => { *CTRL.0.get() = !release; emit_key(KEY_RCTRL, release); continue; }
+                    0x38 => { *ALT.0.get()  = !release; emit_key(KEY_RALT,  release); continue; }
+                    _ => {}
+                }
+                let code = match base { 0x4B => KEY_LEFT, 0x4D => KEY_RIGHT, 0x48 => KEY_UP, 0x50 => KEY_DOWN, _ => 0 };
+                if code != 0 {
+                    if !release { push_byte(code as u8); }
+                    emit_key(code, release);
+                }
                 continue;
             }
 
-            if sc == 0x2A || sc == 0x36 { *SHIFT.0.get() = true;  continue; }
-            if sc == 0xAA || sc == 0xB6 { *SHIFT.0.get() = false; *EXTENDED.0.get() = false; continue; }
-            if sc == 0x1D { *CTRL.0.get() = true;  continue; }
-            if sc == 0x9D { *CTRL.0.get() = false; continue; }
-            if sc & 0x80 != 0 { continue; }
-
-            if *CTRL.0.get() {
-                let base = SCANCODE[(sc & 0x7F) as usize];
-                if base >= b'a' && base <= b'z'      { push_byte(base - b'a' + 1); }
-                else if base >= b'A' && base <= b'Z' { push_byte(base - b'A' + 1); }
-                continue;
+            // Modifier keys: update state, then report the key itself as an event so apps
+            // can track Ctrl/Shift/Alt/Caps. They are never written to the text BUF.
+            match base {
+                0x2A => { *SHIFT.0.get() = !release; emit_key(KEY_LSHIFT, release); continue; }
+                0x36 => { *SHIFT.0.get() = !release; emit_key(KEY_RSHIFT, release); continue; }
+                0x1D => { *CTRL.0.get()  = !release; emit_key(KEY_LCTRL,  release); continue; }
+                0x38 => { *ALT.0.get()   = !release; emit_key(KEY_LALT,   release); continue; }
+                0x3A => { if !release { emit_key(KEY_CAPS, false); } else { emit_key(KEY_CAPS, true); } continue; }
+                0x01 => { emit_key(KEY_ESC, release); continue; }
+                0x3B..=0x44 => { emit_key(KEY_F1 + (base - 0x3B) as u16, release); continue; }
+                0x57 => { emit_key(KEY_F1 + 10, release); continue; } // F11
+                0x58 => { emit_key(KEY_F1 + 11, release); continue; } // F12
+                _ => {}
             }
 
-            let ch = match sc {
+            // Ordinary character key. Releases carry the plain character (Ctrl ignored);
+            // presses translate to a control char while Ctrl is held, matching the text
+            // stream. The text BUF only ever gets presses.
+            let plain = match base {
                 0x39 => b' ',
-                _ if *SHIFT.0.get() => SCANCODE_SHIFT[(sc & 0x7F) as usize],
-                _ => SCANCODE[(sc & 0x7F) as usize],
+                _ if *SHIFT.0.get() => SCANCODE_SHIFT[base as usize],
+                _ => SCANCODE[base as usize],
             };
-            if ch != 0 { push_byte(ch); }
+            if release {
+                if plain != 0 { emit_key(plain as u16, true); }
+                continue;
+            }
+            if *CTRL.0.get() {
+                let ctrl_ch = if plain >= b'a' && plain <= b'z'      { plain - b'a' + 1 }
+                              else if plain >= b'A' && plain <= b'Z' { plain - b'A' + 1 }
+                              else { 0 };
+                if ctrl_ch != 0 { push_byte(ctrl_ch); emit_key(ctrl_ch as u16, false); }
+                continue;
+            }
+            if plain != 0 { push_byte(plain); emit_key(plain as u16, false); }
         }
     }
 }
@@ -190,6 +254,41 @@ unsafe fn buffer_byte(ch: u8) {
     }
 }
 
+// Current modifier flags for the event word.
+unsafe fn mods() -> u16 {
+    unsafe {
+        let mut m = 0;
+        if *SHIFT.0.get() { m |= MOD_SHIFT; }
+        if *CTRL.0.get()  { m |= MOD_CTRL; }
+        if *ALT.0.get()   { m |= MOD_ALT; }
+        m
+    }
+}
+
+// Emit a key event: code in the low byte, KEY_RELEASE on release, plus the live modifier
+// flags so any key event also reports whether Ctrl/Shift/Alt are held.
+unsafe fn emit_key(code: u16, release: bool) {
+    unsafe {
+        let mut ev = (code & 0xFF) | mods();
+        if release { ev |= KEY_RELEASE; }
+        push_event(ev);
+    }
+}
+
+// Buffer a press/release event, but only while a graphical program owns the framebuffer
+// (it is the only consumer of key-up events). In text/console mode there is no keyup
+// reader, so the event stream stays empty and costs nothing.
+unsafe fn push_event(ev: u16) {
+    unsafe {
+        if crate::drivers::fb_owner::owner().is_none() { return; }
+        let next = (*EHEAD.0.get() + 1) % EBUF_SIZE;
+        if next != *ETAIL.0.get() {
+            (*EBUF.0.get())[*EHEAD.0.get()] = ev;
+            *EHEAD.0.get() = next;
+        }
+    }
+}
+
 /// Discard any buffered keystrokes. Called on framebuffer acquire/release so a
 /// graphical program and the shell never inherit each other's typed-but-unread
 /// keys across a focus change.
@@ -198,6 +297,21 @@ pub fn flush() {
     unsafe {
         *HEAD.0.get() = 0;
         *TAIL.0.get() = 0;
+        *EHEAD.0.get() = 0;
+        *ETAIL.0.get() = 0;
+    }
+}
+
+/// Pull the next key event (press or release), or None. The low byte is the translated
+/// key code; KEY_RELEASE is set for releases. Only populated for the graphical focus
+/// owner (see push_event).
+pub fn get_event() -> Option<u16> {
+    let _guard = KeyboardGuard::new();
+    unsafe {
+        if *EHEAD.0.get() == *ETAIL.0.get() { return None; }
+        let ev = (*EBUF.0.get())[*ETAIL.0.get()];
+        *ETAIL.0.get() = (*ETAIL.0.get() + 1) % EBUF_SIZE;
+        Some(ev)
     }
 }
 

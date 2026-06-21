@@ -61,7 +61,7 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `41` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
 | `42` | `SYS_PCI_BAR_MAP` | `arg0 = BDF ((bus << 16) \| (dev << 8) \| func)`, `arg1 = BAR index (0-5)` | user VA on success; `u64::MAX` on error (driver only) |
 | `43` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
-| `44` | `SYS_KEYBOARD_POLL` | none | key byte if available, or `0` (non-blocking) |
+| `44` | `SYS_KEYBOARD_POLL` | none (args ignored) | next key event word, or `0` if none (non-blocking) |
 | `45` | `SYS_CPU_INFO` | `arg0 = selector`, `arg1 = per-cpu index when noted` | selector-dependent (see below) |
 | `46` | `SYS_SHUTDOWN` | none | does not return |
 | `47` | `SYS_REBOOT` | none | does not return |
@@ -194,6 +194,36 @@ corrupt the program's display.
 
 Only one process can hold the framebuffer at a time.  A second `SYS_FB_ACQUIRE` from a
 different process returns `u64::MAX`; the caller must retry later or exit.
+
+---
+
+## Keyboard input (`SYS_KEYBOARD_POLL`)
+
+Non-blocking. Returns the next key *event* word, or `0` if none. Arguments are ignored.
+The event stream is only populated for the process that currently owns the framebuffer
+(graphical focus) and is flushed on focus change. The separate text/console read path
+(reading fd `0`, `ConsoleIn`) is unaffected and still yields press-only character bytes.
+
+Event word layout (16 bits):
+
+| Bits | Meaning |
+|------|---------|
+| `0x00FF` | key code (low byte) |
+| `0x0100` | `KEY_RELEASE` — set on release, clear on press |
+| `0x0200` | `MOD_SHIFT` — Shift held at event time |
+| `0x0400` | `MOD_CTRL`  — Ctrl held |
+| `0x0800` | `MOD_ALT`   — Alt held |
+
+Every key is reported, both press and release:
+
+- **Character keys:** the translated character (e.g. `a`, `A`, `1`). While Ctrl is held a
+  press translates to the control char (`Ctrl+C` → `0x03`), matching the text stream;
+  releases always carry the plain character.
+- **Arrows:** `0x80` left, `0x81` right, `0x82` up, `0x83` down.
+- **Modifiers:** `0x84` LShift, `0x85` RShift, `0x86` LCtrl, `0x87` RCtrl, `0x88` LAlt,
+  `0x89` RAlt, `0x8A` CapsLock. (The `MOD_*` flags also reflect the live state on every
+  event, so an app can read modifier state without tracking these.)
+- **Esc:** `0x8B`. **Function keys:** `0x90`..`0x9B` for F1..F12.
 
 ---
 
