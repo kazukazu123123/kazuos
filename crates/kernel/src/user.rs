@@ -309,9 +309,13 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_PCI_BAR_MAP => sys_pci_bar_map(arg0, arg1),
         SYS_PCI_BAR_UNMAP => sys_pci_bar_unmap(arg0),
 
-        // Keyboard
+        // Keyboard (non-blocking). Returns the next key event word for the graphical focus
+        // owner, or 0 if none. Low byte is the key code, KEY_RELEASE (0x100) is set on
+        // release, and MOD_SHIFT/MOD_CTRL/MOD_ALT report the live modifier state. Every
+        // key (characters, arrows, Ctrl/Shift/Alt/Caps, Esc, F1-F12) is reported. The
+        // text/console read path (fd0) is separate and unaffected. Args are ignored.
         SYS_KEYBOARD_POLL => {
-            if kbd_locked_out() { 0 } else { crate::drivers::keyboard::get_raw().map(|c| c as u64).unwrap_or(0) }
+            if kbd_locked_out() { 0 } else { crate::drivers::keyboard::get_event().map(|e| e as u64).unwrap_or(0) }
         }
 
         // System / Misc
