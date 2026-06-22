@@ -17,6 +17,9 @@ offset  size  field
 
 The kernel loads the KXE at `USER_BASE` (0x8000000000), applies `R_X86_64_RELATIVE` relocations (all fixed up to `USER_BASE`), and jumps to `_start`.
 
+> A driver (`flags = 1`) uses this same container but is a **kernel module**
+> (`.kkm`) with its own source contract and lifecycle — see `docs/MODULES.md`.
+
 ## Writing a User Program
 
 All user programs are `.rs` files in `crates/user_programs/`. They are compiled automatically by `build.rs` during kernel build.
