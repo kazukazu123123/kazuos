@@ -278,3 +278,4 @@ If QEMU fails, inspect:
 
 Keep `docs/ARCHITECTURE.md` updated when subsystem boundaries or roadmap change.
 Keep `docs/USER_ABI.md` updated when adding or changing syscalls, syscall arguments, return values, or process/user ABI behavior. It is the human-readable companion to `crates/kazuos_abi/src/syscall_numbers.rs`, which is the source of truth for syscall numbers.
+Keep `docs/MODULES.md` updated when the `.kkm` format, the module source contract (`crates/user_rt/module_runtime.rs`), the build pipeline, or the load/unload lifecycle changes.

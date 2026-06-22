@@ -267,7 +267,8 @@ is also justified in ring0 so the kernel can show panic / early-boot diagnostics
 **Belongs in ring3:** device drivers. They run as kernel modules — `.kkm` files
 built from `crates/user_modules/*.rs`, loaded via `SYS_MODULE_LOAD`, running as
 ring3 processes at `PrivilegeLevel::Driver` (which only gates *which syscalls are
-allowed*; all processes run ring3). `ps2mouse` is the reference example: it does
+allowed*; all processes run ring3). The format, source contract, build pipeline,
+and load/unload lifecycle are documented in `docs/MODULES.md`. `ps2mouse` is the reference example: it does
 PS/2 `in`/`out` from ring3 after requesting the ports, and delivers events over
 IPC. Rich console/terminal rendering (font shaping, scrollback) is also a ring3
 concern, distinct from the minimal panic blit above.
