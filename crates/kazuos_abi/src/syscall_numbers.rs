@@ -86,6 +86,11 @@ pub const SYS_RMDIR:  u64 = 56; // remove an empty directory
 // Lets a terminal interrupt the command its shell is currently waiting on.
 pub const SYS_SIGINT_FG: u64 = 57;
 
+// Network
+pub const SYS_NETTEST:  u64 = 58;
+pub const SYS_HTTPGET:  u64 = 59;
+pub const SYS_HTTPSGET: u64 = 60;
+
 // SYS_EXEC stdio pack: bits[0..16] = stdin fd, bits[16..32] = stdout fd (0xFFFF on either
 // = console default). When this bit is also set, the child additionally gets fd 3 as a
 // controlling-terminal handle — a dup of the *caller's* fd 0 (the shell's keyboard source:

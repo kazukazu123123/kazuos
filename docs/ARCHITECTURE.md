@@ -249,6 +249,29 @@ Current drivers/support code:
 - ACPI parsing
 - Power shutdown/reboot
 - PC speaker beep
+- PCI / PCIe enumeration
+- Intel HD Audio (HDA)
+- e1000 (Intel 82540EM) network controller
+
+### Networking
+
+Located in `crates/kernel/src/net.rs`.
+
+A minimal polling-mode IPv4 stack on top of the `e1000` driver: Ethernet, ARP,
+IPv4, ICMP, UDP, a DHCP client, a DNS resolver, and an active-open TCP client.
+On top of TCP it runs TLS via rustls (no_std) with the rustls-rustcrypto
+provider; server certificates are verified against the webpki-roots trust
+anchors using the CMOS RTC for the current time, and entropy comes from
+`rng.rs` (RDRAND with a TSC fallback, also exposed as `/dev/random`).
+
+It has no socket layer yet; each shell command runs a fixed sequence and is
+driven synchronously by polling the NIC receive ring with TSC-based timeouts:
+
+- `nettest [host]` (`SYS_NETTEST`) — DHCP, DNS/IPv4 literal, four ICMP echoes.
+- `http [host]` (`SYS_HTTPGET`) — TCP connect to port 80 and an HTTP/1.1 GET.
+- `https [host]` (`SYS_HTTPSGET`) — verified TLS GET on port 443.
+
+Interrupt-driven RX/TX and a general socket API are future work.
 
 ## Driver Policy / Kernel Scope
 

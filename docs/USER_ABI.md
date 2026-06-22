@@ -75,6 +75,16 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `55` | `SYS_MKDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
 | `56` | `SYS_RMDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
 | `57` | `SYS_SIGINT_FG` | `arg0 = pid` | `1` if a foreground descendant was signaled, `0` if `arg0` is itself the wait-chain leaf |
+| `58` | `SYS_NETTEST` | `arg0 = host ptr` (null → `example.com`), `arg1 = host len`, `arg2 = out buf ptr` (≤1024 bytes) | report bytes written, or `u64::MAX` on error |
+| `59` | `SYS_HTTPGET` | `arg0 = host ptr` (null → `example.com`), `arg1 = host len`, `arg2 = out buf ptr` (≤1024 bytes) | report bytes written, or `u64::MAX` on error |
+| `60` | `SYS_HTTPSGET` | `arg0 = host ptr` (null → `example.com`), `arg1 = host len`, `arg2 = out buf ptr` (≤1024 bytes) | report bytes written, or `u64::MAX` on error |
+
+`SYS_NETTEST`/`SYS_HTTPGET`/`SYS_HTTPSGET` accept a hostname or an IPv4 literal.
+They run a self-contained sequence over the in-kernel polling network stack
+(DHCP → DNS/ARP → ICMP / TCP / TLS) and write a human-readable report into the
+caller's buffer. `SYS_HTTPSGET` verifies the server certificate against the
+webpki-roots trust anchors using the CMOS RTC for the current time. They require
+an e1000 NIC; the report states when none is present.
 
 ## `SYS_PROCESS_INFO` selectors
 

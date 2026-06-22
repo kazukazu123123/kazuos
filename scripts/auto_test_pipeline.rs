@@ -323,6 +323,7 @@ fn run() -> Result<bool, String> {
 
     let mut args: Vec<String> = vec![
         "-machine".into(), "q35,pcspk-audiodev=snd0,i8042=on".into(),
+        "-cpu".into(), "qemu64,+rdrand".into(),
         "-smp".into(), cfg.cpu_count.to_string(),
         "-drive".into(), format!("if=pflash,format=raw,readonly=on,file={}", ovmf.display()),
     ];
@@ -334,7 +335,8 @@ fn run() -> Result<bool, String> {
         "-drive".into(), format!("format=raw,file=fat:rw:{}", esp_dir.display()),
         "-boot".into(), "order=a,menu=on".into(),
         "-m".into(), "4G".into(),
-        "-net".into(), "none".into(),
+        "-netdev".into(), "user,id=net0".into(),
+        "-device".into(), "e1000,netdev=net0".into(),
         "-display".into(), "none".into(),
         "-vnc".into(), "127.0.0.1:1".into(),
         "-serial".into(), format!("file:{}", serial_log.display()),
