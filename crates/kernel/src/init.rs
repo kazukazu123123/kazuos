@@ -49,6 +49,8 @@ pub fn run(boot_info: &'static BootInfo) -> InitState {
         vmm::init();
     }
     let hda_irq = drivers::hda::init();
+    drivers::e1000::init();
+    crate::rng::init();
     init_idt();
     crate::logln!("Platform: {:?}", platform.hypervisor);
     let interrupt_config = init_acpi(boot_info.rsdp);

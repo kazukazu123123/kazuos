@@ -220,6 +220,15 @@ fn execute(cmd: &[u8]) {
     if cmd == b"ls" || cmd.starts_with(b"ls ") {
         return cmd_ls(cmd);
     }
+    if cmd == b"nettest" || cmd.starts_with(b"nettest ") {
+        return cmd_nettest(cmd);
+    }
+    if cmd == b"https" || cmd.starts_with(b"https ") {
+        return cmd_https(cmd);
+    }
+    if cmd == b"http" || cmd.starts_with(b"http ") {
+        return cmd_http(cmd);
+    }
     if cmd.starts_with(b"touch ") {
         return cmd_touch(trim(&cmd[6..]));
     }
@@ -453,7 +462,7 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
 }
 
 fn cmd_help() {
-    sys_write(b"commands: help clear ls mem ps sysinfo smpinfo shutdown reboot\r\n");
+    sys_write(b"commands: help clear ls nettest http https mem ps sysinfo smpinfo shutdown reboot\r\n");
 }
 
 fn cmd_clear() {
@@ -608,6 +617,78 @@ fn cmd_ls(cmd: &[u8]) {
         sys_write(&e.name[..nlen]);
         sys_write(b"\r\n");
     }
+}
+
+fn cmd_nettest(cmd: &[u8]) {
+    let host = if cmd.len() > 8 {
+        trim(&cmd[8..])
+    } else {
+        b"example.com" as &[u8]
+    };
+    let mut out = [0u8; 1024];
+    sys_write(b"nettest: testing ");
+    sys_write(host);
+    sys_write(b" ...\r\n");
+    let r = syscall4(
+        SYS_NETTEST,
+        host.as_ptr() as u64,
+        host.len() as u64,
+        out.as_mut_ptr() as u64,
+    );
+    if r == u64::MAX {
+        sys_write(b"nettest: syscall failed\r\n");
+        return;
+    }
+    let len = (r as usize).min(out.len());
+    sys_write(&out[..len]);
+}
+
+fn cmd_http(cmd: &[u8]) {
+    let host = if cmd.len() > 5 {
+        trim(&cmd[5..])
+    } else {
+        b"example.com" as &[u8]
+    };
+    let mut out = [0u8; 1024];
+    sys_write(b"http: GET ");
+    sys_write(host);
+    sys_write(b" ...\r\n");
+    let r = syscall4(
+        SYS_HTTPGET,
+        host.as_ptr() as u64,
+        host.len() as u64,
+        out.as_mut_ptr() as u64,
+    );
+    if r == u64::MAX {
+        sys_write(b"http: syscall failed\r\n");
+        return;
+    }
+    let len = (r as usize).min(out.len());
+    sys_write(&out[..len]);
+}
+
+fn cmd_https(cmd: &[u8]) {
+    let host = if cmd.len() > 6 {
+        trim(&cmd[6..])
+    } else {
+        b"example.com" as &[u8]
+    };
+    let mut out = [0u8; 1024];
+    sys_write(b"https: GET ");
+    sys_write(host);
+    sys_write(b" ...\r\n");
+    let r = syscall4(
+        SYS_HTTPSGET,
+        host.as_ptr() as u64,
+        host.len() as u64,
+        out.as_mut_ptr() as u64,
+    );
+    if r == u64::MAX {
+        sys_write(b"https: syscall failed\r\n");
+        return;
+    }
+    let len = (r as usize).min(out.len());
+    sys_write(&out[..len]);
 }
 
 #[repr(C)]
