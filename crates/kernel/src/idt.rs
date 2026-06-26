@@ -82,7 +82,7 @@ pub unsafe fn load_idt() {
     }
 }
 
-pub(crate) unsafe fn init(keyboard: u64, timer: u64, syscall: u64, mouse: u64, hda: u64) {
+pub(crate) unsafe fn init(keyboard: u64, timer: u64, syscall: u64, mouse: u64, hda: u64, sci: u64) {
     unsafe {
         let idt = &mut *IDT.0.get();
         for vector in 0u8..=31 {
@@ -98,6 +98,7 @@ pub(crate) unsafe fn init(keyboard: u64, timer: u64, syscall: u64, mouse: u64, h
         idt.set_handler(0x2C, mouse);
         idt.set_handler(0x30, timer);
         idt.set_handler(0x31, hda);
+        idt.set_handler(0x32, sci);
         idt.set_user_handler(0x80, syscall);
         idt.load();
     }

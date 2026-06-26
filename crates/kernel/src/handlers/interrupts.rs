@@ -439,6 +439,59 @@ unsafe extern "C" {
     fn mouse_irq_handler_asm();
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn sci_handler_inner() {
+    let entry_cr3 = crate::vmm::active_cr3();
+    unsafe {
+        crate::drivers::power::handle_power_button();
+        if USE_IOAPIC {
+            lapic::eoi();
+        }
+    }
+    restore_entry_cr3(entry_cr3);
+}
+
+global_asm!(
+    ".global sci_handler_asm",
+    "sci_handler_asm:",
+    "    push rax",
+    "    push rcx",
+    "    push rdx",
+    "    push rsi",
+    "    push rdi",
+    "    push r8",
+    "    push r9",
+    "    push r10",
+    "    push r11",
+    "    push rbx",
+    "    push rbp",
+    "    push r12",
+    "    push r13",
+    "    push r14",
+    "    push r15",
+    "    call sci_handler_inner",
+    "    pop r15",
+    "    pop r14",
+    "    pop r13",
+    "    pop r12",
+    "    pop rbp",
+    "    pop rbx",
+    "    pop r11",
+    "    pop r10",
+    "    pop r9",
+    "    pop r8",
+    "    pop rdi",
+    "    pop rsi",
+    "    pop rdx",
+    "    pop rcx",
+    "    pop rax",
+    "    iretq",
+);
+
+unsafe extern "C" {
+    fn sci_handler_asm();
+}
+
 global_asm!(
     ".global hda_irq_handler_asm",
     "hda_irq_handler_asm:",
@@ -494,4 +547,8 @@ pub fn mouse_handler_addr() -> u64 {
 
 pub fn hda_handler_addr() -> u64 {
     hda_irq_handler_asm as *const () as usize as u64
+}
+
+pub fn sci_handler_addr() -> u64 {
+    sci_handler_asm as *const () as usize as u64
 }

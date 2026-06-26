@@ -152,6 +152,7 @@ fn init_idt() {
             syscall::handler_addr(),
             interrupts::mouse_handler_addr(),
             interrupts::hda_handler_addr(),
+            interrupts::sci_handler_addr(),
         );
     }
     crate::logln!("IDT loaded successfully");
@@ -261,6 +262,16 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform, hda_ir
                     ioapic.mask_irq(12);
                     crate::logln!("IOAPIC present, keyboard polling mode");
                 }
+                // Route ACPI SCI through IOAPIC
+                if let Some(sci_irq) = drivers::power::sci_irq()
+                    && sci_irq != 0 && sci_irq != 255
+                {
+                    let sci_gsi = sci_irq - info.global_irq_base as u8;
+                    ioapic.set_irq_ext(sci_gsi, 0x32, config.bsp_apic_id, 0);
+                    ioapic.unmask_irq(sci_gsi);
+                    interrupts::set_use_ioapic(true);
+                    crate::log_info!("IOAPIC ACPI SCI IRQ{} at vector 0x32", sci_irq);
+                }
             } else if !platform.keyboard_polling {
                 pic::unmask_irq(1);
                 crate::logln!("PIC keyboard IRQ1 enabled");
@@ -294,6 +305,7 @@ fn init_interrupts(config: InterruptConfig, platform: platform::Platform, hda_ir
         }
 
         keyboard::init();
+        drivers::power::setup_power_button();
         core::arch::asm!("sti");
         crate::logln!("Interrupts enabled");
     }

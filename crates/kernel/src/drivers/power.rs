@@ -1,4 +1,6 @@
-use crate::util::{inb, outb, outw, pause};
+use crate::util::{inb, inw, outb, outw, pause};
+
+const PWRBTN_BIT: u16 = 1 << 8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PowerInfo {
@@ -8,6 +10,10 @@ pub struct PowerInfo {
     pub pm1b_cnt: u16,
     pub slp_typa: u16,
     pub slp_typb: u16,
+    pub pm1a_evt_blk: u16,
+    pub pm1b_evt_blk: u16,
+    pub sci_irq: u8,
+    pub power_button_fixed: bool,
 }
 
 static mut POWER: Option<PowerInfo> = None;
@@ -15,6 +21,57 @@ static mut POWER: Option<PowerInfo> = None;
 pub fn init(rsdp: u64) {
     unsafe {
         POWER = find_power_info(rsdp);
+    }
+}
+
+pub fn sci_irq() -> Option<u8> {
+    unsafe {
+        let ptr: *const Option<PowerInfo> = &raw const POWER;
+        let power = core::ptr::read(ptr);
+        power.map(|info| info.sci_irq)
+    }
+}
+
+pub fn setup_power_button() {
+    unsafe {
+        if let Some(ref info) = POWER {
+            if info.power_button_fixed && info.pm1a_evt_blk != 0 {
+                let ena = inw(info.pm1a_evt_blk + 2);
+                outw(info.pm1a_evt_blk + 2, ena | PWRBTN_BIT);
+                if info.pm1b_evt_blk != 0 {
+                    let enb = inw(info.pm1b_evt_blk + 2);
+                    outw(info.pm1b_evt_blk + 2, enb | PWRBTN_BIT);
+                }
+                crate::log_info!("ACPI power button enabled");
+            }
+        }
+    }
+}
+
+pub fn handle_power_button() {
+    unsafe {
+        let info = match POWER {
+            Some(ref info) => info,
+            None => return,
+        };
+        if !info.power_button_fixed || info.pm1a_evt_blk == 0 {
+            return;
+        }
+        let sts = inw(info.pm1a_evt_blk);
+        if sts != 0 {
+            outw(info.pm1a_evt_blk, sts);
+            if sts & PWRBTN_BIT != 0 {
+                crate::serial_println!("Power button pressed, shutting down...");
+                crate::println!("Power button pressed, shutting down...");
+                shutdown();
+            }
+        }
+        if info.pm1b_evt_blk != 0 {
+            let sts_b = inw(info.pm1b_evt_blk);
+            if sts_b != 0 {
+                outw(info.pm1b_evt_blk, sts_b);
+            }
+        }
     }
 }
 
@@ -58,8 +115,6 @@ pub fn reboot() -> ! {
     }
 }
 
-pub fn poll_power_button() {}
-
 unsafe fn qemu_shutdown() {
     unsafe {
         outw(0x604, 0x2000);
@@ -76,6 +131,11 @@ unsafe fn find_power_info(rsdp: u64) -> Option<PowerInfo> {
     let pm1a_cnt = unsafe { read_u32(fadt + 64) as u16 };
     let pm1b_cnt = unsafe { read_u32(fadt + 68) as u16 };
     let (slp_typa, slp_typb) = unsafe { find_s5(dsdt)? };
+    let sci_irq = unsafe { read_u16(fadt + 46) as u8 };
+    let pm1a_evt_blk = unsafe { read_u32(fadt + 56) as u16 };
+    let pm1b_evt_blk = unsafe { read_u32(fadt + 60) as u16 };
+    let fadt_flags = unsafe { read_u32(fadt + 112) };
+    let power_button_fixed = (fadt_flags & (1 << 4)) != 0;
     Some(PowerInfo {
         smi_cmd,
         acpi_enable,
@@ -83,6 +143,10 @@ unsafe fn find_power_info(rsdp: u64) -> Option<PowerInfo> {
         pm1b_cnt,
         slp_typa,
         slp_typb,
+        pm1a_evt_blk,
+        pm1b_evt_blk,
+        sci_irq,
+        power_button_fixed,
     })
 }
 
