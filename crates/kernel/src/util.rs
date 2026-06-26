@@ -169,6 +169,14 @@ pub(crate) unsafe fn inb(port: u16) -> u8 {
     }
 }
 
+pub(crate) unsafe fn inw(port: u16) -> u16 {
+    unsafe {
+        let value: u16;
+        core::arch::asm!("in ax, dx", out("ax") value, in("dx") port, options(nomem, nostack));
+        value
+    }
+}
+
 pub(crate) unsafe fn outw(port: u16, value: u16) {
     unsafe {
         core::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack));

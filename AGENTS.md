@@ -16,26 +16,34 @@ Use nightly for kernel checks.
 cargo +nightly check
 ```
 
-For QEMU validation:
+For QEMU validation use the Rust test pipeline:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "auto_shell_qemu.ps1"
+cargo +nightly -Zscript scripts/auto_test_pipeline.rs
 ```
 
-The pipeline accepts `-SendLines` (array of shell commands, default `ret`) and `-ExpectPattern` (regex to search serial.log, exits 1 on fail).
+The pipeline (see `scripts/auto_test_pipeline.rs` for full docs) accepts inline steps and optional flags:
 
-Use `-Verbose` to boot with serial output enabled (required for pattern matching on shell output).
+- `--send LINE` — type text then press Enter
+- `--key NAME` — press one key (`ret`, `ctrl-c`, `esc`, `0x1c`, ...)
+- `--wait SECS` — sleep (fractions accepted)
+- `--expect PAT` — block until PAT appears in serial.log
+- `--verbose` — boot with verbose output enabled
+- `--heartbeat` — enable periodic HEARTBEAT liveness line (detect hangs)
+- `--idle-timeout N` — fail if serial.log stops growing for N seconds
+- `--fail-on PAT` — abort on pattern (kernel panics watched by default)
+- `--repeat N` — repeat the inline step sequence N times
 
 Examples:
 ```powershell
 # boot and press Enter
-.\auto_shell_qemu.ps1
+cargo +nightly -Zscript scripts/auto_test_pipeline.rs
 
-# boot verbose and run shell commands (Enter is appended automatically)
-.\auto_shell_qemu.ps1 -Verbose -SendLines help,mem,ps
+# boot verbose and run shell commands
+cargo +nightly -Zscript scripts/auto_test_pipeline.rs -- --verbose --send help --send mem --send ps
 
 # check serial output for a specific pattern
-.\auto_shell_qemu.ps1 -Verbose -SendLines help,ps -AfterWaitSeconds 6 -ExpectPattern "commands:"
+cargo +nightly -Zscript scripts/auto_test_pipeline.rs -- --verbose --send help --send ps --wait 6 --expect "commands:"
 ```
 
 Do not use plain `cargo check` for kernel validation because stable Rust fails on current nightly features.
@@ -265,7 +273,7 @@ cargo +nightly check
 When touching ring3, syscalls, page tables, interrupts, boot, or shell commands used during boot demos, also run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "auto_shell_qemu.ps1"
+cargo +nightly -Zscript scripts/auto_test_pipeline.rs
 ```
 
 If QEMU fails, inspect:
