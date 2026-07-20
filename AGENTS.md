@@ -156,6 +156,12 @@ Syscall entry path and dispatch trampoline.
 
 Keep arch-specific syscall assembly here. High-level syscall behavior can dispatch to subsystem modules.
 
+### `uaccess.rs`
+
+The user/kernel pointer boundary. Validates that a caller-supplied range lies in the user
+half and is mapped user-accessible in the caller's page tables before any copy. All
+syscall pointer handling belongs here; see the Safety Rules below.
+
 ### `user.rs`
 
 High-level syscall dispatch (core logic).
@@ -256,7 +262,13 @@ For debugging QEMU, prefer serial output as well as framebuffer output.
 
 ## Safety Rules
 
-- Never trust userspace pointers; validate before reading/writing once validation helpers exist.
+- Never trust userspace pointers. Every read or write of a caller-supplied pointer must
+  go through `crate::uaccess` (`read_bytes`, `read_str`, `write_bytes`, `write_value`, or
+  `validate_range` when the copy itself has to stay inline). Do not call
+  `from_raw_parts`/`write_unaligned` on a raw syscall argument.
+- Never return `u64::MAX - 1` or `u64::MAX - 2` from a syscall as an error. The `int 0x80`
+  stub reads them as `EXIT_TO_KERNEL` / `BLOCK_TO_SCHEDULER` and will tear the caller out
+  of user mode. Use `u64::MAX` for errors.
 - Do not let user pages share kernel writable mappings unnecessarily.
 - Keep page table modifications explicit and minimal.
 - Do not enable interrupts around fragile ring transition code unless intentional.

@@ -1,4 +1,3 @@
-use crate::process::ProcessInfo;
 use crate::smp::{MAX_CPUS, current_cpu_index};
 use crate::util::SyncUnsafeCell;
 use crate::{console, exec, fd, ipc, process, syscall};
@@ -70,25 +69,13 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         // Console / Display
         SYS_CONSOLE_WRITE => {
             if arg0 != 0 && arg1 > 0 {
-                let src = arg0 as *const u8;
-                let len = arg1 as usize;
-                const CHUNK: usize = 256;
-                let mut buf = [0u8; CHUNK];
-                let mut offset = 0usize;
+                if !crate::uaccess::validate_range(arg0, arg1, false) {
+                    return u64::MAX;
+                }
                 let caller = crate::scheduler::current_user_pid().unwrap_or(0);
                 let fb_owner = crate::drivers::fb_owner::owner();
                 let do_fb = fb_owner.is_none() || fb_owner == Some(caller);
-                while offset < len {
-                    let remain = len - offset;
-                    let n = remain.min(CHUNK);
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(src.add(offset), buf.as_mut_ptr(), n);
-                    }
-                    let chunk = unsafe { core::str::from_utf8_unchecked(&buf[..n]) };
-                    if do_fb { console::screen_print(chunk); }
-                    if crate::init::is_verbose() { crate::serial_print!("{}", chunk); }
-                    offset += n;
-                }
+                print_user_bytes(arg0, arg1, do_fb);
             }
             0
         }
@@ -163,13 +150,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             if arg1 != 0 {
                 match crate::task::thread::thread_info(arg0) {
                     Some(info) => {
-                        unsafe {
-                            core::ptr::write_unaligned(
-                                arg1 as *mut crate::task::thread::ThreadInfo,
-                                info,
-                            );
-                        }
-                        0
+                        if crate::uaccess::write_value(arg1, info) { 0 } else { u64::MAX }
                     }
                     None => u64::MAX,
                 }
@@ -186,7 +167,9 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_PROCESS_INFO => {
             if arg1 != 0 {
                 match process::info(arg0) {
-                    Some(info) => { unsafe { core::ptr::write_unaligned(arg1 as *mut ProcessInfo, info); } 0 }
+                    Some(info) => {
+                        if crate::uaccess::write_value(arg1, info) { 0 } else { u64::MAX }
+                    }
                     None => u64::MAX,
                 }
             } else {
@@ -223,16 +206,23 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         // IPC
         SYS_IPC_OPEN => {
             if arg0 == 0 || arg1 == 0 { u64::MAX }
-            else { let name = unsafe { core::slice::from_raw_parts(arg0 as *const u8, arg1 as usize) }; ipc::open(name) }
+            else {
+                match crate::uaccess::read_bytes(arg0, arg1) {
+                    Some(name) => ipc::open(&name),
+                    None => u64::MAX,
+                }
+            }
         }
         SYS_IPC_SEND => {
             let channel_id = arg0;
             let buf_ptr    = arg1;
             let buf_len    = arg2 as usize;
             if buf_ptr == 0 || buf_len == 0 { return u64::MAX; }
-            let data = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_len) };
+            let Some(data) = crate::uaccess::read_bytes(buf_ptr, buf_len as u64) else {
+                return u64::MAX;
+            };
             let sender = crate::scheduler::current_user_pid().unwrap_or(0);
-            match ipc::try_send(channel_id, sender, data) {
+            match ipc::try_send(channel_id, sender, &data) {
                 ipc::SendResult::Ok => 0,
                 ipc::SendResult::Error => u64::MAX,
                 ipc::SendResult::Block => {
@@ -250,6 +240,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             let buf_ptr    = arg1;
             let buf_len    = arg2 as usize;
             if buf_ptr == 0 || buf_len == 0 { return u64::MAX; }
+            if !crate::uaccess::validate_range(buf_ptr, buf_len as u64, true) { return u64::MAX; }
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
             let pid = crate::scheduler::current_user_pid().unwrap_or(0);
             // try_recv registers the waiter and marks it sleeping atomically on Block.
@@ -264,6 +255,7 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
             let buf_ptr    = arg1;
             let buf_len    = arg2 as usize;
             if buf_ptr == 0 || buf_len == 0 { return u64::MAX; }
+            if !crate::uaccess::validate_range(buf_ptr, buf_len as u64, true) { return u64::MAX; }
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
             match ipc::try_recv_nonblock(channel_id, buf) {
                 ipc::RecvResult::Ok(len) => len as u64,
@@ -338,19 +330,27 @@ extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg2: u64) -> 
         SYS_READDIR => sys_readdir(arg0, arg1, arg2),
 
         // Kernel modules
+        // NOTE: module load/unload is deliberately open to PrivilegeLevel::User, which
+        // means any process can gain Driver capabilities (ioport/DMA/IRQ/PCI BAR) by
+        // loading a .kkm. That is a known gap, not an oversight: there is no privileged
+        // session concept yet, so gating this at Driver would leave `/bin/modules` — the
+        // only runtime module management there is — unable to do anything. Closing it
+        // properly needs a System-privileged shell path first. Until then the gate below
+        // is honest about being a no-op rather than looking like a real check.
+        //
+        // The previous form was `> PrivilegeLevel::User`, which can never be true (User
+        // is the maximum) *and* returned `u64::MAX - 1` — the same value as
+        // syscall::EXIT_TO_KERNEL, which the int-0x80 stub interprets as "abandon the
+        // user frame and return to the kernel". Denials must use u64::MAX like every
+        // other privileged syscall here.
         SYS_MODULE_LOAD => {
-            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-            if process::privilege_level(caller) > process::PrivilegeLevel::User { return u64::MAX - 1; }
             if arg0 == 0 || arg1 == 0 { return u64::MAX; }
-            let path_bytes = unsafe { core::slice::from_raw_parts(arg0 as *const u8, arg1 as usize) };
-            match core::str::from_utf8(path_bytes) {
-                Ok(path) => crate::kmod::load(path),
-                Err(_) => u64::MAX,
+            match crate::uaccess::read_str(arg0, arg1) {
+                Some(path) => crate::kmod::load(&path),
+                None => u64::MAX,
             }
         }
         SYS_MODULE_UNLOAD => {
-            let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-            if process::privilege_level(caller) > process::PrivilegeLevel::User { return u64::MAX - 1; }
             if crate::kmod::unload(arg0 as u32) { 0 } else { u64::MAX }
         }
         SYS_MODULE_LIST => crate::kmod::list(arg0, arg1),
@@ -428,11 +428,20 @@ unsafe fn write_dirent(out: *mut UserDirEntry, idx: usize, kind: u8, name: &str)
 /// the program's stdout, e.g. into a pipe).
 fn sys_readdir(ptr: u64, len: u64, out_ptr: u64) -> u64 {
     if out_ptr == 0 { return u64::MAX; }
+    // The ABI has no output-length argument: the caller must supply room for the full
+    // READDIR_CAP array, so that is what we require to be writable.
+    const OUT_BYTES: u64 = (READDIR_CAP * core::mem::size_of::<UserDirEntry>()) as u64;
+    if !crate::uaccess::validate_range(out_ptr, OUT_BYTES, true) {
+        return u64::MAX;
+    }
+    let owned;
     let path = if ptr == 0 || len == 0 {
         "/"
     } else {
-        let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
-        core::str::from_utf8(bytes).unwrap_or("/")
+        match crate::uaccess::read_str(ptr, len) {
+            Some(s) => { owned = s; owned.as_str() }
+            None => return u64::MAX,
+        }
     };
     let out = out_ptr as *mut UserDirEntry;
     let mut n = 0usize;
@@ -529,8 +538,8 @@ fn sys_dma_alloc(size: u64, phys_out_ptr: u64) -> u64 {
         {
             return u64::MAX;
         }
-        if phys_out_ptr != 0 {
-            core::ptr::write_unaligned(phys_out_ptr as *mut u64, phys);
+        if phys_out_ptr != 0 && !crate::uaccess::write_value(phys_out_ptr, phys) {
+            return u64::MAX;
         }
         let allocs = &mut *DMA_ALLOCS.0.get();
         allocs.push(DmaAlloc { pid: caller, virt, phys, size: aligned });
@@ -840,8 +849,9 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
     // the wrong address space and page-fault. Copying once up front (under the
     // caller's CR3) makes all later reads come from kernel memory, visible in
     // every address space.
-    let bytes_owned =
-        unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) }.to_vec();
+    let Some(bytes_owned) = crate::uaccess::read_bytes(ptr, len) else {
+        return u64::MAX;
+    };
     let bytes: &[u8] = &bytes_owned;
     // New format: "path\0arg1\0arg2\0\0" — null-separated path and args.
     // Old format: just path bytes (no null) — no args.
@@ -914,9 +924,13 @@ fn sys_pipe(out_ptr: u64) -> u64 {
     match (read_fd, write_fd) {
         (Some(r), Some(w)) => {
             if out_ptr != 0 {
-                unsafe {
-                    core::ptr::write_unaligned(out_ptr as *mut u64, r as u64);
-                    core::ptr::write_unaligned((out_ptr + 8) as *mut u64, w as u64);
+                let fds = [r as u64, w as u64];
+                if !crate::uaccess::write_value(out_ptr, fds) {
+                    // Roll back: the caller never learns the fd numbers, so leaving them
+                    // installed would leak both ends of the pipe for the process's life.
+                    fd::free_fd(caller, r);
+                    fd::free_fd(caller, w);
+                    return u64::MAX;
                 }
             }
             0
@@ -937,8 +951,7 @@ fn read_user_path(ptr: u64, len: u64) -> Option<alloc::string::String> {
     if ptr == 0 || len == 0 || len > 256 {
         return None;
     }
-    let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) }.to_vec();
-    core::str::from_utf8(&bytes).ok().map(alloc::string::String::from)
+    crate::uaccess::read_str(ptr, len)
 }
 
 fn sys_create(ptr: u64, len: u64) -> u64 {
@@ -978,15 +991,8 @@ fn sys_rmdir(ptr: u64, len: u64) -> u64 {
 }
 
 fn sys_open(path_ptr: u64, path_len: u64) -> u64 {
-    if path_ptr == 0 || path_len == 0 {
-        return u64::MAX;
-    }
-    let path_bytes =
-        unsafe { core::slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
-    let path = match core::str::from_utf8(path_bytes) {
-        Ok(s) => s,
-        Err(_) => return u64::MAX,
-    };
+    let Some(path) = read_user_path(path_ptr, path_len) else { return u64::MAX };
+    let path = path.as_str();
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     match crate::vfs::lookup(path) {
         Ok(crate::vfs::VfsNode::Device(ops)) => {
@@ -1036,6 +1042,42 @@ fn console_writable() -> bool {
     }
 }
 
+/// Print `len` bytes of already-validated user memory to the console and/or serial.
+/// Shared by SYS_CONSOLE_WRITE and sys_write's ConsoleOut branch.
+///
+/// The caller must have validated `[ptr, ptr + len)` as readable user memory.
+fn print_user_bytes(ptr: u64, len: u64, do_fb: bool) {
+    let src = ptr as *const u8;
+    let len = len as usize;
+    const CHUNK: usize = 256;
+    let mut buf = [0u8; CHUNK];
+    let mut offset = 0usize;
+    let verbose = crate::init::is_verbose();
+    while offset < len {
+        let n = (len - offset).min(CHUNK);
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.add(offset), buf.as_mut_ptr(), n);
+        }
+        // A chunk boundary can split a multi-byte sequence. Print the valid prefix and
+        // resume from the split point instead of fabricating a &str from invalid bytes.
+        let (chunk, consumed) = match core::str::from_utf8(&buf[..n]) {
+            Ok(s) => (s, n),
+            Err(e) => match e.valid_up_to() {
+                // Genuinely invalid input rather than a split sequence: skip the chunk.
+                0 => ("", n),
+                valid => (unsafe { core::str::from_utf8_unchecked(&buf[..valid]) }, valid),
+            },
+        };
+        if do_fb {
+            console::screen_print(chunk);
+        }
+        if verbose {
+            crate::serial_print!("{}", chunk);
+        }
+        offset += consumed;
+    }
+}
+
 fn kbd_locked_out() -> bool {
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     matches!(crate::drivers::fb_owner::owner(), Some(o) if o != caller)
@@ -1047,6 +1089,11 @@ fn kbd_locked_out() -> bool {
 fn sys_try_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
+    }
+    // One check for every branch below, and it also bounds buf_len before it is used
+    // to size a kernel-side Vec.
+    if !crate::uaccess::validate_range(buf_ptr, buf_len, true) {
+        return u64::MAX;
     }
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     match fd::get_fd(caller, fd as usize) {
@@ -1075,6 +1122,9 @@ fn sys_try_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
 fn sys_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
+    }
+    if !crate::uaccess::validate_range(buf_ptr, buf_len, true) {
+        return u64::MAX;
     }
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     match fd::get_fd(caller, fd as usize) {
@@ -1163,25 +1213,15 @@ fn sys_write(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
     if buf_ptr == 0 || buf_len == 0 {
         return 0;
     }
+    if !crate::uaccess::validate_range(buf_ptr, buf_len, false) {
+        return u64::MAX;
+    }
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     match fd::get_fd(caller, fd as usize) {
         Some(fd::FdEntry::ConsoleOut) => {
-            // same as SYS_CONSOLE_WRITE
-            let src = buf_ptr as *const u8;
-            let len = buf_len as usize;
-            const CHUNK: usize = 256;
-            let mut buf = [0u8; CHUNK];
-            let mut offset = 0usize;
             let fb_owner = crate::drivers::fb_owner::owner();
             let do_fb = fb_owner.is_none() || fb_owner == Some(caller);
-            while offset < len {
-                let n = (len - offset).min(CHUNK);
-                unsafe { core::ptr::copy_nonoverlapping(src.add(offset), buf.as_mut_ptr(), n); }
-                let chunk = unsafe { core::str::from_utf8_unchecked(&buf[..n]) };
-                if do_fb { console::screen_print(chunk); }
-                if crate::init::is_verbose() { crate::serial_print!("{}", chunk); }
-                offset += n;
-            }
+            print_user_bytes(buf_ptr, buf_len, do_fb);
             buf_len
         }
         Some(fd::FdEntry::PipeWrite(pipe_id)) => {
@@ -1237,6 +1277,7 @@ static PCI_CACHE_READY: core::sync::atomic::AtomicBool =
 static PCI_CACHE_LOCK: crate::util::SpinLock = crate::util::SpinLock::new();
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct PciDeviceInfo {
     pub bus: u8,
     pub device: u8,
@@ -1293,7 +1334,9 @@ fn sys_pci_info(index: u64, out_ptr: u64) -> u64 {
             prog_if: dev.prog_if,
             header_type: dev.header_type,
         };
-        unsafe { core::ptr::write_unaligned(out_ptr as *mut PciDeviceInfo, info); }
+        if !crate::uaccess::write_value(out_ptr, info) {
+            return u64::MAX;
+        }
     }
     cache.len() as u64
 }

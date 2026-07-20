@@ -9,6 +9,7 @@ static BACK_LEN: SyncUnsafeCell<usize> = SyncUnsafeCell::new(0);
 
 /// Layout written into the user buffer by SYS_FB_ACQUIRE.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct FbInfo {
     pub base: u64, // user-space VA
     pub width: u32,
@@ -119,18 +120,15 @@ unsafe fn write_info(out: *mut FbInfo) -> u64 {
     if out.is_null() {
         return u64::MAX;
     }
-    unsafe {
-        if let Some(p) = crate::console::fb_params() {
-            out.write(FbInfo {
-                base: USER_FB_VA,
-                width: p.width,
-                height: p.height,
-                stride: p.stride,
-                format: p.format,
-            });
-            0
-        } else {
-            u64::MAX
-        }
-    }
+    let Some(p) = crate::console::fb_params() else {
+        return u64::MAX;
+    };
+    let info = FbInfo {
+        base: USER_FB_VA,
+        width: p.width,
+        height: p.height,
+        stride: p.stride,
+        format: p.format,
+    };
+    if crate::uaccess::write_value(out as u64, info) { 0 } else { u64::MAX }
 }

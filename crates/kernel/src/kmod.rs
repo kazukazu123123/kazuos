@@ -109,6 +109,14 @@ pub fn on_process_exit(pid: u64) {
 /// Returns count of entries written.
 pub fn list(buf_ptr: u64, buf_len: u64) -> u64 {
     let max = (buf_len as usize) / ENTRY_SIZE;
+    if max == 0 {
+        return 0;
+    }
+    // Validate the buffer the caller actually claims to have, not the region we happen
+    // to walk: buf_len is user-supplied and was previously used only as a divisor.
+    if !crate::uaccess::validate_range(buf_ptr, (max * ENTRY_SIZE) as u64, true) {
+        return u64::MAX;
+    }
     let t = table();
     let mut count = 0usize;
     for slot in t.entries.iter() {
@@ -123,6 +131,9 @@ pub fn list(buf_ptr: u64, buf_len: u64) -> u64 {
 
 /// Write a single entry into a user-space buffer. Returns 0 on success, u64::MAX if not found.
 pub fn info(id: u32, buf_ptr: u64) -> u64 {
+    if !crate::uaccess::validate_range(buf_ptr, ENTRY_SIZE as u64, true) {
+        return u64::MAX;
+    }
     let t = table();
     for slot in t.entries.iter() {
         if let Some(e) = slot {
