@@ -429,6 +429,10 @@ pub fn exit_current() {
                 crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
                 crate::vmm::free_user_address_space(cr3);
             }
+            // Return the image frames (code + stack) to the PMM. Must come after the
+            // address space is torn down so nothing can still reach them through a
+            // user mapping.
+            crate::exec::free_image_for_pid(pid);
             remove_process(pid);
             wakeup_pid_waiters(pid);
             thread::defer_free_kernel_stack(stack_base);
