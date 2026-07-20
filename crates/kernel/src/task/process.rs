@@ -79,6 +79,12 @@ pub(crate) struct Process {
     pub(crate) threads: Vec<u64>,
 }
 
+// ProcessInfo crosses the user/kernel boundary and user space reproduces its layout by
+// hand (there is no shared definition yet — only the syscall numbers are shared). A
+// change to ProcessState's representation would silently shift every field after it, so
+// pin the size here rather than discovering it as garbage in `ps` output.
+const _: () = assert!(core::mem::size_of::<ProcessState>() == 8);
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ProcessInfo {

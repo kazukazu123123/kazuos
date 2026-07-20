@@ -1,0 +1,18 @@
+# Normalize line endings. The repository is LF throughout; without this, a tool on
+# Windows that rewrites a file (an editor, a script) can flip it to CRLF and turn a
+# small edit into a whole-file diff that destroys git blame.
+* text=auto eol=lf
+
+# cmd.exe wants CRLF in batch files.
+*.bat text eol=crlf
+
+# Never touch these, in case any are added later.
+*.ttf binary
+*.fd  binary
+*.iso binary
+*.bin binary
+*.img binary
+*.png binary
+*.kkm binary
+*.kxe binary
+*.kfs binary
