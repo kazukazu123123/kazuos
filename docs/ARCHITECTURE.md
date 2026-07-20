@@ -156,10 +156,23 @@ The full syscall list and ABI live in `crates/kazuos_abi/src/syscall_numbers.rs`
 truth for numbers) and `docs/USER_ABI.md` (human-readable). Do not duplicate the numeric
 table here — it drifts.
 
+Every syscall that reads or writes a caller-supplied pointer goes through
+`crates/kernel/src/uaccess.rs`. It rejects a range unless it lies inside the user half
+(PML4 entries 1..255 — entry 0 is the kernel identity map, present in every address
+space) and every page in it is mapped user-accessible in the caller's page tables, with
+write permission when the kernel intends to write. That single check also bounds the
+lengths the kernel uses to size its own buffers, so a user cannot ask for an arbitrarily
+large kernel allocation.
+
 Limitations:
 
-- No userspace pointer validation yet
-- No syscall table abstraction yet
+- No syscall table abstraction yet: dispatch is one large `match` in `user.rs`, so
+  cross-cutting concerns (validation, permissions, tracing) have no single seam
+- No errno space — `u64::MAX` is the generic error for most calls. Note that
+  `u64::MAX - 1` and `u64::MAX - 2` are reserved: the `int 0x80` stub reads them as
+  `EXIT_TO_KERNEL` and `BLOCK_TO_SCHEDULER`, so a syscall must never return them as
+  an error code
+- Module load/unload is not privilege-gated (see Driver Policy below)
 
 ### User Mode
 

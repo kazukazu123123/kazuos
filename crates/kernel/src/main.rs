@@ -30,6 +30,7 @@ pub mod syscall;
 pub mod task;
 pub mod terminal;
 pub mod tty;
+pub mod uaccess;
 pub mod user;
 pub mod user_programs;
 pub mod util;

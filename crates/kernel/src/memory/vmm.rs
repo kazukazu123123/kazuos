@@ -212,6 +212,30 @@ pub unsafe fn translate(cr3: u64, virt: u64) -> Option<u64> {
     }
 }
 
+/// True if `virt` is mapped in `cr3` and reachable from ring 3 — every level of the
+/// walk carries USER, and (when `write`) every level carries WRITABLE. The paging
+/// hardware ANDs the permission bits down the walk, so a single level missing USER
+/// makes the page supervisor-only regardless of the leaf entry.
+pub unsafe fn user_accessible(cr3: u64, virt: u64, write: bool) -> bool {
+    unsafe {
+        let need = USER | if write { WRITABLE } else { 0 };
+        let mut table = (cr3 & ADDR_MASK) as *mut u64;
+        for level in 0..4 {
+            let shift = 39 - level * 9;
+            let index = ((virt >> shift) & 0x1ff) as usize;
+            let entry = table.add(index).read_volatile();
+            if entry & PRESENT == 0 || entry & need != need {
+                return false;
+            }
+            if level == 3 {
+                return true;
+            }
+            table = (entry & ADDR_MASK) as *mut u64;
+        }
+        false
+    }
+}
+
 unsafe fn table_if_present(parent: *mut u64, index: usize) -> *mut u64 {
     unsafe {
         let entry = parent.add(index).read_volatile();

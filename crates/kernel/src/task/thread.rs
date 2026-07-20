@@ -494,6 +494,7 @@ pub fn defer_free_kernel_stack(stack_base: u64) {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ThreadInfo {
     pub tid: u64,
     pub pid: u64,
@@ -784,6 +785,15 @@ pub fn notify_pipe_readers(pipe_id: u64) {
                         // right pages, then restore. (Kernel mappings are global, so the
                         // switch is safe inside this IRQ-disabled, locked section.)
                         let reader_cr3 = t.user_context.cr3;
+                        // buf_ptr was validated when the reader blocked, but that was
+                        // against the address space as it stood then. Re-check against the
+                        // reader's page tables now: if it was killed and torn down in the
+                        // meantime, this write would land in freed page tables. The walk
+                        // reads physical addresses (identity-mapped in PML4[0]), so it is
+                        // valid before the CR3 switch.
+                        if !crate::uaccess::validate_range_in(reader_cr3, buf_ptr, buf_len, true) {
+                            continue;
+                        }
                         let cur_cr3 = crate::vmm::active_cr3();
                         let switch = reader_cr3 != 0 && reader_cr3 != cur_cr3;
                         if switch { crate::vmm::switch_cr3(reader_cr3); }
