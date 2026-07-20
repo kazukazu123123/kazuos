@@ -32,7 +32,17 @@ impl FdTable {
 
 static TABLES: SyncUnsafeCell<Vec<Option<FdTable>>> = SyncUnsafeCell::new(Vec::new());
 
-pub fn ensure_table(pid: u64) {
+// The fd tables are global mutable state touched from every CPU: a process opens/reads
+// fds on one core while another core spawns a process (which grows the outer Vec, possibly
+// reallocating it) or mutates its own table. Without serialization, a reader on CPU A can
+// observe the Vec mid-realloc and read freed memory, corrupting an unrelated fd entry. All
+// access therefore goes through the shared threads lock (reentrant, so callers that already
+// hold it — e.g. process spawn installing default stdio — nest safely), matching ipc.rs.
+fn with_lock<F: FnOnce() -> R, R>(f: F) -> R {
+    crate::task::thread::with_threads_lock(f)
+}
+
+fn ensure_table_locked(pid: u64) {
     unsafe {
         let tables = &mut *TABLES.0.get();
         let idx = pid as usize;
@@ -45,59 +55,67 @@ pub fn ensure_table(pid: u64) {
     }
 }
 
+pub fn ensure_table(pid: u64) {
+    with_lock(|| ensure_table_locked(pid));
+}
+
 pub fn alloc_fd_at(pid: u64, fd: usize, entry: FdEntry) -> bool {
     if fd >= MAX_FD {
         return false;
     }
-    ensure_table(pid);
-    unsafe {
-        let tables = &mut *TABLES.0.get();
-        if let Some(Some(table)) = tables.get_mut(pid as usize) {
-            if fd >= table.entries.len() {
-                table.entries.resize(fd + 1, FdEntry::Empty);
+    with_lock(|| {
+        ensure_table_locked(pid);
+        unsafe {
+            let tables = &mut *TABLES.0.get();
+            if let Some(Some(table)) = tables.get_mut(pid as usize) {
+                if fd >= table.entries.len() {
+                    table.entries.resize(fd + 1, FdEntry::Empty);
+                }
+                pipe_clone(&entry);
+                table.entries[fd] = entry;
+                return true;
             }
-            pipe_clone(&entry);
-            table.entries[fd] = entry;
-            return true;
         }
-    }
-    false
+        false
+    })
 }
 
 pub fn alloc_fd(pid: u64, entry: FdEntry) -> Option<usize> {
-    ensure_table(pid);
-    unsafe {
-        let tables = &mut *TABLES.0.get();
-        let table = tables[pid as usize].as_mut()?;
-        // Reuse the lowest freed slot first.
-        for i in 0..table.entries.len() {
-            if matches!(table.entries[i], FdEntry::Empty) {
+    with_lock(|| {
+        ensure_table_locked(pid);
+        unsafe {
+            let tables = &mut *TABLES.0.get();
+            let table = tables[pid as usize].as_mut()?;
+            // Reuse the lowest freed slot first.
+            for i in 0..table.entries.len() {
+                if matches!(table.entries[i], FdEntry::Empty) {
+                    pipe_clone(&entry);
+                    table.entries[i] = entry;
+                    return Some(i);
+                }
+            }
+            // Otherwise grow the table, up to the safety ceiling.
+            if table.entries.len() < MAX_FD {
+                let i = table.entries.len();
                 pipe_clone(&entry);
-                table.entries[i] = entry;
+                table.entries.push(entry);
                 return Some(i);
             }
         }
-        // Otherwise grow the table, up to the safety ceiling.
-        if table.entries.len() < MAX_FD {
-            let i = table.entries.len();
-            pipe_clone(&entry);
-            table.entries.push(entry);
-            return Some(i);
-        }
-    }
-    None
+        None
+    })
 }
 
 pub fn get_fd(pid: u64, fd: usize) -> Option<FdEntry> {
-    unsafe {
+    with_lock(|| unsafe {
         let tables = &*TABLES.0.get();
         let table = tables.get(pid as usize)?.as_ref()?;
         table.entries.get(fd).copied()
-    }
+    })
 }
 
 pub fn set_fd(pid: u64, fd: usize, entry: FdEntry) -> bool {
-    unsafe {
+    with_lock(|| unsafe {
         let tables = &mut *TABLES.0.get();
         if let Some(Some(table)) = tables.get_mut(pid as usize) {
             if fd < table.entries.len() {
@@ -106,11 +124,11 @@ pub fn set_fd(pid: u64, fd: usize, entry: FdEntry) -> bool {
             }
         }
         false
-    }
+    })
 }
 
 pub fn free_fd(pid: u64, fd: usize) -> bool {
-    unsafe {
+    with_lock(|| unsafe {
         let tables = &mut *TABLES.0.get();
         if let Some(Some(table)) = tables.get_mut(pid as usize) {
             if fd < table.entries.len() {
@@ -120,11 +138,11 @@ pub fn free_fd(pid: u64, fd: usize) -> bool {
             }
         }
         false
-    }
+    })
 }
 
 pub fn close_all(pid: u64) {
-    unsafe {
+    with_lock(|| unsafe {
         let tables = &mut *TABLES.0.get();
         if let Some(Some(table)) = tables.get_mut(pid as usize) {
             for entry in table.entries.iter() {
@@ -132,7 +150,7 @@ pub fn close_all(pid: u64) {
             }
             table.entries.clear();
         }
-    }
+    })
 }
 
 fn pipe_clone(entry: &FdEntry) {

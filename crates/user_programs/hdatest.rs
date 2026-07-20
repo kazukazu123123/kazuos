@@ -8,20 +8,6 @@ const CHUNK_SAMPLES: usize = 1200; // 25ms @ 48kHz stereo
 const CHUNK_BYTES: usize = CHUNK_SAMPLES * 2 * 2; // s16le stereo
 const CHUNKS_TO_PLAY: usize = 120; // 3 seconds
 
-fn sys_ioctl(fd: u64, cmd: u64, arg: u64) -> u64 {
-    let r: u64;
-    unsafe {
-        core::arch::asm!(
-            "int 0x80",
-            inlateout("rax") SYS_IOCTL => r,
-            in("rdi") fd,
-            in("rsi") cmd,
-            in("rdx") arg,
-        );
-    }
-    r
-}
-
 /// Fixed-point sine oscillator for 440 Hz @ 48 kHz.
 /// Recurrence: y[n] = A*y[n-1] - y[n-2],  A = 2*cos(w).
 /// cos(2*pi*440/48000) ~= 0.998341698,  A/2 in Q30 ~= 1_071_961_363.

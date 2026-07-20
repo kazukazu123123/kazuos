@@ -896,6 +896,10 @@ fn sys_exec(ptr: u64, len: u64, stdio_pack: u64) -> u64 {
                 crate::fd::alloc_fd_at(pid, 3, tty);
             }
         }
+        // All of the child's fds (stdio, ctty, any redirections) are now installed. Make it
+        // schedulable only now: spawn leaves it Sleeping so its first syscalls can't race
+        // this fd setup on another CPU (an early open() would otherwise be clobbered here).
+        process::set_ready(pid);
     }
     if pid == 0 || pid == u64::MAX {
         crate::log_warn!("sys_exec: spawn failed for '{}' (caller={}, stdio={:#x})", path, caller, stdio_pack);

@@ -463,6 +463,94 @@ pub fn sys_sleep(ms: u64) {
     }
 }
 
+pub fn sys_ioctl(fd: u64, cmd: u64, arg: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IOCTL => r,
+            in("rdi") fd,
+            in("rsi") cmd,
+            in("rdx") arg,
+        );
+    }
+    r
+}
+
+/// Open (or create) a named IPC channel. Returns channel id, or u64::MAX on error.
+pub fn sys_ipc_open(name: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_OPEN => r,
+            in("rdi") name.as_ptr(),
+            in("rsi") name.len(),
+            in("rdx") 0u64,
+        );
+    }
+    r
+}
+
+/// Send data to an IPC channel. Returns 0 on success, u64::MAX on error.
+pub fn sys_ipc_send(channel: u64, data: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_SEND => r,
+            in("rdi") channel,
+            in("rsi") data.as_ptr(),
+            in("rdx") data.len(),
+        );
+    }
+    r
+}
+
+/// Receive from an IPC channel, blocking until a message arrives. Returns length.
+pub fn sys_ipc_recv(channel: u64, buf: &mut [u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_RECV => r,
+            in("rdi") channel,
+            in("rsi") buf.as_mut_ptr(),
+            in("rdx") buf.len(),
+        );
+    }
+    r
+}
+
+/// Non-blocking receive: returns 0 immediately if no message is queued.
+pub fn sys_ipc_try_recv(channel: u64, buf: &mut [u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_TRY_RECV => r,
+            in("rdi") channel,
+            in("rsi") buf.as_mut_ptr(),
+            in("rdx") buf.len(),
+        );
+    }
+    r
+}
+
+pub fn sys_ipc_close(channel: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_CLOSE => r,
+            in("rdi") channel,
+            in("rsi") 0,
+            in("rdx") 0,
+        );
+    }
+    r
+}
+
 pub fn sys_proc_info(pid: u64, out: *mut u64) -> u64 {
     let r: u64;
     unsafe {

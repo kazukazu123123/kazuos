@@ -254,7 +254,12 @@ pub fn spawn_user_process(
                 ..thread::EMPTY_USER_CONTEXT
             },
         );
-        set_ready(pid);
+        // The process is left Sleeping (create_kernel_thread's default state): the caller
+        // must finish installing the child's fd table (stdio, ctty, redirections) and then
+        // call `set_ready(pid)`. On SMP a Ready child starts running on another CPU
+        // immediately, so any fd setup done after readiness would race with the child's own
+        // early syscalls (e.g. opening a device, which could then be clobbered by a late
+        // ctty install). Deferring readiness until setup completes closes that race.
         pid
     })
 }

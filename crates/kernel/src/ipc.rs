@@ -3,7 +3,7 @@ use alloc::collections::VecDeque;
 use crate::util::SyncUnsafeCell;
 
 const MAX_CHANNELS: usize = 32;
-const MAX_MSG_SIZE: usize = 4096;
+const MAX_MSG_SIZE: usize = 8192;
 const MAX_QUEUE:    usize = 8;
 const NAME_LEN:     usize = 32;
 

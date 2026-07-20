@@ -303,6 +303,34 @@ SYS_IPC_CLOSE(ch)
 Supported formats: PCM 8-bit or 16-bit, mono or stereo.  
 The driver plays the file synchronously (one file at a time); the next `SYS_IPC_RECV` blocks until playback finishes.
 
+### Audio server (`audiod.kxe`)
+
+A ring3 user-space server that owns the `audio` IPC channel and is the sole writer of
+`/dev/audio` (the in-kernel HDA driver). Start it once (e.g. `audiod &`); clients then
+stream through it instead of opening `/dev/audio` directly, so audio is multiplexed in
+user space.
+
+**Mixing:** audiod sums the PCM of up to 8 concurrent streams sample-by-sample (with
+clipping) into one output chunk per round, so several clients can play at once. Each stream
+is identified by its reply channel id; a stream that goes silent for a few rounds is aged
+out. See `aplay.kxe` (single tone, `aplay [freq]`) and `mixtest.kxe` (two tones from one
+process) for reference clients.
+
+Each request is a message on the `audio` channel with an 8-byte header + optional payload:
+
+| Offset | Field | Meaning |
+| --- | --- | --- |
+| `0` | `op` (u8) | `1`=TONE, `2`=STOP, `3`=PCM, `4`=SETCH |
+| `1` | reserved | |
+| `2..4` | `reply` (u16 LE) | channel id to ack on (`0` = no ack) |
+| `4..8` | `arg` (u32 LE) | TONE: frequency Hz; SETCH: channel count (1=mono) |
+| `8..` | payload | PCM data for `op=PCM` (s16le, 48 kHz) |
+
+For `op=PCM`, if `reply` is non-zero, audiod sends a one-byte ack on that channel once the
+chunk has been consumed by the hardware. A producer waits for the ack before sending the
+next chunk, giving lossless backpressure (the IPC queue's drop-oldest policy never discards
+audio). See `aplay.kxe` for a reference client.
+
 ---
 
 ## IPC (Inter-Process Communication)
@@ -320,7 +348,7 @@ SYS_IPC_CLOSE(channel_id)                      // decrement ref count; destroyed
 
 ### Constraints
 
-- Max message size: 4096 bytes
+- Max message size: 8192 bytes (large enough to carry one 4800-byte HDA audio chunk plus a header)
 - Max queued messages per channel: 8
 - Max open channels: 32
 - `SYS_IPC_SEND` blocks when the queue is full; unblocked when a receiver calls `SYS_IPC_RECV`
