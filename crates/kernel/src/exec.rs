@@ -1,5 +1,4 @@
-use alloc::alloc::{Layout, alloc_zeroed};
-
+use crate::util::SyncUnsafeCell;
 use crate::{process, vfs};
 
 const KXE_MAGIC: &[u8; 4] = b"KXE\0";
@@ -156,26 +155,56 @@ fn spawn_kxe(
     args: &[&[u8]],
     privilege: crate::process::PrivilegeLevel,
 ) -> u64 {
-    let Some((cr3, initial_rsp, argc, argv)) = create_process_space(image.entry, image.code, args) else {
+    let Some(space) = create_process_space(image.entry, image.code, args) else {
         return 0;
     };
-    let pid = process::spawn_user_process(path, image.entry, initial_rsp, cr3, privilege, argc, argv);
-    if pid != 0 {
-        process::set_memory_bytes(pid, image.code.len() as u64 + USER_STACK_SIZE);
+    let pid = process::spawn_user_process(
+        path,
+        image.entry,
+        space.initial_rsp,
+        space.cr3,
+        privilege,
+        space.argc,
+        space.argv,
+    );
+    if pid == 0 {
+        // The process never came into existence, so nothing will ever call
+        // free_image_for_pid for it — release the frames here instead of leaking them.
+        for (phys, pages) in space.frames {
+            crate::pmm::free_frames(phys, pages);
+        }
+        return 0;
     }
+    for (phys, pages) in space.frames {
+        record_image_alloc(pid, phys, pages);
+    }
+    process::set_memory_bytes(pid, image.code.len() as u64 + USER_STACK_SIZE);
     pid
 }
 
-fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64, u64, u64, u64)> {
+/// The frames backing a freshly built address space, so the caller can register them
+/// against the new pid once it exists.
+struct ProcessSpace {
+    cr3: u64,
+    initial_rsp: u64,
+    argc: u64,
+    argv: u64,
+    frames: [(u64, usize); 2],
+}
+
+fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<ProcessSpace> {
     unsafe {
         let cr3 = crate::vmm::create_address_space().ok()?;
         let code_size = code.len() as u64;
         let code_pages = code_size.div_ceil(4096).max(1);
         let code_size_bytes = code_pages * 4096;
-        let code_phys = alloc_page_range(code_size_bytes as usize)?;
-        core::ptr::write_bytes(code_phys as *mut u8, 0, code_size_bytes as usize);
+        let (code_phys, code_frame_count) = alloc_page_range(code_size_bytes as usize)?;
         core::ptr::copy_nonoverlapping(code.as_ptr(), code_phys as *mut u8, code.len());
         let code_base = entry & !0xfff;
+        // Mapped writable because a KXE image is one flat blob: objcopy -O binary emits
+        // .text, .rodata, .data and .bss into the same region, so the program's mutable
+        // globals live in these pages. Real W^X needs KXE to describe segments
+        // separately; until then this stays RW and is a known gap.
         crate::vmm::map_range(
             cr3,
             code_base,
@@ -185,7 +214,7 @@ fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64,
         )
         .ok()?;
         let stack_base = USER_STACK_TOP - USER_STACK_SIZE;
-        let stack_phys = alloc_page_range(USER_STACK_SIZE as usize)?;
+        let (stack_phys, stack_frame_count) = alloc_page_range(USER_STACK_SIZE as usize)?;
         crate::vmm::map_range(
             cr3,
             stack_base,
@@ -195,7 +224,13 @@ fn create_process_space(entry: u64, code: &[u8], args: &[&[u8]]) -> Option<(u64,
         )
         .ok()?;
         let (initial_rsp, argc, argv) = push_args_onto_stack(stack_phys, stack_base, args);
-        Some((cr3, initial_rsp, argc, argv))
+        Some(ProcessSpace {
+            cr3,
+            initial_rsp,
+            argc,
+            argv,
+            frames: [(code_phys, code_frame_count), (stack_phys, stack_frame_count)],
+        })
     }
 }
 
@@ -260,12 +295,55 @@ unsafe fn push_args_onto_stack(stack_phys: u64, stack_base: u64, args: &[&[u8]])
     (args_base, argc, args_base + 8)
 }
 
-fn alloc_page_range(size: usize) -> Option<u64> {
-    let layout = Layout::from_size_align(size, 4096).ok()?;
-    let ptr = unsafe { alloc_zeroed(layout) };
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr as u64)
+/// Physical frame ranges backing a process image (code and stack). Tracked per pid so
+/// exit can return them to the PMM.
+///
+/// These used to come from the kernel heap via `alloc_zeroed`, which meant user pages
+/// aliased the kernel's own allocator arena (against the rule in AGENTS.md), bypassed
+/// PMM accounting entirely, and were never reclaimed — every spawn leaked its image for
+/// the life of the boot. They are frames now, and `free_image_for_pid` gives them back.
+///
+/// The address space teardown cannot simply walk the user page tables and free whatever
+/// it finds: the framebuffer, DMA buffers, and PCI BARs are also mapped into user space,
+/// and handing those to the frame allocator would be catastrophic. Provenance has to be
+/// tracked explicitly, which is what this table does.
+struct ImageAlloc {
+    pid: u64,
+    phys: u64,
+    pages: usize,
+}
+
+static IMAGE_ALLOCS: SyncUnsafeCell<alloc::vec::Vec<ImageAlloc>> =
+    SyncUnsafeCell::new(alloc::vec::Vec::new());
+
+fn record_image_alloc(pid: u64, phys: u64, pages: usize) {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (*IMAGE_ALLOCS.0.get()).push(ImageAlloc { pid, phys, pages });
+    });
+}
+
+pub fn free_image_for_pid(pid: u64) {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        let allocs = &mut *IMAGE_ALLOCS.0.get();
+        let mut i = 0;
+        while i < allocs.len() {
+            if allocs[i].pid == pid {
+                let a = allocs.swap_remove(i);
+                crate::pmm::free_frames(a.phys, a.pages);
+            } else {
+                i += 1;
+            }
+        }
+    });
+}
+
+/// Allocate `size` bytes of zeroed, physically contiguous frames. The returned physical
+/// address doubles as a kernel VA because PML4[0] identity-maps low memory.
+fn alloc_page_range(size: usize) -> Option<(u64, usize)> {
+    let pages = size.div_ceil(4096).max(1);
+    let phys = crate::pmm::alloc_frames(pages)?;
+    unsafe {
+        core::ptr::write_bytes(phys as *mut u8, 0, pages * 4096);
     }
+    Some((phys, pages))
 }
