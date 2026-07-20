@@ -22,7 +22,12 @@ struct Channel {
     ref_count: usize,
 }
 
-static CHANNELS: SyncUnsafeCell<Vec<Channel>> = SyncUnsafeCell::new(Vec::new());
+/// Slots are stable: a channel id is `index + 1` for the life of the table, so a
+/// closed channel leaves a `None` hole rather than shifting its successors down.
+/// Compacting the vector would silently repoint every id above the removed one at a
+/// different channel — a process holding id 2 would start talking to what used to be
+/// channel 3.
+static CHANNELS: SyncUnsafeCell<Vec<Option<Channel>>> = SyncUnsafeCell::new(Vec::new());
 
 // All channel state is shared between CPUs: a hardware publisher (e.g. ps2mouse.kkm)
 // sends from one CPU while a consumer receives on another. Every access goes through
@@ -32,12 +37,19 @@ static CHANNELS: SyncUnsafeCell<Vec<Channel>> = SyncUnsafeCell::new(Vec::new());
 // receiver sleeps forever. The thread lock (not a private one) is reused because the
 // wake path already takes it; sharing one lock keeps the ordering consistent and the
 // reentrant guard makes the nested wake calls safe.
-fn channels() -> &'static mut Vec<Channel> {
+fn channels() -> &'static mut Vec<Option<Channel>> {
     unsafe { &mut *CHANNELS.0.get() }
 }
 
 fn with_lock<F: FnOnce() -> R, R>(f: F) -> R {
     crate::task::thread::with_threads_lock(f)
+}
+
+/// Resolve a 1-based channel id to its slot, or `None` if the id is out of range or
+/// refers to a closed channel.
+fn slot(ch: &mut Vec<Option<Channel>>, channel_id: u64) -> Option<&mut Channel> {
+    let idx = (channel_id as usize).checked_sub(1)?;
+    ch.get_mut(idx)?.as_mut()
 }
 
 /// Open or create a named channel. Returns channel id (1-based), or u64::MAX on error.
@@ -49,27 +61,36 @@ pub fn open(name: &[u8]) -> u64 {
         let ch = channels();
 
         // Return existing channel id if name matches.
-        for (i, c) in ch.iter_mut().enumerate() {
-            if c.name_len == name.len() && c.name[..c.name_len] == *name {
-                c.ref_count += 1;
-                return (i + 1) as u64;
+        for (i, slot) in ch.iter_mut().enumerate() {
+            if let Some(c) = slot {
+                if c.name_len == name.len() && c.name[..c.name_len] == *name {
+                    c.ref_count += 1;
+                    return (i + 1) as u64;
+                }
             }
-        }
-
-        if ch.len() >= MAX_CHANNELS {
-            return u64::MAX;
         }
 
         let mut n = [0u8; NAME_LEN];
         n[..name.len()].copy_from_slice(name);
-        ch.push(Channel {
+        let channel = Channel {
             name: n,
             name_len: name.len(),
             queue: VecDeque::new(),
             recv_waiters: Vec::new(),
             send_waiters: Vec::new(),
             ref_count: 1,
-        });
+        };
+
+        // Reuse a freed slot before growing, so a create/close cycle does not walk the
+        // table off the MAX_CHANNELS ceiling.
+        if let Some(i) = ch.iter().position(|s| s.is_none()) {
+            ch[i] = Some(channel);
+            return (i + 1) as u64;
+        }
+        if ch.len() >= MAX_CHANNELS {
+            return u64::MAX;
+        }
+        ch.push(Some(channel));
         ch.len() as u64
     })
 }
@@ -89,12 +110,10 @@ pub fn try_send(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
         return SendResult::Error;
     }
     with_lock(|| {
-        let idx = channel_id as usize - 1;
         let ch = channels();
-        if idx >= ch.len() {
+        let Some(c) = slot(ch, channel_id) else {
             return SendResult::Error;
-        }
-        let c = &mut ch[idx];
+        };
         // Drop the oldest message instead of blocking the sender when the queue is full.
         // A hardware event publisher (e.g. ps2mouse.kkm) must never block: if it did, it
         // would stop draining the shared PS/2 controller, which then backs up with mouse
@@ -131,12 +150,10 @@ pub enum RecvResult {
 /// sleep forever). The caller just returns `BLOCK_TO_SCHEDULER` on `Block`.
 pub fn try_recv(channel_id: u64, buf: &mut [u8], pid: u64) -> RecvResult {
     with_lock(|| {
-        let idx = channel_id as usize - 1;
         let ch = channels();
-        if idx >= ch.len() {
+        let Some(c) = slot(ch, channel_id) else {
             return RecvResult::Error;
-        }
-        let c = &mut ch[idx];
+        };
         match c.queue.pop_front() {
             None => {
                 if pid != 0 {
@@ -166,12 +183,10 @@ pub fn try_recv(channel_id: u64, buf: &mut [u8], pid: u64) -> RecvResult {
 /// (e.g. the GUI compositor) can multiplex several sources in one loop.
 pub fn try_recv_nonblock(channel_id: u64, buf: &mut [u8]) -> RecvResult {
     with_lock(|| {
-        let idx = channel_id as usize - 1;
         let ch = channels();
-        if idx >= ch.len() {
+        let Some(c) = slot(ch, channel_id) else {
             return RecvResult::Error;
-        }
-        let c = &mut ch[idx];
+        };
         match c.queue.pop_front() {
             None => RecvResult::Block,
             Some(msg) => {
@@ -189,29 +204,30 @@ pub fn try_recv_nonblock(channel_id: u64, buf: &mut [u8]) -> RecvResult {
 
 pub fn add_send_waiter(channel_id: u64, pid: u64) {
     with_lock(|| {
-        let idx = channel_id as usize - 1;
         let ch = channels();
-        if idx < ch.len() {
-            ch[idx].send_waiters.push(pid);
+        if let Some(c) = slot(ch, channel_id) {
+            c.send_waiters.push(pid);
         }
     })
 }
 
 pub fn close(channel_id: u64) {
     with_lock(|| {
-        let idx = channel_id as usize - 1;
         let ch = channels();
-        if idx >= ch.len() {
+        let Some(c) = slot(ch, channel_id) else {
             return;
-        }
-        let c = &mut ch[idx];
+        };
         if c.ref_count > 1 {
             c.ref_count -= 1;
-        } else if c.queue.is_empty() {
-            ch.remove(idx);
-        } else {
+            return;
+        }
+        if !c.queue.is_empty() {
             // Messages still pending — keep channel alive so the receiver can open it later.
             c.ref_count = 0;
+            return;
         }
+        // Last reference and nothing queued: free the slot in place. The id is never
+        // reused for a different channel until a later open() claims this hole.
+        ch[channel_id as usize - 1] = None;
     })
 }
