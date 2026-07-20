@@ -46,15 +46,22 @@ fn cmd_list() {
     }
 }
 
-fn cmd_load(path: &[u8]) {
+fn cmd_load(arg: &[u8]) {
+    // Accept a bare module name ("ps2mouse") or a full path
+    // ("/modules/ps2mouse.kkm"). Only composing the path meant that the form the
+    // help text advertises produced "/modules//modules/ps2mouse.kkm.kkm" and failed.
     let mut full_path = alloc::vec::Vec::new();
-    full_path.extend_from_slice(b"/modules/");
-    full_path.extend_from_slice(path);
-    full_path.extend_from_slice(b".kkm");
+    if arg.first() == Some(&b'/') {
+        full_path.extend_from_slice(arg);
+    } else {
+        full_path.extend_from_slice(b"/modules/");
+        full_path.extend_from_slice(arg);
+    }
+    if !full_path.ends_with(b".kkm") {
+        full_path.extend_from_slice(b".kkm");
+    }
     let r = sys_module_load(&full_path);
-    if r == u64::MAX - 1 {
-        println!("Error: permission denied.");
-    } else if r == u64::MAX {
+    if r == u64::MAX {
         println!("Error: failed to load module.");
     } else {
         println!("Module loaded: id={}", r);
@@ -70,8 +77,6 @@ fn cmd_unload(id_str: &[u8]) {
     let r = sys_module_unload(id);
     if r == 0 {
         println!("Module {} unloading.", id);
-    } else if r == u64::MAX - 1 {
-        println!("Error: permission denied.");
     } else {
         println!("Error: module {} not found.", id);
     }
@@ -124,7 +129,7 @@ fn cmd_help() {
     println!();
     println!("Commands:");
     println!("  list             List loaded kernel modules");
-    println!("  load <path>      Load a kernel module (.kkm)");
+    println!("  load <name|path> Load a kernel module (e.g. ps2mouse)");
     println!("  unload <id>      Unload a module by id");
     println!("  help             Show this help");
 }
