@@ -18,6 +18,7 @@ edition = "2024"
 //!   ... qemu_qmp.rs -- start --keep-alive
 //!   ... qemu_qmp.rs -- text --text "help"
 //!   ... qemu_qmp.rs -- key  --key ret
+//!   ... qemu_qmp.rs -- key  --key ctrl-c        (chords: dash-separated qcodes)
 //!   ... qemu_qmp.rs -- screenshot --out screen.png
 //!   ... qemu_qmp.rs -- run  --text "ps" --out screen.png
 //!   ... qemu_qmp.rs -- stop
@@ -198,18 +199,52 @@ fn qmp_exec(cfg: &Cfg, json: &str) -> Result<(), String> {
     writer.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
     writer.write_all(b"\n").map_err(|e| e.to_string())?;
     sleep(Duration::from_millis(120));
-    // Drain whatever came back (not parsed).
+    // Report QMP errors instead of swallowing them: a rejected command (an unknown qcode,
+    // say) otherwise looks exactly like a successful one and the caller reports "Sent key".
     reader.get_ref().set_read_timeout(Some(Duration::from_millis(150))).ok();
-    let mut buf = [0u8; 2048];
-    let _ = reader.get_mut().read(&mut buf);
+    let mut buf = [0u8; 4096];
+    let n = reader.get_mut().read(&mut buf).unwrap_or(0);
+    let reply = String::from_utf8_lossy(&buf[..n]);
+    for line in reply.lines() {
+        if line.contains("\"error\"") {
+            let desc = line
+                .split("\"desc\":")
+                .nth(1)
+                .map(|s| s.trim().trim_start_matches('"'))
+                .and_then(|s| s.split('"').next())
+                .unwrap_or(line);
+            return Err(format!("QMP rejected the command: {desc}"));
+        }
+    }
     Ok(())
 }
 
-fn qmp_send_key(cfg: &Cfg, qcode: &str) -> Result<(), String> {
+// `key` takes either a bare qcode ("ret") or a dash-separated chord ("ctrl-c",
+// "shift-minus"). send-key presses every qcode in the array together, which is what a
+// chord means; passing "ctrl-c" through as a single qcode is not a valid key and QMP
+// rejects the whole command.
+fn qmp_send_key(cfg: &Cfg, key: &str) -> Result<(), String> {
+    let keys: Vec<String> = split_chord(key)
+        .iter()
+        .map(|k| format!("{{\"type\":\"qcode\",\"data\":\"{k}\"}}"))
+        .collect();
     let json = format!(
-        "{{\"execute\":\"send-key\",\"arguments\":{{\"keys\":[{{\"type\":\"qcode\",\"data\":\"{qcode}\"}}]}}}}"
+        "{{\"execute\":\"send-key\",\"arguments\":{{\"keys\":[{}]}}}}",
+        keys.join(",")
     );
     qmp_exec(cfg, &json)
+}
+
+// Split on '-' but keep a trailing lone '-' as the minus key, so both "ctrl-c" and the
+// literal "minus" spelled as "-" survive.
+fn split_chord(key: &str) -> Vec<String> {
+    if key == "-" {
+        return vec!["minus".to_string()];
+    }
+    key.split('-')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn qmp_send_text(cfg: &Cfg, text: &str) -> Result<(), String> {
@@ -218,10 +253,35 @@ fn qmp_send_text(cfg: &Cfg, text: &str) -> Result<(), String> {
             ' ' => "spc".to_string(),
             '/' => "slash".to_string(),
             '.' => "dot".to_string(),
+            ',' => "comma".to_string(),
+            ';' => "semicolon".to_string(),
+            '\'' => "apostrophe".to_string(),
+            '[' => "bracket_left".to_string(),
+            ']' => "bracket_right".to_string(),
+            '\\' => "backslash".to_string(),
+            '`' => "grave_accent".to_string(),
             '-' => "minus".to_string(),
             '_' => "shift-minus".to_string(),
             '=' => "equal".to_string(),
             '+' => "shift-equal".to_string(),
+            '|' => "shift-backslash".to_string(),
+            ':' => "shift-semicolon".to_string(),
+            '"' => "shift-apostrophe".to_string(),
+            '?' => "shift-slash".to_string(),
+            '<' => "shift-comma".to_string(),
+            '>' => "shift-dot".to_string(),
+            '~' => "shift-grave_accent".to_string(),
+            '!' => "shift-1".to_string(),
+            '@' => "shift-2".to_string(),
+            '#' => "shift-3".to_string(),
+            '$' => "shift-4".to_string(),
+            '%' => "shift-5".to_string(),
+            '^' => "shift-6".to_string(),
+            '&' => "shift-7".to_string(),
+            '*' => "shift-8".to_string(),
+            '(' => "shift-9".to_string(),
+            ')' => "shift-0".to_string(),
+            c if c.is_ascii_uppercase() => format!("shift-{}", c.to_ascii_lowercase()),
             c => c.to_string(),
         };
         qmp_send_key(cfg, &qcode)?;
