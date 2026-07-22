@@ -28,7 +28,7 @@ edition = "2024"
 //!        --after-wait N (2) --no-build --keep-alive --no-wait
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -198,25 +198,44 @@ fn qmp_exec(cfg: &Cfg, json: &str) -> Result<(), String> {
     reader.read_line(&mut line).map_err(|e| e.to_string())?; // cap response
     writer.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
     writer.write_all(b"\n").map_err(|e| e.to_string())?;
-    sleep(Duration::from_millis(120));
     // Report QMP errors instead of swallowing them: a rejected command (an unknown qcode,
     // say) otherwise looks exactly like a successful one and the caller reports "Sent key".
-    reader.get_ref().set_read_timeout(Some(Duration::from_millis(150))).ok();
-    let mut buf = [0u8; 4096];
-    let n = reader.get_mut().read(&mut buf).unwrap_or(0);
-    let reply = String::from_utf8_lossy(&buf[..n]);
-    for line in reply.lines() {
-        if line.contains("\"error\"") {
-            let desc = line
-                .split("\"desc\":")
-                .nth(1)
-                .map(|s| s.trim().trim_start_matches('"'))
-                .and_then(|s| s.split('"').next())
-                .unwrap_or(line);
-            return Err(format!("QMP rejected the command: {desc}"));
+    // QMP answers a command with exactly one {"return":...} or {"error":...} object, but
+    // asynchronous {"event":...} objects can be interleaved ahead of it, so read until the
+    // reply rather than scanning the whole buffer for the word "error" — an event that
+    // happens to carry that string is not our command failing.
+    reader.get_ref().set_read_timeout(Some(Duration::from_millis(400))).ok();
+    let deadline = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < deadline {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => break, // timed out: treat a silent QMP as success, as before
+        }
+        if line.contains("\"event\":") {
+            continue;
+        }
+        if line.contains("\"error\":") {
+            return Err(format!("QMP rejected the command: {}", qmp_error_desc(&line)));
+        }
+        if line.contains("\"return\":") {
+            return Ok(());
         }
     }
     Ok(())
+}
+
+// Pull "desc" out of {"error": {"class": "...", "desc": "..."}} without a JSON parser.
+// Falls back to the raw line so nothing is lost if the shape ever changes.
+fn qmp_error_desc(line: &str) -> String {
+    line.split("\"desc\":")
+        .nth(1)
+        .map(|s| s.trim().trim_start_matches('"'))
+        .and_then(|s| s.split('"').next())
+        .unwrap_or(line)
+        .trim()
+        .to_string()
 }
 
 // `key` takes either a bare qcode ("ret") or a dash-separated chord ("ctrl-c",
