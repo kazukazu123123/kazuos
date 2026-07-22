@@ -3,25 +3,13 @@
 include!("../../crates/user_rt/runtime.rs");
 // v3: per-core CPU + clean framebuffer hand-off
 
-const NAME_LEN:    usize = 32;
+const NAME_LEN:    usize = PROC_NAME_LEN;
 const MAX_PROCS:   usize = 25;
 const MAX_THREADS: usize = 64; // total threads tracked across all processes (for %CPU deltas)
 const MAX_TPP:     usize = 16; // threads enumerated per process
 const MAX_CPUS:    usize = 16;
 
-#[repr(C)]
-struct ProcessInfo {
-    pid: u64, state: u64,
-    image_name: [u8; NAME_LEN],
-    start_tsc: u64, entry: u64, stack_top: u64, step: u64,
-    cpu_ticks: u64, memory_bytes: u64,
-}
-
-const EMPTY_INFO: ProcessInfo = ProcessInfo {
-    pid: 0, state: 0, image_name: [0u8; NAME_LEN],
-    start_tsc: 0, entry: 0, stack_top: 0, step: 0,
-    cpu_ticks: 0, memory_bytes: 0,
-};
+const EMPTY_INFO: ProcessInfo = ProcessInfo::ZERO;
 
 #[repr(C)]
 struct ThreadInfo {
