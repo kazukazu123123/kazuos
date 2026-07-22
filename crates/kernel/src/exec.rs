@@ -50,10 +50,9 @@ pub fn spawn(path: &str) -> u64 {
 
 /// Spawn from user space with explicit stdin/stdout fds (inherited from caller's fd table).
 /// stdin_fd / stdout_fd = 0xFFFF means use console default.
-pub fn spawn_user_with_fds(path: &str, caller_pid: u64, stdin_fd: u16, stdout_fd: u16) -> u64 {
-    spawn_user_with_fds_and_args(path, &[], caller_pid, stdin_fd, stdout_fd)
-}
-
+///
+/// Returns a child that is still Sleeping: the caller owns any further fd setup and must
+/// call `process::set_ready(pid)` when it is done. See `spawn_user_process`.
 pub fn spawn_user_with_fds_and_args(path: &str, args: &[&[u8]], caller_pid: u64, stdin_fd: u16, stdout_fd: u16) -> u64 {
     let image = match crate::vfs::read_file(path) {
         Ok(data) => data,
@@ -86,10 +85,9 @@ pub fn spawn_user_with_fds_and_args(path: &str, args: &[&[u8]], caller_pid: u64,
 }
 
 /// Spawn from user space. Rejects driver binaries.
-pub fn spawn_user(path: &str) -> u64 {
-    spawn_user_with_args(path, &[])
-}
-
+///
+/// Returns a child that is still Sleeping: the caller installs its fds and then calls
+/// `process::set_ready(pid)`. See `spawn_user_process`.
 pub fn spawn_user_with_args(path: &str, args: &[&[u8]]) -> u64 {
     let image = match vfs::read_file(path) {
         Ok(data) => data,
@@ -108,7 +106,10 @@ pub fn spawn_module(path: &str) -> u64 {
     };
     let Some(kxe) = parse_kxe(&image) else { return 0; };
     if kxe.flags & KXE_FLAG_MODULE == 0 { return 0; }
-    spawn_kxe(path, kxe, &[], crate::process::PrivilegeLevel::Driver)
+    // Modules have no post-spawn fd setup, so make it runnable immediately.
+    let pid = spawn_kxe(path, kxe, &[], crate::process::PrivilegeLevel::Driver);
+    if pid != 0 { crate::process::set_ready(pid); }
+    pid
 }
 
 fn spawn_process(path: &str, args: &[&[u8]], privilege: crate::process::PrivilegeLevel) -> u64 {
@@ -119,7 +120,10 @@ fn spawn_process(path: &str, args: &[&[u8]], privilege: crate::process::Privileg
     let Some(kxe) = parse_kxe(&image) else {
         return 0;
     };
-    spawn_kxe(path, kxe, args, privilege)
+    // Kernel-side spawns (init, system services) need no post-spawn fd setup from a caller.
+    let pid = spawn_kxe(path, kxe, args, privilege);
+    if pid != 0 { crate::process::set_ready(pid); }
+    pid
 }
 
 struct KxeImage<'a> {

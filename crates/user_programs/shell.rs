@@ -18,21 +18,7 @@ static mut HISTORY_LENS: [usize; MAX_HISTORY] = [0usize; MAX_HISTORY];
 static mut HISTORY_COUNT: usize = 0; // total commands ever added (wraps into ring)
 
 const BUF_SIZE: usize = 256;
-const NAME_LEN: usize = 32;
-
-#[repr(C)]
-struct ProcessInfo {
-    pid: u64,
-    state: u64,
-    image_name: [u8; NAME_LEN],
-    start_tsc: u64,
-    entry: u64,
-    stack_top: u64,
-    step: u64,
-    cpu_ticks: u64,
-    memory_bytes: u64,
-    parent: u64,
-}
+const NAME_LEN: usize = PROC_NAME_LEN;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {

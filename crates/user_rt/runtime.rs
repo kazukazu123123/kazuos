@@ -463,6 +463,41 @@ pub fn sys_sleep(ms: u64) {
     }
 }
 
+pub const PROC_NAME_LEN: usize = 32;
+
+/// Layout written by `SYS_PROCESS_INFO`. Must match `process::ProcessInfo` in the kernel:
+/// the syscall validates the destination against the kernel-side size, so a short copy of
+/// this struct gets written past its end.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProcessInfo {
+    pub pid: u64,
+    pub state: u64,
+    pub image_name: [u8; PROC_NAME_LEN],
+    pub start_tsc: u64,
+    pub entry: u64,
+    pub stack_top: u64,
+    pub step: u64,
+    pub cpu_ticks: u64,
+    pub memory_bytes: u64,
+    pub parent: u64,
+}
+
+impl ProcessInfo {
+    pub const ZERO: ProcessInfo = ProcessInfo {
+        pid: 0,
+        state: 0,
+        image_name: [0u8; PROC_NAME_LEN],
+        start_tsc: 0,
+        entry: 0,
+        stack_top: 0,
+        step: 0,
+        cpu_ticks: 0,
+        memory_bytes: 0,
+        parent: 0,
+    };
+}
+
 pub fn sys_proc_info(pid: u64, out: *mut u64) -> u64 {
     let r: u64;
     unsafe {
