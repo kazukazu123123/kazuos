@@ -207,6 +207,19 @@ impl Console {
         }
     }
 
+    // Same vertical extent as erase_to_end_of_line, but only one cell wide.
+    fn clear_cell(&self, advance: f32) {
+        let x = self.cursor_x as usize;
+        let ascent = self.line_height - self.font_descent;
+        let top = (self.cursor_y - ascent).max(0.0) as usize;
+        let bottom = (self.cursor_y as usize + self.font_descent as usize + 1).min(self.fb.height);
+        let height = bottom.saturating_sub(top).max(1);
+        if x < self.fb.width {
+            let width = (advance as usize + 1).min(self.fb.width - x);
+            self.clear_rect(x, top, width, height);
+        }
+    }
+
     pub fn position(&self) -> CursorPosition {
         CursorPosition {
             x: self.cursor_x,
@@ -265,11 +278,22 @@ impl Console {
         self.cursor_y += self.line_height;
         let max_y = self.fb.height as f32;
         if self.cursor_y >= max_y {
-            let scroll_px = self.line_height as usize + 1;
+            // Scroll by whole pixels and move the cursor back by exactly that many. The
+            // two must agree: scrolling N pixels while backing the cursor off by the
+            // fractional line_height drifts the baseline a little on every scroll, which
+            // accumulates into overlapping rows for anything that redraws in place
+            // instead of clearing the screen (ktop).
+            let truncated = self.line_height as usize;
+            let scroll_px = if self.line_height > truncated as f32 {
+                truncated + 1
+            } else {
+                truncated
+            }
+            .max(1);
             unsafe {
                 self.fb.scroll_up(scroll_px);
             }
-            self.cursor_y -= self.line_height;
+            self.cursor_y -= scroll_px as f32;
         }
     }
 
@@ -287,6 +311,11 @@ impl Console {
         if self.cursor_y + self.font_descent >= self.fb.height as f32 {
             self.newline();
         }
+
+        // Cells are opaque: clear the cell before drawing into it. Glyphs are blended onto
+        // whatever is already there, so redrawing a cell in place (a TUI overwriting a
+        // digit that changed) would otherwise leave the union of the old and new glyphs.
+        self.clear_cell(advance);
 
         if let Some(ref font) = self.font {
             let scaled = font.as_scaled(self.font_size);

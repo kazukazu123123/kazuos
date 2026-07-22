@@ -74,6 +74,12 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut scroll: usize = 0;
     let mut total_rows: usize = 1; // actual list rows drawn last frame (for clamping)
 
+    // Clear once on entry. Frames below only home the cursor and erase per line, which
+    // covers a line's own rectangle — it cannot reach whatever was on screen before us,
+    // whose baselines sit at a different offset after the console scrolled during boot.
+    sys_write(b"\x1b[2J\x1b[H");
+    flush();
+
     loop {
         // --- sample ---
         let ker  = syscall(SYS_CPU_INFO, 2, 0, 0);
@@ -267,7 +273,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         write_u64((scroll + visible).min(row_idx) as u64);
         sys_write(b"/");
         write_u64(row_idx as u64);
-        sys_write(b"  [Up/Down] scroll  [Ctrl+C] quit\x1b[K\r\n");
+        // No trailing newline: the frame is exactly `rows` lines tall, so a newline on the
+        // last one would scroll the console every frame. Nothing here needs to scroll, and
+        // not scrolling keeps the frame pinned to the same rows that \x1b[H addresses.
+        sys_write(b"  [Up/Down] scroll  [Ctrl+C] quit\x1b[K");
 
         // Emit the whole frame in one syscall so it lands in the pipe as a unit and the
         // GUI terminal composites it in a single pass instead of painting it row by row.
