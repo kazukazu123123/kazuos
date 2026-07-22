@@ -108,7 +108,10 @@ pub fn spawn_module(path: &str) -> u64 {
     };
     let Some(kxe) = parse_kxe(&image) else { return 0; };
     if kxe.flags & KXE_FLAG_MODULE == 0 { return 0; }
-    spawn_kxe(path, kxe, &[], crate::process::PrivilegeLevel::Driver)
+    // Modules have no post-spawn fd setup, so make it runnable immediately.
+    let pid = spawn_kxe(path, kxe, &[], crate::process::PrivilegeLevel::Driver);
+    if pid != 0 { crate::process::set_ready(pid); }
+    pid
 }
 
 fn spawn_process(path: &str, args: &[&[u8]], privilege: crate::process::PrivilegeLevel) -> u64 {
@@ -119,7 +122,10 @@ fn spawn_process(path: &str, args: &[&[u8]], privilege: crate::process::Privileg
     let Some(kxe) = parse_kxe(&image) else {
         return 0;
     };
-    spawn_kxe(path, kxe, args, privilege)
+    // Kernel-side spawns (init, system services) need no post-spawn fd setup from a caller.
+    let pid = spawn_kxe(path, kxe, args, privilege);
+    if pid != 0 { crate::process::set_ready(pid); }
+    pid
 }
 
 struct KxeImage<'a> {
