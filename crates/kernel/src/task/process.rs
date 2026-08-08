@@ -499,6 +499,16 @@ pub fn send_sigint(pid: u64) {
     })
 }
 
+pub fn sigint_catches(pid: u64) -> bool {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (*PROCESSES.0.get())
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| p.sigint_catch)
+            .unwrap_or(false)
+    })
+}
+
 /// The "foreground" process for terminal signals (Ctrl+C): the leaf of the wait
 /// chain — a process that another process is blocked waiting on
 /// (`WaitTarget::Pid`) and that is not itself waiting on a child. With the

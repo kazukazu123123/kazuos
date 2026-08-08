@@ -325,9 +325,13 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         last_dx = dx;
         last_dy = dy;
 
-        // Update position, clamped to screen
-        let new_x = (mx as i32 + dx as i32).clamp(0, info.width  as i32 - 1) as u32;
-        let new_y = (my as i32 - dy as i32).clamp(0, info.height as i32 - 1) as u32; // Y inverted; allow reaching the top
+        // Update position in framebuffer pixel coordinates. The last valid pixel
+        // is dimension - 1; saturating_sub also keeps malformed zero-sized
+        // framebuffer metadata from wrapping the signed clamp bound.
+        let max_x = info.width.saturating_sub(1) as i32;
+        let max_y = info.height.saturating_sub(1) as i32;
+        let new_x = (mx as i32 + dx as i32).clamp(0, max_x) as u32;
+        let new_y = (my as i32 - dy as i32).clamp(0, max_y) as u32;
 
         // Move cursor
         restore_cross(&info);
