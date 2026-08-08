@@ -1,5 +1,6 @@
 pub mod acpi;
 pub mod beep;
+pub mod e1000;
 pub mod fb_owner;
 pub mod framebuffer;
 pub mod hda;

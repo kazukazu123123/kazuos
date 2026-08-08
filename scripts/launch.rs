@@ -90,6 +90,7 @@ fn run() -> Result<(), String> {
 
     let mut args: Vec<String> = vec![
         "-machine".into(), "q35,pcspk-audiodev=snd0".into(),
+        "-cpu".into(), "qemu64,+rdrand".into(),
         "-drive".into(), format!("if=pflash,format=raw,readonly=on,file={}", ovmf.display()),
     ];
     if ovmf_vars.is_some() {
@@ -100,7 +101,8 @@ fn run() -> Result<(), String> {
         "-drive".into(), format!("format=raw,file=fat:rw:{}", esp_dir.display()),
         "-boot".into(), "order=a,menu=on".into(),
         "-m".into(), "1G".into(),
-        "-net".into(), "none".into(),
+        "-netdev".into(), "user,id=net0".into(),
+        "-device".into(), "e1000,netdev=net0".into(),
         "-device".into(), "VGA".into(),
         "-audiodev".into(), format!("{audiodev_backend},id=snd0"),
         "-serial".into(), "stdio".into(),
