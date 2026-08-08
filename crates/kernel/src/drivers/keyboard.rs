@@ -217,13 +217,16 @@ pub(crate) unsafe fn poll() {
 
 unsafe fn push_byte(ch: u8) {
     unsafe {
-        if ch == 0x03 && crate::drivers::fb_owner::owner().is_none() {
-            // Console mode: Ctrl+C interrupts the text foreground process (the program
-            // the shell is waiting on). With a graphical owner, Ctrl+C is NOT a signal
-            // to the compositor — it falls through as an ordinary key so the focused
-            // app (e.g. a terminal) can forward it to its own child. Killing the
-            // framebuffer owner here would take the whole desktop down.
-            if let Some(pid) = crate::process::foreground_pid() {
+        if ch == 0x03 {
+            // In console mode Ctrl+C targets the foreground command. A graphical
+            // owner gets it only when it explicitly opted into SIGINT handling;
+            // otherwise it remains an input byte for apps such as a terminal.
+            let target = match crate::drivers::fb_owner::owner() {
+                Some(owner) if crate::process::sigint_catches(owner) => Some(owner),
+                Some(_) => None,
+                None => crate::process::foreground_pid(),
+            };
+            if let Some(pid) = target {
                 crate::process::send_sigint(pid);
                 return;
             }
