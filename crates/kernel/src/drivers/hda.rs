@@ -1,4 +1,3 @@
-use crate::devfs;
 use crate::drivers::pci::{self, ScanKind};
 use crate::pmm;
 use crate::util::SyncUnsafeCell;
@@ -965,7 +964,7 @@ unsafe fn flush_pcm_chunk(target: *mut i16, bytes: usize) {
 
 // ---- /dev/audio device interface ----
 
-static AUDIO_OPS: devfs::DeviceOps = devfs::DeviceOps {
+static AUDIO_OPS: crate::fs::devfs::DeviceOps = crate::fs::devfs::DeviceOps {
     open: audio_open,
     close: audio_close,
     read: audio_read,
@@ -1009,5 +1008,5 @@ fn audio_ioctl(_handle: u64, cmd: u64, arg: u64) -> i64 {
 }
 
 pub fn register_device() {
-    devfs::register("/dev/audio", &AUDIO_OPS);
+    crate::fs::devfs::register("/dev/audio", &AUDIO_OPS);
 }

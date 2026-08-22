@@ -130,5 +130,5 @@ unsafe fn write_info(out: *mut FbInfo) -> u64 {
         stride: p.stride,
         format: p.format,
     };
-    if crate::uaccess::write_value(out as u64, info) { 0 } else { u64::MAX }
+    if crate::memory::uaccess::write_value(out as u64, info) { 0 } else { u64::MAX }
 }

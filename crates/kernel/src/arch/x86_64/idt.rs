@@ -50,18 +50,18 @@ pub struct Idt {
 
 impl Idt {
     pub fn set_handler(&mut self, index: u8, handler: u64) {
-        self.entries[index as usize] = IdtEntry::new(handler, crate::gdt::KERNEL_CODE, 0, 0x8E);
+        self.entries[index as usize] = IdtEntry::new(handler, crate::arch::x86_64::gdt::KERNEL_CODE, 0, 0x8E);
     }
 
     pub fn set_handler_with_ist(&mut self, index: u8, handler: u64, ist: u8) {
-        self.entries[index as usize] = IdtEntry::new(handler, crate::gdt::KERNEL_CODE, ist, 0x8E);
+        self.entries[index as usize] = IdtEntry::new(handler, crate::arch::x86_64::gdt::KERNEL_CODE, ist, 0x8E);
     }
 
     /// Interrupt gate with DPL=3 (0xEE) clears IF during syscall handling
     /// so timer and keyboard interrupts cannot preempt the kernel, while
     /// still allowing the handler to be invoked from ring 3 via int 0x80.
     pub fn set_user_handler(&mut self, index: u8, handler: u64) {
-        self.entries[index as usize] = IdtEntry::new(handler, crate::gdt::KERNEL_CODE, 0, 0xEE);
+        self.entries[index as usize] = IdtEntry::new(handler, crate::arch::x86_64::gdt::KERNEL_CODE, 0, 0xEE);
     }
 
     pub fn load(&self) {

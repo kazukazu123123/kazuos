@@ -52,7 +52,7 @@ fn with_fs<R>(f: impl FnOnce(&mut Vec<Slot>) -> R) -> R {
 pub enum VfsNode {
     File { node: u32, generation: u32, len: usize },
     Dir,
-    Device(&'static crate::devfs::DeviceOps),
+    Device(&'static crate::fs::devfs::DeviceOps),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ fn ensure_parents(nodes: &mut Vec<Slot>, path: &str) {
 pub fn lookup(path: &str) -> Result<VfsNode, FsError> {
     validate_path(path)?;
     if path.starts_with("/dev/") {
-        if let Some(ops) = crate::devfs::lookup(path) {
+        if let Some(ops) = crate::fs::devfs::lookup(path) {
             return Ok(VfsNode::Device(ops));
         }
     }

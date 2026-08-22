@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use crate::util::SyncUnsafeCell;
-use crate::devfs::DeviceOps;
+use crate::fs::devfs::DeviceOps;
 
 // The fd table grows on demand (see alloc_fd / alloc_fd_at), so a process opens as
 // many fds as it needs — a compositor like the GUI holds ~2 per child terminal. This
@@ -155,8 +155,8 @@ pub fn close_all(pid: u64) {
 
 fn pipe_clone(entry: &FdEntry) {
     match *entry {
-        FdEntry::PipeWrite(id) => crate::pipe::clone_write(id),
-        FdEntry::PipeRead(id)  => crate::pipe::clone_read(id),
+        FdEntry::PipeWrite(id) => crate::fs::pipe::clone_write(id),
+        FdEntry::PipeRead(id)  => crate::fs::pipe::clone_read(id),
         _ => {}
     }
 }
@@ -165,10 +165,10 @@ fn close_entry(entry: FdEntry) {
     match entry {
         FdEntry::Device { ops, handle } => (ops.close)(handle),
         FdEntry::PipeWrite(id) => {
-            crate::pipe::close_write(id);
+            crate::fs::pipe::close_write(id);
             crate::process::notify_pipe_readers(id);
         }
-        FdEntry::PipeRead(id) => crate::pipe::close_read(id),
+        FdEntry::PipeRead(id) => crate::fs::pipe::close_read(id),
         _ => {}
     }
 }

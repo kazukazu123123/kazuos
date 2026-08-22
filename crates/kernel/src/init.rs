@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use crate::drivers::{ioapic, keyboard, lapic, pic};
 use crate::handlers::interrupts;
-use crate::{allocator, console, drivers, idt, platform, pmm, syscall, vmm};
+use crate::{allocator, console, drivers, pmm, syscall, vmm};
 use kazuos_shared::BootInfo;
 
 static mut VERBOSE: bool = false;
@@ -35,7 +35,7 @@ pub fn run(boot_info: &'static BootInfo) -> InitState {
         VERBOSE = boot_info.command_line().contains("verbose");
         HEARTBEAT_LOG = boot_info.command_line().contains("heartbeat");
     }
-    let platform = platform::Platform::detect();
+    let platform = crate::arch::x86_64::platform::Platform::detect();
     crate::drivers::serial::init();
     drivers::beep::off();
     allocator::init(boot_info.heap_start, boot_info.heap_size);
@@ -56,9 +56,9 @@ pub fn run(boot_info: &'static BootInfo) -> InitState {
     // Build the PCI device cache now, while we are still single-threaded (no APs, no user
     // processes), so the scan can never race concurrent PCI config access — which had made
     // `lspci` return a truncated/empty device list.
-    crate::user::build_pci_cache();
+    crate::syscall::runtime::build_pci_cache();
     unsafe {
-        crate::smp::detect_cpus(boot_info.rsdp);
+        crate::arch::x86_64::smp::detect_cpus(boot_info.rsdp);
     }
     InitState {
         tsc_per_ms: calibrate_tsc(boot_info),
@@ -146,7 +146,7 @@ fn init_memory(boot_info: &BootInfo) {
 
 fn init_idt() {
     unsafe {
-        idt::init(
+        crate::arch::x86_64::idt::init(
             interrupts::keyboard_handler_addr(),
             interrupts::timer_handler_addr(),
             syscall::handler_addr(),
@@ -208,7 +208,7 @@ fn init_acpi(rsdp: u64) -> InterruptConfig {
     config
 }
 
-fn init_interrupts(config: InterruptConfig, platform: platform::Platform, hda_irq: Option<u8>) {
+fn init_interrupts(config: InterruptConfig, platform: crate::arch::x86_64::platform::Platform, hda_irq: Option<u8>) {
     unsafe {
         pic::init();
         pic::mask_all();

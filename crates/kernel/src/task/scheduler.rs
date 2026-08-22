@@ -11,7 +11,7 @@ unsafe fn user_return_stack_top() -> u64 {
     unsafe { core::ptr::addr_of!(USER_RETURN_STACKS[idx]) as u64 + 16384 }
 }
 
-use crate::smp::{MAX_CPUS, current_cpu_index};
+use crate::arch::x86_64::smp::{MAX_CPUS, current_cpu_index};
 
 static CURRENT_USER_PID: SyncUnsafeCell<[Option<u64>; MAX_CPUS]> = SyncUnsafeCell::new([None; MAX_CPUS]);
 static CURRENT_USER_TID: SyncUnsafeCell<[Option<u64>; MAX_CPUS]> = SyncUnsafeCell::new([None; MAX_CPUS]);
@@ -189,10 +189,10 @@ pub unsafe fn setup_user_frame_on_temp_stack(ctx: crate::process::UserContext) -
         p.add(13).write(ctx.r14);
         p.add(14).write(ctx.r15);
         p.add(15).write(ctx.rip);
-        p.add(16).write(crate::gdt::USER_CODE as u64);
+        p.add(16).write(crate::arch::x86_64::gdt::USER_CODE as u64);
         p.add(17).write(ctx.rflags | 0x200);
         p.add(18).write(ctx.rsp);
-        p.add(19).write(crate::gdt::USER_DATA as u64);
+        p.add(19).write(crate::arch::x86_64::gdt::USER_DATA as u64);
     }
     frame_bottom
 }
@@ -218,10 +218,10 @@ pub unsafe fn setup_user_frame_for_timer_on_temp_stack(ctx: crate::process::User
         p.add(13).write(ctx.rcx);
         p.add(14).write(ctx.rax);
         p.add(15).write(ctx.rip);
-        p.add(16).write(crate::gdt::USER_CODE as u64);
+        p.add(16).write(crate::arch::x86_64::gdt::USER_CODE as u64);
         p.add(17).write(ctx.rflags | 0x200);
         p.add(18).write(ctx.rsp);
-        p.add(19).write(crate::gdt::USER_DATA as u64);
+        p.add(19).write(crate::arch::x86_64::gdt::USER_DATA as u64);
     }
     frame_bottom
 }
@@ -233,7 +233,7 @@ pub unsafe fn setup_user_frame_for_timer_on_temp_stack(ctx: crate::process::User
 pub unsafe fn setup_idle_frame_on_temp_stack() -> u64 {
     let stack_top = unsafe { user_return_stack_top() };
     let frame_bottom = stack_top - 160;
-    let mut idle_rsp = unsafe { *crate::user::kernel_return_stack_ptr() };
+    let mut idle_rsp = unsafe { *crate::syscall::context::kernel_return_stack_ptr() };
     if idle_rsp == 0 {
         idle_rsp = frame_bottom;
     }
@@ -243,10 +243,10 @@ pub unsafe fn setup_idle_frame_on_temp_stack() -> u64 {
             p.add(i).write(0);
         }
         p.add(15).write(idle_loop as *const () as usize as u64);
-        p.add(16).write(crate::gdt::KERNEL_CODE as u64);
+        p.add(16).write(crate::arch::x86_64::gdt::KERNEL_CODE as u64);
         p.add(17).write(0x200);
         p.add(18).write(idle_rsp);
-        p.add(19).write(crate::gdt::KERNEL_DATA as u64);
+        p.add(19).write(crate::arch::x86_64::gdt::KERNEL_DATA as u64);
     }
     frame_bottom
 }
@@ -272,8 +272,8 @@ pub unsafe fn restore_user_frame(frame_ptr: u64, ctx: crate::process::UserContex
         frame.rip = ctx.rip;
         frame.rsp = ctx.rsp;
         frame.rflags = ctx.rflags;
-        frame.cs = crate::gdt::USER_CODE as u64;
-        frame.ss = crate::gdt::USER_DATA as u64;
+        frame.cs = crate::arch::x86_64::gdt::USER_CODE as u64;
+        frame.ss = crate::arch::x86_64::gdt::USER_DATA as u64;
     }
 }
 
@@ -324,7 +324,7 @@ pub fn enter_next_process() -> ! {
             }
             set_current_user_tid(Some(next_tid));
             if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
-                crate::gdt::set_kernel_stack_top(top);
+                crate::arch::x86_64::gdt::set_kernel_stack_top(top);
             }
             crate::process::set_running(next_pid);
             core::arch::asm!(
@@ -362,7 +362,7 @@ pub fn enter_next_process() -> ! {
                     set_current_user_tid(None);
                 }
                 if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
-                    crate::gdt::set_kernel_stack_top(top);
+                    crate::arch::x86_64::gdt::set_kernel_stack_top(top);
                 }
                 crate::process::set_running(next_pid);
                 core::arch::asm!(
@@ -395,7 +395,7 @@ pub fn enter_next_process() -> ! {
             }
             set_current_user_tid(Some(next_tid));
             if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
-                crate::gdt::set_kernel_stack_top(top);
+                crate::arch::x86_64::gdt::set_kernel_stack_top(top);
             }
             crate::process::set_running(next_pid);
             // The per-CPU kernel return stack is the scheduler's restart point and
@@ -429,7 +429,7 @@ pub fn enter_next_process() -> ! {
                 "pop r15",
                 "iretq",
                 in("r11") temp_rsp,
-                in("rdx") crate::gdt::USER_DATA as u64,
+                in("rdx") crate::arch::x86_64::gdt::USER_DATA as u64,
                 options(noreturn),
             );
         }

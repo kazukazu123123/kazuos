@@ -1,5 +1,5 @@
 use crate::util::SyncUnsafeCell;
-use crate::{process, vfs};
+use crate::process;
 
 const KXE_MAGIC: &[u8; 4] = b"KXE\0";
 const USER_BASE: u64 = 0x0000_0080_0000_0000;
@@ -30,9 +30,9 @@ fn init_exit_handler() {
 }
 
 pub fn load_init(tsc_per_ms: u64) -> ! {
-    let _ = vfs::read_file("/bin/init.kxe").unwrap_or_else(|_| panic!("init not found"));
+    let _ = crate::fs::vfs::read_file("/bin/init.kxe").unwrap_or_else(|_| panic!("init not found"));
     unsafe {
-        crate::user::TSC_PER_MS = tsc_per_ms;
+        crate::syscall::context::TSC_PER_MS = tsc_per_ms;
     }
     crate::log_info!("init.kxe loaded");
     crate::scheduler::on_user_exit(init_exit_handler);
@@ -54,7 +54,7 @@ pub fn spawn(path: &str) -> u64 {
 /// Returns a child that is still Sleeping: the caller owns any further fd setup and must
 /// call `process::set_ready(pid)` when it is done. See `spawn_user_process`.
 pub fn spawn_user_with_fds_and_args(path: &str, args: &[&[u8]], caller_pid: u64, stdin_fd: u16, stdout_fd: u16) -> u64 {
-    let image = match crate::vfs::read_file(path) {
+    let image = match crate::fs::vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
     };
@@ -63,23 +63,23 @@ pub fn spawn_user_with_fds_and_args(path: &str, args: &[&[u8]], caller_pid: u64,
     if pid == 0 { return 0; }
 
     // fd 2 always = ConsoleOut
-    crate::fd::alloc_fd_at(pid, 2, crate::fd::FdEntry::ConsoleOut);
+    crate::fs::fd::alloc_fd_at(pid, 2, crate::fs::fd::FdEntry::ConsoleOut);
 
     // stdin (fd 0)
     let stdin_entry = if stdin_fd == 0xFFFF {
-        crate::fd::FdEntry::ConsoleIn
+        crate::fs::fd::FdEntry::ConsoleIn
     } else {
-        crate::fd::get_fd(caller_pid, stdin_fd as usize).unwrap_or(crate::fd::FdEntry::ConsoleIn)
+        crate::fs::fd::get_fd(caller_pid, stdin_fd as usize).unwrap_or(crate::fs::fd::FdEntry::ConsoleIn)
     };
-    crate::fd::alloc_fd_at(pid, 0, stdin_entry);
+    crate::fs::fd::alloc_fd_at(pid, 0, stdin_entry);
 
     // stdout (fd 1)
     let stdout_entry = if stdout_fd == 0xFFFF {
-        crate::fd::FdEntry::ConsoleOut
+        crate::fs::fd::FdEntry::ConsoleOut
     } else {
-        crate::fd::get_fd(caller_pid, stdout_fd as usize).unwrap_or(crate::fd::FdEntry::ConsoleOut)
+        crate::fs::fd::get_fd(caller_pid, stdout_fd as usize).unwrap_or(crate::fs::fd::FdEntry::ConsoleOut)
     };
-    crate::fd::alloc_fd_at(pid, 1, stdout_entry);
+    crate::fs::fd::alloc_fd_at(pid, 1, stdout_entry);
 
     pid
 }
@@ -89,7 +89,7 @@ pub fn spawn_user_with_fds_and_args(path: &str, args: &[&[u8]], caller_pid: u64,
 /// Returns a child that is still Sleeping: the caller installs its fds and then calls
 /// `process::set_ready(pid)`. See `spawn_user_process`.
 pub fn spawn_user_with_args(path: &str, args: &[&[u8]]) -> u64 {
-    let image = match vfs::read_file(path) {
+    let image = match crate::fs::vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
     };
@@ -100,7 +100,7 @@ pub fn spawn_user_with_args(path: &str, args: &[&[u8]]) -> u64 {
 }
 
 pub fn spawn_module(path: &str) -> u64 {
-    let image = match vfs::read_file(path) {
+    let image = match crate::fs::vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
     };
@@ -113,7 +113,7 @@ pub fn spawn_module(path: &str) -> u64 {
 }
 
 fn spawn_process(path: &str, args: &[&[u8]], privilege: crate::process::PrivilegeLevel) -> u64 {
-    let image = match vfs::read_file(path) {
+    let image = match crate::fs::vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
     };
