@@ -17,15 +17,15 @@ static mut KEYBOARD_POLLING: bool = false;
 // would make every CPU compute its delta from whichever CPU fired last, so the
 // accumulated ticks would sum to wall-clock time (1 CPU's worth) rather than the
 // real total across all CPUs — inflating reported %CPU on SMP.
-static LAST_TSC_PER_CPU: SyncUnsafeCell<[u64; crate::smp::MAX_CPUS]> =
-    SyncUnsafeCell::new([0; crate::smp::MAX_CPUS]);
+static LAST_TSC_PER_CPU: SyncUnsafeCell<[u64; crate::arch::x86_64::smp::MAX_CPUS]> =
+    SyncUnsafeCell::new([0; crate::arch::x86_64::smp::MAX_CPUS]);
 
-static KERNEL_TICKS_PER_CPU: SyncUnsafeCell<[u64; crate::smp::MAX_CPUS]> =
-    SyncUnsafeCell::new([0; crate::smp::MAX_CPUS]);
-static IDLE_TICKS_PER_CPU: SyncUnsafeCell<[u64; crate::smp::MAX_CPUS]> =
-    SyncUnsafeCell::new([0; crate::smp::MAX_CPUS]);
-static USER_TICKS_PER_CPU: SyncUnsafeCell<[u64; crate::smp::MAX_CPUS]> =
-    SyncUnsafeCell::new([0; crate::smp::MAX_CPUS]);
+static KERNEL_TICKS_PER_CPU: SyncUnsafeCell<[u64; crate::arch::x86_64::smp::MAX_CPUS]> =
+    SyncUnsafeCell::new([0; crate::arch::x86_64::smp::MAX_CPUS]);
+static IDLE_TICKS_PER_CPU: SyncUnsafeCell<[u64; crate::arch::x86_64::smp::MAX_CPUS]> =
+    SyncUnsafeCell::new([0; crate::arch::x86_64::smp::MAX_CPUS]);
+static USER_TICKS_PER_CPU: SyncUnsafeCell<[u64; crate::arch::x86_64::smp::MAX_CPUS]> =
+    SyncUnsafeCell::new([0; crate::arch::x86_64::smp::MAX_CPUS]);
 
 pub fn timer_ticks() -> u64 {
     unsafe { TIMER_TICKS }
@@ -88,7 +88,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         // install the target thread's CR3 themselves and are unaffected.
         let mut entry_cr3 = crate::vmm::active_cr3();
         let now = rdtsc();
-        let cpu = crate::smp::current_cpu_index();
+        let cpu = crate::arch::x86_64::smp::current_cpu_index();
         let last = (*LAST_TSC_PER_CPU.0.get())[cpu];
         let delta = if last == 0 { 0 } else { now.saturating_sub(last) };
         (*LAST_TSC_PER_CPU.0.get())[cpu] = now;
@@ -100,7 +100,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         // "idle" from "frozen" instead of guessing from raw serial silence.
         let hb_ticks = TIMER_TICKS;
         if hb_ticks % 4000 == 0 && crate::init::heartbeat_log() {
-            crate::serial_println!("HEARTBEAT ticks={} cpu={}", hb_ticks, crate::smp::current_cpu_index());
+            crate::serial_println!("HEARTBEAT ticks={} cpu={}", hb_ticks, crate::arch::x86_64::smp::current_cpu_index());
         }
         if delta != 0 {
             if let Some(pid) = crate::scheduler::current_user_pid() {
@@ -153,7 +153,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         if cs_ring == 3 && current_tid != 0 {
             if let Some(pid) = crate::scheduler::current_user_pid() {
                 if pid != 0 && crate::process::is_kill_pending(pid) {
-                    crate::user::set_exiting_pid_tmp(pid);
+                    crate::syscall::context::set_exiting_pid_tmp(pid);
                     crate::process::exit_current();
                     crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
                     entry_cr3 = crate::vmm::kernel_cr3();
@@ -209,7 +209,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         if cs_ring == 0
             && next_tid != current_tid
             && crate::task::thread::user_context(next_tid).is_some()
-            && *crate::user::kernel_return_stack_ptr() == 0
+            && *crate::syscall::context::kernel_return_stack_ptr() == 0
         {
             restore_entry_cr3(entry_cr3);
             return 0;
@@ -226,7 +226,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
                     crate::scheduler::set_current_user_tid(None);
                 }
                 if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
-                    crate::gdt::set_kernel_stack_top(top);
+                    crate::arch::x86_64::gdt::set_kernel_stack_top(top);
                 }
                 crate::process::set_running(next_pid);
                 return kernel_rsp;
@@ -238,7 +238,7 @@ pub extern "C" fn timer_handler_inner(saved_rsp: u64, cs_ring: u64) -> u64 {
         if let Some(ctx) = crate::task::thread::user_context(next_tid) {
             crate::scheduler::set_current_user_tid(Some(next_tid));
             if let Some(top) = crate::task::thread::kernel_stack_top(next_tid) {
-                crate::gdt::set_kernel_stack_top(top);
+                crate::arch::x86_64::gdt::set_kernel_stack_top(top);
             }
             crate::process::set_running(next_pid);
             if ctx.cr3 != 0 {

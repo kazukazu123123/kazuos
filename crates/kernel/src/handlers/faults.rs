@@ -1,6 +1,6 @@
 use core::arch::global_asm;
 
-use crate::{idt, util::pause};
+use crate::util::pause;
 
 #[repr(C)]
 pub struct FaultRegisters {
@@ -26,7 +26,7 @@ unsafe extern "C" fn fault_handler_inner(
     vector: u64,
     error_code: u64,
     registers: *const FaultRegisters,
-    stack_frame: *const idt::InterruptStackFrame,
+    stack_frame: *const crate::arch::x86_64::idt::InterruptStackFrame,
 ) -> ! {
     let frame = unsafe { &*stack_frame };
     let regs = unsafe { &*registers };
@@ -38,14 +38,14 @@ unsafe extern "C" fn fault_handler_inner(
         let pid = crate::scheduler::current_user_pid().unwrap_or(0);
         crate::log_error!(
             "USER FAULT: {} cpu={} tid={} pid={} vector={} error={:#x} rip={:#x}",
-            name, crate::smp::current_cpu_index(), crate::scheduler::current_user_tid().unwrap_or(0), pid, vector, error_code, frame.instruction_pointer
+            name, crate::arch::x86_64::smp::current_cpu_index(), crate::scheduler::current_user_tid().unwrap_or(0), pid, vector, error_code, frame.instruction_pointer
         );
         if pid != 0 {
             // Full teardown of the faulting process. The faulting thread is the
             // current one on this CPU, so freeing its address space here is safe.
             // (The old code only dropped the process record, leaking its threads
             // and page tables and letting a dead thread be rescheduled.)
-            crate::user::set_exiting_pid_tmp(pid);
+            crate::syscall::context::set_exiting_pid_tmp(pid);
             crate::task::process::exit_current();
         }
         crate::scheduler::enter_next_process();

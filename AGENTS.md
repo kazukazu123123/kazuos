@@ -60,6 +60,18 @@ Do not use plain `cargo check` for kernel validation because stable Rust fails o
 - Avoid heap allocation in low-level handlers, interrupt paths, allocator paths, and panic/alloc handlers.
 - Keep serial logging available for fault paths.
 
+
+## Rust Module Layout
+
+- Do not introduce new `mod.rs` files.
+- Use the Rust 2018+ module layout: `foo.rs` owns the module and `foo/bar.rs` contains submodules.
+- Existing `mod.rs` files may remain temporarily during migration, but new subsystems must not add them.
+- Prefer one obvious ownership file per subsystem (`task.rs`, `memory.rs`, `fs.rs`, `arch.rs`, etc.).
+- Module roots should primarily declare/re-export submodules and subsystem-level interfaces.
+- Architecture-specific CPU, interrupt, paging, context-switch, descriptor-table, and SMP details belong under `arch/<architecture>/`.
+- Architecture-independent code should not directly depend on x86_64-specific registers, GDT/IDT/APIC/TSS, or architecture-specific assembly.
+- Do not add a generic `legacy.rs` dumping ground; shared syscall bridge code belongs in `syscall/runtime.rs`.
+
 ## Module Layout
 
 ### `main.rs`

@@ -430,18 +430,18 @@ unsafe fn start_ap(apic_id: u8, pml4: u64, stack_top: u64) {
 
         // INIT (level-triggered)
         lapic::send_ipi(apic_id, 0, 0x0000C500);
-        crate::util::wait_ms(10, crate::user::TSC_PER_MS);
+        crate::util::wait_ms(10, crate::syscall::context::TSC_PER_MS);
 
         // SIPI
         let vector = (TRAMPOLINE_PHYS >> 12) as u8;
         lapic::send_ipi(apic_id, vector, 0x00004600);
-        crate::util::wait_ms(2, crate::user::TSC_PER_MS);
+        crate::util::wait_ms(2, crate::syscall::context::TSC_PER_MS);
 
         // Second SIPI
         lapic::send_ipi(apic_id, vector, 0x00004600);
 
         // Wait for AP to signal ready (with timeout)
-        let deadline = crate::util::rdtsc() + crate::user::TSC_PER_MS * 100;
+        let deadline = crate::util::rdtsc() + crate::syscall::context::TSC_PER_MS * 100;
         while crate::util::rdtsc() < deadline {
             if base.add(done_offset).read_volatile() != 0 {
                 crate::vserial_println!("SMP: AP apic_id={} started", apic_id);
@@ -493,11 +493,11 @@ extern "C" fn ap_main() -> ! {
     data.idle.store(true, core::sync::atomic::Ordering::Relaxed);
 
     unsafe {
-        crate::gdt::load_for_cpu(cpu_index);
+        crate::arch::x86_64::gdt::load_for_cpu(cpu_index);
         if let Some(top) = cpu_kernel_stack_top(cpu_index) {
-            crate::gdt::set_kernel_stack_top_for_cpu(top, cpu_index);
+            crate::arch::x86_64::gdt::set_kernel_stack_top_for_cpu(top, cpu_index);
         }
-        crate::idt::load_idt();
+        crate::arch::x86_64::idt::load_idt();
         lapic::set_timer(0x30, 0x20000);
     }
 
@@ -508,7 +508,7 @@ extern "C" fn ap_main() -> ! {
     // this CPU always unwind to a valid stack regardless of which entry path
     // first ran the thread.
     if let Some(top) = cpu_kernel_stack_top(cpu_index) {
-        crate::user::set_kernel_return_stack(top);
+        crate::syscall::context::set_kernel_return_stack(top);
     }
 
     crate::scheduler::enter_next_process();

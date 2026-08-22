@@ -30,7 +30,7 @@ const NCLASS: usize = 6;
 const CLASS_SIZES: [usize; NCLASS] = [64, 128, 256, 512, 1024, 2048];
 /// Max blocks held per size class per CPU before flushing back to the global pool.
 const CACHE_CAP: usize = 64;
-const MAX_CPUS: usize = crate::smp::MAX_CPUS;
+const MAX_CPUS: usize = crate::arch::x86_64::smp::MAX_CPUS;
 
 #[inline]
 fn align_up(v: usize, align: usize) -> usize {
@@ -181,7 +181,7 @@ pub fn init(heap_start: *mut u8, heap_size: usize) {
 impl KernelAllocator {
     #[inline]
     fn cpu(&self) -> usize {
-        let i = crate::smp::current_cpu_index();
+        let i = crate::arch::x86_64::smp::current_cpu_index();
         if i < MAX_CPUS { i } else { 0 }
     }
 }

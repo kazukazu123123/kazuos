@@ -1,3 +1,16 @@
+pub mod context;
+pub mod dispatch;
+pub mod runtime;
+pub mod console;
+pub mod process;
+pub mod memory;
+pub mod signals;
+pub mod ipc;
+pub mod fs;
+pub mod device;
+pub mod system;
+pub mod module;
+
 use core::arch::global_asm;
 
 static mut SYS_HANDLER: Option<extern "C" fn(u64, u64, u64, u64) -> u64> = None;
@@ -100,8 +113,8 @@ global_asm!(
     "    call {get_return_stack}",
     "    mov rsp, [rax]",
     "    jmp {block_fn}",
-    get_return_stack = sym crate::user::kernel_return_stack_ptr,
-    get_blocking_rsp_tmp = sym crate::user::blocking_rsp_tmp_ptr,
+    get_return_stack = sym crate::syscall::context::kernel_return_stack_ptr,
+    get_blocking_rsp_tmp = sym crate::syscall::context::blocking_rsp_tmp_ptr,
     return_fn = sym syscall_return_to_kernel,
     block_fn = sym syscall_block_fn,
 );
@@ -123,10 +136,10 @@ extern "C" fn syscall_block_fn() -> ! {
         core::arch::asm!(
             "mov ds, ax",
             "mov es, ax",
-            in("ax") crate::gdt::KERNEL_DATA,
+            in("ax") crate::arch::x86_64::gdt::KERNEL_DATA,
             options(nostack, preserves_flags),
         );
-        let blocking_rsp = crate::user::blocking_rsp_tmp();
+        let blocking_rsp = crate::syscall::context::blocking_rsp_tmp();
         // Save on the thread that actually blocked (current tid), not the process main
         // thread — otherwise a worker thread can't resume where it blocked.
         if let Some(tid) = crate::scheduler::current_user_tid() {
@@ -146,11 +159,11 @@ extern "C" fn syscall_return_to_kernel() -> ! {
         core::arch::asm!(
             "mov ds, ax",
             "mov es, ax",
-            in("ax") crate::gdt::KERNEL_DATA,
+            in("ax") crate::arch::x86_64::gdt::KERNEL_DATA,
             options(nostack, preserves_flags),
         );
-        let exiting_pid = crate::user::exiting_pid_tmp();
-        crate::user::set_exiting_pid_tmp(0);
+        let exiting_pid = crate::syscall::context::exiting_pid_tmp();
+        crate::syscall::context::set_exiting_pid_tmp(0);
         crate::scheduler::set_current_user_pid(None);
         if exiting_pid != 0 {
             crate::kmod::on_process_exit(exiting_pid);

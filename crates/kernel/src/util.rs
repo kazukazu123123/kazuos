@@ -95,7 +95,7 @@ impl ReentrantSpinLock {
     }
 
     pub fn lock(&self) {
-        let cpu = crate::smp::current_cpu_index();
+        let cpu = crate::arch::x86_64::smp::current_cpu_index();
         if self.owner.load(Ordering::Relaxed) == cpu && self.locked.load(Ordering::Relaxed) {
             self.depth.fetch_add(1, Ordering::Relaxed);
             return;

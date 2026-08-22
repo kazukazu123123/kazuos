@@ -179,7 +179,7 @@ pub fn create_kernel_thread(
         // removed: it counted the still-Running spawning thread (a coordinator that
         // immediately sleeps) as load on its CPU, so it skewed assignment and left some
         // cores idle while doubling up others.
-        let cpu_count = crate::smp::cpu_count().max(1);
+        let cpu_count = crate::arch::x86_64::smp::cpu_count().max(1);
         let assigned_cpu =
             NEXT_ASSIGN_CPU.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % cpu_count;
         crate::vserial_println!("THREAD: create tid={} pid={} assigned_cpu={}", tid, pid, assigned_cpu);
@@ -472,8 +472,8 @@ pub fn remove_thread(tid: u64) {
 // dealloc, and no other CPU can be on it. Keeping a stack stashed (still allocated)
 // until then also prevents its address being handed back out before we free it. At
 // most one stack per CPU stays un-reclaimed (freed by the next exit on that CPU).
-static PENDING_STACK_FREE: [AtomicU64; crate::smp::MAX_CPUS] =
-    [const { AtomicU64::new(0) }; crate::smp::MAX_CPUS];
+static PENDING_STACK_FREE: [AtomicU64; crate::arch::x86_64::smp::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::arch::x86_64::smp::MAX_CPUS];
 
 unsafe fn free_kernel_stack(stack_base: u64) {
     if stack_base == 0 {
@@ -488,7 +488,7 @@ unsafe fn free_kernel_stack(stack_base: u64) {
 /// stack. Call from a thread-exit path while still running on the exiting thread's
 /// stack — the freed stack is always a different, already-switched-off one.
 pub fn defer_free_kernel_stack(stack_base: u64) {
-    let cpu = crate::smp::current_cpu_index();
+    let cpu = crate::arch::x86_64::smp::current_cpu_index();
     let prev = PENDING_STACK_FREE[cpu].swap(stack_base, Ordering::AcqRel);
     unsafe { free_kernel_stack(prev) };
 }
@@ -791,13 +791,13 @@ pub fn notify_pipe_readers(pipe_id: u64) {
                         // meantime, this write would land in freed page tables. The walk
                         // reads physical addresses (identity-mapped in PML4[0]), so it is
                         // valid before the CR3 switch.
-                        if !crate::uaccess::validate_range_in(reader_cr3, buf_ptr, buf_len, true) {
+                        if !crate::memory::uaccess::validate_range_in(reader_cr3, buf_ptr, buf_len, true) {
                             continue;
                         }
                         let cur_cr3 = crate::vmm::active_cr3();
                         let switch = reader_cr3 != 0 && reader_cr3 != cur_cr3;
                         if switch { crate::vmm::switch_cr3(reader_cr3); }
-                        let n = crate::pipe::read_raw(pipe_id, buf_ptr, buf_len as usize);
+                        let n = crate::fs::pipe::read_raw(pipe_id, buf_ptr, buf_len as usize);
                         if switch { crate::vmm::switch_cr3(cur_cr3); }
                         // The reader may have been woken inside the window between marking
                         // itself Sleeping and the syscall stub committing its blocking_rsp

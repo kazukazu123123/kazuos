@@ -427,9 +427,9 @@ pub fn exit_current() {
             kill_children(pid);
             crate::drivers::fb_owner::release(pid);
             crate::scheduler::clear_current_user(pid);
-            crate::fd::close_all(pid);
-            crate::user::free_dma_for_pid(pid);
-            crate::user::free_heap_for_pid(pid);
+            crate::fs::fd::close_all(pid);
+            crate::syscall::runtime::free_dma_for_pid(pid);
+            crate::syscall::runtime::free_heap_for_pid(pid);
             if let Some(cr3) = user_cr3(pid) {
                 crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
                 crate::vmm::free_user_address_space(cr3);
@@ -437,7 +437,7 @@ pub fn exit_current() {
             // Return the image frames (code + stack) to the PMM. Must come after the
             // address space is torn down so nothing can still reach them through a
             // user mapping.
-            crate::exec::free_image_for_pid(pid);
+            crate::task::exec::free_image_for_pid(pid);
             remove_process(pid);
             wakeup_pid_waiters(pid);
             thread::defer_free_kernel_stack(stack_base);

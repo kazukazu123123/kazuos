@@ -73,7 +73,7 @@ pub fn tss_selector(cpu_index: usize) -> u16 {
 }
 
 pub fn set_kernel_stack_top(rsp0: u64) {
-    set_kernel_stack_top_for_cpu(rsp0, crate::smp::current_cpu_index());
+    set_kernel_stack_top_for_cpu(rsp0, crate::arch::x86_64::smp::current_cpu_index());
 }
 
 pub fn set_kernel_stack_top_for_cpu(rsp0: u64, cpu_index: usize) {
@@ -86,7 +86,7 @@ pub fn set_kernel_stack_top_for_cpu(rsp0: u64, cpu_index: usize) {
 
 /// Allow ring-3 access to a single I/O port via the IOPB on the current CPU.
 pub fn iopb_allow_port(port: u16) {
-    iopb_allow_port_for_cpu(port, crate::smp::current_cpu_index());
+    iopb_allow_port_for_cpu(port, crate::arch::x86_64::smp::current_cpu_index());
 }
 
 pub fn iopb_allow_port_for_cpu(port: u16, cpu_index: usize) {
