@@ -320,7 +320,7 @@ SYS_IPC_CLOSE(channel_id)                      // decrement ref count; destroyed
 
 ### Constraints
 
-- Max message size: 4096 bytes
+- Max message size: 8192 bytes
 - Max queued messages per channel: 8
 - Max open channels: 32
 - `SYS_IPC_SEND` blocks when the queue is full; unblocked when a receiver calls `SYS_IPC_RECV`

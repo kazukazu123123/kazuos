@@ -31,6 +31,8 @@ fn main() {
     println!("cargo:rerun-if-changed={}", syscall_numbers.display());
     println!("cargo:rerun-if-changed={}", user_rt_runtime.display());
     println!("cargo:rerun-if-changed={}", user_rt_module_runtime.display());
+    println!("cargo:rerun-if-changed={}", user_programs_dir.display());
+    println!("cargo:rerun-if-changed={}", user_modules_dir.display());
 
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let sysroot = get_sysroot(&rustc);
