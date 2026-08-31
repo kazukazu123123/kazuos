@@ -463,6 +463,90 @@ pub fn sys_sleep(ms: u64) {
     }
 }
 
+pub fn sys_ioctl(fd: u64, cmd: u64, arg: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IOCTL => r,
+            in("rdi") fd,
+            in("rsi") cmd,
+            in("rdx") arg,
+        );
+    }
+    r
+}
+
+pub fn sys_ipc_open(name: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_OPEN => r,
+            in("rdi") name.as_ptr(),
+            in("rsi") name.len(),
+            in("rdx") 0u64,
+        );
+    }
+    r
+}
+
+pub fn sys_ipc_send(channel: u64, data: &[u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_SEND => r,
+            in("rdi") channel,
+            in("rsi") data.as_ptr(),
+            in("rdx") data.len(),
+        );
+    }
+    r
+}
+
+pub fn sys_ipc_recv(channel: u64, buf: &mut [u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_RECV => r,
+            in("rdi") channel,
+            in("rsi") buf.as_mut_ptr(),
+            in("rdx") buf.len(),
+        );
+    }
+    r
+}
+
+pub fn sys_ipc_try_recv(channel: u64, buf: &mut [u8]) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_TRY_RECV => r,
+            in("rdi") channel,
+            in("rsi") buf.as_mut_ptr(),
+            in("rdx") buf.len(),
+        );
+    }
+    r
+}
+
+pub fn sys_ipc_close(channel: u64) -> u64 {
+    let r: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_IPC_CLOSE => r,
+            in("rdi") channel,
+            in("rsi") 0,
+            in("rdx") 0,
+        );
+    }
+    r
+}
+
 pub const PROC_NAME_LEN: usize = 32;
 
 /// Layout written by `SYS_PROCESS_INFO`. Must match `process::ProcessInfo` in the kernel:
