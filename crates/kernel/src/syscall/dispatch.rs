@@ -29,7 +29,7 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         | SYS_THREAD_JOIN
         | SYS_THREAD_NEXT
         | SYS_THREAD_INFO
-        | SYS_KILL
+        | SYS_SIGKILL
         | SYS_SIGINT_FG
         | SYS_WAIT
         | SYS_PROCESS_INFO
@@ -39,7 +39,8 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         | SYS_HEAP_ALLOC
         | SYS_HEAP_FREE => crate::syscall::memory::handle(number, arg0, arg1, arg2),
         SYS_SIGNAL_CATCH
-        | SYS_SIGNAL_CHECK => crate::syscall::signals::handle(number, arg0, arg1, arg2),
+        | SYS_SIGNAL_CHECK
+        | SYS_SIGTERM => crate::syscall::signals::handle(number, arg0, arg1, arg2),
         SYS_IPC_OPEN
         | SYS_IPC_SEND
         | SYS_IPC_RECV

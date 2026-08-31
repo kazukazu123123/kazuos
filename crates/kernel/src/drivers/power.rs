@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use crate::util::{inb, inw, outb, outw, pause};
 
 const PWRBTN_BIT: u16 = 1 << 8;
@@ -73,6 +75,35 @@ pub fn handle_power_button() {
             }
         }
     }
+}
+
+static SHUTDOWN_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn stop_processes() {
+    crate::process::shutdown_sigterm_all();
+    let deadline = crate::handlers::interrupts::timer_ticks().saturating_add(100);
+    while !crate::process::shutdown_complete() && crate::handlers::interrupts::timer_ticks() < deadline {
+        pause();
+    }
+    if !crate::process::shutdown_complete() {
+        crate::process::shutdown_sigkill_all();
+        let deadline = crate::handlers::interrupts::timer_ticks().saturating_add(100);
+        while !crate::process::shutdown_complete() && crate::handlers::interrupts::timer_ticks() < deadline {
+            pause();
+        }
+    }
+}
+
+pub fn begin_shutdown() -> ! {
+    if SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) { loop { pause(); } }
+    stop_processes();
+    shutdown()
+}
+
+pub fn begin_reboot() -> ! {
+    if SHUTDOWN_STARTED.swap(true, Ordering::SeqCst) { loop { pause(); } }
+    stop_processes();
+    reboot()
 }
 
 pub fn shutdown() -> ! {

@@ -434,7 +434,7 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
     // reading by now (it exited), so killing cmd1 here never truncates output. A no-op if
     // cmd1 already exited.
     if pid1 != 0 && pid1 != 1 && pid1 != u64::MAX {
-        syscall1(SYS_KILL, pid1);
+        syscall1(SYS_SIGKILL, pid1);
     }
 }
 
