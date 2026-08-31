@@ -46,7 +46,7 @@ pub(crate) fn handle(number: u64, arg0: u64, arg1: u64, arg2: u64) -> u64 {
                     u64::MAX
                 }
             }
-            SYS_KILL => { process::kill_pid(arg0); 0 }
+            SYS_SIGKILL => { process::kill_pid(arg0); 0 }
             SYS_SIGINT_FG => {
                 let leaf = process::foreground_leaf(arg0);
                 if leaf != 0 && leaf != arg0 { process::send_sigint(leaf); 1 } else { 0 }

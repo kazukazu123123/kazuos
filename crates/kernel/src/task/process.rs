@@ -62,6 +62,8 @@ pub(crate) struct Process {
     background: bool,
     pub(crate) sigint_catch: bool,
     pub(crate) sigint_pending: bool,
+    pub(crate) sigterm_catch: bool,
+    pub(crate) sigterm_pending: bool,
     // Set when a remote agent requested this process die while its thread was
     // still Running on some CPU. We cannot free its address space out from under
     // a running thread (SMP use-after-free), so the thread self-exits the next
@@ -134,6 +136,8 @@ fn kernel_process() -> Process {
         background: false,
         sigint_catch: false,
         sigint_pending: false,
+        sigterm_catch: false,
+        sigterm_pending: false,
         kill_pending: false,
         parent: 0,
         term_cols: 0,
@@ -173,6 +177,8 @@ fn create_process(image_name: &str, privilege: PrivilegeLevel, main_tid: u64) ->
             background: false,
             sigint_catch: false,
             sigint_pending: false,
+            sigterm_catch: false,
+            sigterm_pending: false,
             kill_pending: false,
             parent: 0,
             term_cols: 0,
@@ -558,24 +564,37 @@ pub fn send_module_exit(pid: u64) {
     })
 }
 
-pub fn sigint_set_catch(pid: u64, catch: bool) {
+pub fn signal_set_catch(pid: u64, mask: u64) {
     crate::task::thread::with_threads_lock(|| unsafe {
         let processes = &mut *PROCESSES.0.get();
         if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
-            p.sigint_catch = catch;
+            p.sigint_catch = mask & kazuos_abi::SIGNAL_SIGINT != 0;
+            p.sigterm_catch = mask & kazuos_abi::SIGNAL_SIGTERM != 0;
         }
     })
 }
 
-pub fn sigint_check_and_clear(pid: u64) -> bool {
+pub fn signal_check_and_clear(pid: u64) -> u64 {
     crate::task::thread::with_threads_lock(|| unsafe {
         let processes = &mut *PROCESSES.0.get();
         if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
-            let pending = p.sigint_pending;
+            let mut pending = 0;
+            if p.sigint_pending { pending |= kazuos_abi::SIGNAL_SIGINT; }
+            if p.sigterm_pending { pending |= kazuos_abi::SIGNAL_SIGTERM; }
             p.sigint_pending = false;
-            return pending;
+            p.sigterm_pending = false;
+            pending
+        } else { 0 }
+    })
+}
+
+pub fn send_sigterm(pid: u64) {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        let processes = &mut *PROCESSES.0.get();
+        if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
+            if p.sigterm_catch { p.sigterm_pending = true; } else { p.kill_pending = true; }
+            if let Some(tid) = p.main_tid { thread::set_ready(tid); }
         }
-        false
     })
 }
 
@@ -692,6 +711,32 @@ fn kill_children(pid: u64) {
     for child in children {
         kill_pid(child);
     }
+}
+
+pub fn shutdown_sigterm_all() {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        for p in (*PROCESSES.0.get()).iter_mut() {
+            if p.pid == 0 { continue; }
+            if p.sigterm_catch { p.sigterm_pending = true; } else { p.kill_pending = true; }
+            if let Some(tid) = p.main_tid { thread::set_ready(tid); }
+        }
+    })
+}
+
+pub fn shutdown_sigkill_all() {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        for p in (*PROCESSES.0.get()).iter_mut() {
+            if p.pid == 0 { continue; }
+            p.kill_pending = true;
+            if let Some(tid) = p.main_tid { thread::set_ready(tid); }
+        }
+    })
+}
+
+pub fn shutdown_complete() -> bool {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (*PROCESSES.0.get()).iter().all(|p| p.pid == 0 || matches!(p.state, ProcessState::Empty | ProcessState::Exited))
+    })
 }
 
 pub fn kill_pid(pid: u64) {

@@ -266,7 +266,7 @@ pub fn sys_kill(pid: u64) -> u64 {
     unsafe {
         core::arch::asm!(
             "int 0x80",
-            inlateout("rax") SYS_KILL => r,
+            inlateout("rax") SYS_SIGKILL => r,
             in("rdi") pid,
             in("rsi") 0,
             in("rdx") 0,

@@ -20,8 +20,8 @@ pub(crate) fn handle(number: u64, arg0: u64, arg1: u64, arg2: u64) -> u64 {
                 10 => crate::handlers::interrupts::user_cpu_ticks_for_cpu(arg1 as usize),
                 pid => process::cpu_ticks(pid).unwrap_or(u64::MAX),
             },
-            SYS_SHUTDOWN => crate::drivers::power::shutdown(),
-            SYS_REBOOT => crate::drivers::power::reboot(),
+            SYS_SHUTDOWN => crate::drivers::power::begin_shutdown(),
+            SYS_REBOOT => crate::drivers::power::begin_reboot(),
             SYS_READDIR => sys_readdir(arg0, arg1, arg2),
 
                 _ => u64::MAX,
