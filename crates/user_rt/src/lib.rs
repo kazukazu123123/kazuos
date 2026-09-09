@@ -179,6 +179,40 @@ pub fn sys_heap_free(ptr: u64) -> u64 {
     r
 }
 
+pub fn sys_shm_create(size: u64) -> u64 {
+    shm_syscall(SYS_SHM_CREATE, size, 0)
+}
+
+pub fn sys_shm_grant(id: u64, pid: u64) -> u64 {
+    shm_syscall(SYS_SHM_GRANT, id, pid)
+}
+
+pub fn sys_shm_map(id: u64) -> u64 {
+    shm_syscall(SYS_SHM_MAP, id, 0)
+}
+
+pub fn sys_shm_unmap(id: u64) -> u64 {
+    shm_syscall(SYS_SHM_UNMAP, id, 0)
+}
+
+pub fn sys_shm_close(id: u64) -> u64 {
+    shm_syscall(SYS_SHM_CLOSE, id, 0)
+}
+
+fn shm_syscall(number: u64, arg0: u64, arg1: u64) -> u64 {
+    let result: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number => result,
+            in("rdi") arg0,
+            in("rsi") arg1,
+            in("rdx") 0,
+        );
+    }
+    result
+}
+
 pub fn sys_sleep(ms: u64) {
     unsafe {
         core::arch::asm!(

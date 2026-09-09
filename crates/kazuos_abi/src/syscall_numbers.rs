@@ -89,6 +89,13 @@ pub const SYS_RMDIR:  u64 = 57; // remove an empty directory
 // Lets a terminal interrupt the command its shell is currently waiting on.
 pub const SYS_SIGINT_FG: u64 = 58;
 
+// Shared memory
+pub const SYS_SHM_CREATE: u64 = 59;
+pub const SYS_SHM_GRANT:  u64 = 60;
+pub const SYS_SHM_MAP:    u64 = 61;
+pub const SYS_SHM_UNMAP:  u64 = 62;
+pub const SYS_SHM_CLOSE:  u64 = 63;
+
 // SYS_EXEC stdio pack: bits[0..16] = stdin fd, bits[16..32] = stdout fd (0xFFFF on either
 // = console default). When this bit is also set, the child additionally gets fd 3 as a
 // controlling-terminal handle — a dup of the *caller's* fd 0 (the shell's keyboard source:

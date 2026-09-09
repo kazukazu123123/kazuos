@@ -232,6 +232,26 @@ pub fn sys_heap_free(ptr: u64) -> u64 {
     r
 }
 
+pub fn sys_shm_create(size: u64) -> u64 {
+    syscall(SYS_SHM_CREATE, size, 0, 0)
+}
+
+pub fn sys_shm_grant(id: u64, pid: u64) -> u64 {
+    syscall(SYS_SHM_GRANT, id, pid, 0)
+}
+
+pub fn sys_shm_map(id: u64) -> u64 {
+    syscall(SYS_SHM_MAP, id, 0, 0)
+}
+
+pub fn sys_shm_unmap(id: u64) -> u64 {
+    syscall(SYS_SHM_UNMAP, id, 0, 0)
+}
+
+pub fn sys_shm_close(id: u64) -> u64 {
+    syscall(SYS_SHM_CLOSE, id, 0, 0)
+}
+
 /// Load a kernel module by path. Returns module_id on success, u64::MAX on failure.
 pub fn sys_module_load(path: &[u8]) -> u64 {
     let r: u64;

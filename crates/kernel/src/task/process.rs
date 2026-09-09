@@ -437,6 +437,7 @@ pub fn exit_current() {
             crate::syscall::runtime::free_dma_for_pid(pid);
             crate::syscall::runtime::free_heap_for_pid(pid);
             if let Some(cr3) = user_cr3(pid) {
+                crate::memory::shm::cleanup_pid(pid, cr3);
                 crate::vmm::switch_cr3(crate::vmm::kernel_cr3());
                 crate::vmm::free_user_address_space(cr3);
             }
@@ -975,6 +976,15 @@ pub fn is_background(pid: u64) -> bool {
             .find(|p| p.pid == pid)
             .map(|p| p.background)
             .unwrap_or(false)
+    })
+}
+
+pub fn is_live(pid: u64) -> bool {
+    crate::task::thread::with_threads_lock(|| unsafe {
+        (*PROCESSES.0.get()).iter().any(|process| {
+            process.pid == pid
+                && matches!(process.state, ProcessState::Ready | ProcessState::Running | ProcessState::Sleeping)
+        })
     })
 }
 

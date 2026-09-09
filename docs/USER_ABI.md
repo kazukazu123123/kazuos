@@ -32,49 +32,59 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `12` | `SYS_THREAD_JOIN` | `arg0 = tid` | blocks until that thread exits; `0` if already exited |
 | `13` | `SYS_THREAD_NEXT` | `arg0 = pid`, `arg1 = previous tid` (0 to start) | next tid `>` arg1 of that pid, or `u64::MAX` if none |
 | `14` | `SYS_THREAD_INFO` | `arg0 = tid`, `arg1 = *mut ThreadInfo` | `0` on success; `u64::MAX` if no such tid |
-| `15` | `SYS_KILL` | `arg0 = pid` | `0` |
-| `16` | `SYS_WAIT` | `arg0 = pid` | blocks until target exits; returns `1` |
-| `17` | `SYS_PROCESS_INFO` | `arg0 = selector`, `arg1 = buffer` | selector-dependent (see below) |
-| `18` | `SYS_PROCESS_NEXT` | `arg0 = previous pid` | next pid, or `u64::MAX` if none |
-| `19` | `SYS_SLEEP` | `arg0 = duration`, `arg1 = unit: `SLEEP_UNIT_MS`(0) / `SLEEP_UNIT_US`(1) / `SLEEP_UNIT_TICK`(2)` | `0` after blocking |
-| `20` | `SYS_MEM_INFO` | none | `(total_kib << 32) \| used_kib`, or `0` |
-| `21` | `SYS_HEAP_ALLOC` | `arg0 = size` | user VA (page-aligned, zeroed), or `u64::MAX` on error |
-| `22` | `SYS_HEAP_FREE` | `arg0 = VA from SYS_HEAP_ALLOC` | `0` on success; `u64::MAX` on error |
-| `23` | `SYS_SIGNAL_CATCH` | `arg0 = 1 to catch, 0 to reset` | `0` |
-| `24` | `SYS_SIGNAL_CHECK` | none | `1` if Ctrl+C since last check, else `0` |
-| `25` | `SYS_IPC_OPEN` | `arg0 = name ptr`, `arg1 = name len` | channel id (1-based), or `u64::MAX` on error |
-| `26` | `SYS_IPC_SEND` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | `0` on success; blocks if full; `u64::MAX` on error |
-| `27` | `SYS_IPC_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written; blocks; `u64::MAX` on error |
-| `28` | `SYS_IPC_TRY_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, `0` if empty (non-blocking), `u64::MAX` on error |
-| `29` | `SYS_IPC_CLOSE` | `arg0 = channel id` | `0` |
-| `30` | `SYS_OPEN` | `arg0 = path ptr`, `arg1 = path len` | fd (1-based), or `u64::MAX` on error |
-| `31` | `SYS_CLOSE` | `arg0 = fd` | `0` |
-| `32` | `SYS_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, or `u64::MAX` on error |
-| `33` | `SYS_TRY_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, `0` = would block, `u64::MAX` = EOF/error (non-blocking) |
-| `34` | `SYS_WRITE` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, or `u64::MAX` on error |
-| `35` | `SYS_IOCTL` | `arg0 = fd`, `arg1 = request`, `arg2 = arg` | device-specific, or `u64::MAX` |
-| `36` | `SYS_PIPE` | `arg0 = *mut [u64; 2]` (filled with `[read_fd, write_fd]`) | `0` on success; `u64::MAX` on error |
-| `37` | `SYS_PCI_INFO` | `arg0 = index`, `arg1 = *mut PciDeviceInfo` | count, or `u64::MAX` on error |
-| `38` | `SYS_IOPORT_REQUEST` | `arg0 = port`, `arg1 = count` | `0` (driver only) |
-| `39` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks until the IRQ fires; `u64::MAX` if interrupted (driver only) |
-| `40` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA; `u64::MAX` on error (driver only) |
-| `41` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
-| `42` | `SYS_PCI_BAR_MAP` | `arg0 = BDF ((bus << 16) \| (dev << 8) \| func)`, `arg1 = BAR index (0-5)` | user VA on success; `u64::MAX` on error (driver only) |
-| `43` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
-| `44` | `SYS_KEYBOARD_POLL` | none (args ignored) | next key event word, or `0` if none (non-blocking) |
-| `45` | `SYS_CPU_INFO` | `arg0 = selector`, `arg1 = per-cpu index when noted` | selector-dependent (see below) |
-| `46` | `SYS_SHUTDOWN` | none | does not return |
-| `47` | `SYS_REBOOT` | none | does not return |
-| `48` | `SYS_READDIR` | `arg0 = path ptr` (or 0 for `/`), `arg1 = path len`, `arg2 = caller buffer` | entry count, or `u64::MAX` on error |
-| `49` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
-| `50` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
-| `51` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count (48-byte entries) |
-| `52` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
-| `53` | `SYS_CREATE` | `arg0 = path ptr`, `arg1 = path len` | fd (RW) on success; `u64::MAX` on error |
-| `54` | `SYS_UNLINK` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
-| `55` | `SYS_MKDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
-| `56` | `SYS_RMDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
-| `57` | `SYS_SIGINT_FG` | `arg0 = pid` | `1` if a foreground descendant was signaled, `0` if `arg0` is itself the wait-chain leaf |
+| `15` | `SYS_SIGKILL` | `arg0 = pid` | `0` |
+| `16` | `SYS_SIGTERM` | `arg0 = pid` | `0` |
+| `17` | `SYS_WAIT` | `arg0 = pid` | blocks until target exits; returns `1` |
+| `18` | `SYS_PROCESS_INFO` | `arg0 = selector`, `arg1 = buffer` | selector-dependent (see below) |
+| `19` | `SYS_PROCESS_NEXT` | `arg0 = previous pid` | next pid, or `u64::MAX` if none |
+| `20` | `SYS_SLEEP` | `arg0 = duration`, `arg1 = unit: SLEEP_UNIT_MS (0), SLEEP_UNIT_US (1), or SLEEP_UNIT_TICK (2)` | `0` after blocking |
+| `21` | `SYS_MEM_INFO` | none | `(total_kib << 32) \| used_kib`, or `0` |
+| `22` | `SYS_HEAP_ALLOC` | `arg0 = size` | user VA (page-aligned, zeroed), or `u64::MAX` on error |
+| `23` | `SYS_HEAP_FREE` | `arg0 = VA from SYS_HEAP_ALLOC` | `0` on success; `u64::MAX` on error |
+| `24` | `SYS_SIGNAL_CATCH` | `arg0 = signal` | `0` |
+| `25` | `SYS_SIGNAL_CHECK` | none | pending signal, or `0` |
+| `26` | `SYS_IPC_OPEN` | `arg0 = name ptr`, `arg1 = name len` | channel id (1-based), or `u64::MAX` on error |
+| `27` | `SYS_IPC_SEND` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | `0` on success; `u64::MAX` on error |
+| `28` | `SYS_IPC_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written; blocks; `u64::MAX` on error |
+| `29` | `SYS_IPC_TRY_RECV` | `arg0 = channel id`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, `0` if empty, or `u64::MAX` on error |
+| `30` | `SYS_IPC_CLOSE` | `arg0 = channel id` | `0` |
+| `31` | `SYS_OPEN` | `arg0 = path ptr`, `arg1 = path len` | fd, or `u64::MAX` on error |
+| `32` | `SYS_CLOSE` | `arg0 = fd` | `0` |
+| `33` | `SYS_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, or `u64::MAX` on error |
+| `34` | `SYS_TRY_READ` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes read, `0` if empty, or `u64::MAX` on EOF/error |
+| `35` | `SYS_WRITE` | `arg0 = fd`, `arg1 = buf ptr`, `arg2 = buf len` | bytes written, or `u64::MAX` on error |
+| `36` | `SYS_IOCTL` | `arg0 = fd`, `arg1 = request`, `arg2 = arg` | device-specific, or `u64::MAX` |
+| `37` | `SYS_PIPE` | `arg0 = *mut [u64; 2]` | `0` on success; `u64::MAX` on error |
+| `38` | `SYS_PCI_INFO` | `arg0 = index`, `arg1 = *mut PciDeviceInfo` | count, or `u64::MAX` on error |
+| `39` | `SYS_IOPORT_REQUEST` | `arg0 = port`, `arg1 = count` | `0` (driver only) |
+| `40` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks until IRQ; `u64::MAX` if interrupted (driver only) |
+| `41` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA, or `u64::MAX` on error (driver only) |
+| `42` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
+| `43` | `SYS_PCI_BAR_MAP` | `arg0 = BDF`, `arg1 = BAR index` | user VA, or `u64::MAX` on error (driver only) |
+| `44` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
+| `45` | `SYS_KEYBOARD_POLL` | none | next key event word, or `0` if none |
+| `46` | `SYS_CPU_INFO` | `arg0 = selector`, `arg1 = per-CPU index when noted` | selector-dependent |
+| `47` | `SYS_SHUTDOWN` | none | does not return |
+| `48` | `SYS_REBOOT` | none | does not return |
+| `49` | `SYS_READDIR` | `arg0 = path ptr`, `arg1 = path len`, `arg2 = caller buffer` | entry count, or `u64::MAX` on error |
+| `50` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
+| `51` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
+| `52` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count |
+| `53` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
+| `54` | `SYS_CREATE` | `arg0 = path ptr`, `arg1 = path len` | fd on success; `u64::MAX` on error |
+| `55` | `SYS_UNLINK` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
+| `56` | `SYS_MKDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
+| `57` | `SYS_RMDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
+| `58` | `SYS_SIGINT_FG` | `arg0 = pid` | `1` if a foreground descendant was signaled, otherwise `0` |
+| `59` | `SYS_SHM_CREATE` | `arg0 = size in bytes` | SHM id, or `u64::MAX` |
+| `60` | `SYS_SHM_GRANT` | `arg0 = SHM id`, `arg1 = target pid` | `0` on success; `u64::MAX` on error |
+| `61` | `SYS_SHM_MAP` | `arg0 = SHM id` | VA in `[0x000000B000000000, 0x000000C000000000)`, or `u64::MAX` |
+| `62` | `SYS_SHM_UNMAP` | `arg0 = SHM id` | `0` on success; `u64::MAX` on error |
+| `63` | `SYS_SHM_CLOSE` | `arg0 = SHM id` | `0` on success; `u64::MAX` on error |
+
+Each SHM owner and grantee holds one reference. A holder can map an object once per process, and repeated maps return the existing VA. `SYS_SHM_UNMAP` removes only the caller's mapping. `SYS_SHM_CLOSE` removes only the caller's mapping and reference; closing the owner's reference does not revoke grantees. The object and its frames are released after the last holder closes or exits. Only a current owner-holder can grant access, and the target PID must name a live process.
+
+`SYS_SHM_UNMAP` and `SYS_SHM_CLOSE` currently return `u64::MAX` when the caller has more than one live thread. KazuOS does not yet implement cross-CPU TLB shootdown, so this restriction prevents another thread in the same address space from retaining a stale mapping after its physical frames are released. Process-exit cleanup runs only after the process's other threads have exited.
 
 ## `SYS_PROCESS_INFO` selectors
 
