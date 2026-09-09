@@ -472,8 +472,8 @@ extern "C" fn ap_main() -> ! {
         core::arch::asm!(
             "mov ecx, {msr}",
             "rdmsr",
-            "or eax, {enable_mask}",
             "and eax, {base_mask}",
+            "or eax, {enable_mask}",
             "wrmsr",
             msr = const 0x1Bu32,
             enable_mask = const 0x800u32,
@@ -487,7 +487,12 @@ extern "C" fn ap_main() -> ! {
     }
 
     let apic_id = lapic::local_apic_id();
-    let cpu_index = apic_id_to_cpu_index(apic_id).unwrap_or(0);
+    let Some(cpu_index) = apic_id_to_cpu_index(apic_id) else {
+        crate::vserial_println!("SMP: AP apic_id={} not found", apic_id);
+        loop {
+            unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)) };
+        }
+    };
     let data = cpu_data(cpu_index);
     data.current_tid.store(0, core::sync::atomic::Ordering::Relaxed);
     data.idle.store(true, core::sync::atomic::Ordering::Relaxed);
