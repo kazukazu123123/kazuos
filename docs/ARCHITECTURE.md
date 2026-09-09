@@ -92,10 +92,18 @@ Current features:
 - Per-process address spaces (`create_address_space`, `free_user_address_space`) with CR3 switching
 - User heap and DMA mappings
 
+Shared memory is implemented by `crates/kernel/src/memory/shm.rs`. A creator owns a
+PMM-backed object and can grant references to other live processes. Authorized processes
+map the same physical pages into a dedicated user virtual-address range; mappings are
+writable and non-executable. References and mappings are released automatically at process
+exit, and the frames return to the PMM after the last holder disappears. Until cross-CPU
+TLB shootdown exists, explicit unmap/close is restricted to single-threaded processes.
+
 Limitations:
 
 - No demand paging
 - No mature page fault recovery
+- No cross-CPU TLB shootdown
 
 ### Interrupts and Exceptions
 

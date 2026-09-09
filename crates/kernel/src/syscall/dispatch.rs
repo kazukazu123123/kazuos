@@ -37,7 +37,12 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         | SYS_SLEEP => crate::syscall::process::handle(number, arg0, arg1, arg2),
         SYS_MEM_INFO
         | SYS_HEAP_ALLOC
-        | SYS_HEAP_FREE => crate::syscall::memory::handle(number, arg0, arg1, arg2),
+        | SYS_HEAP_FREE
+        | SYS_SHM_CREATE
+        | SYS_SHM_GRANT
+        | SYS_SHM_MAP
+        | SYS_SHM_UNMAP
+        | SYS_SHM_CLOSE => crate::syscall::memory::handle(number, arg0, arg1, arg2),
         SYS_SIGNAL_CATCH
         | SYS_SIGNAL_CHECK
         | SYS_SIGTERM => crate::syscall::signals::handle(number, arg0, arg1, arg2),

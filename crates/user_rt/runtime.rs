@@ -422,6 +422,18 @@ pub fn sys_exec(path: &[u8], stdio_pack: u64) -> u64 {
     r
 }
 
+pub fn sys_exec_with(path: &[u8], args: &[&[u8]], stdio_pack: u64) -> u64 {
+    let total_len = path.len() + 1 + args.iter().map(|arg| arg.len() + 1).sum::<usize>() + 1;
+    let mut buffer = alloc::vec![0u8; total_len];
+    buffer[..path.len()].copy_from_slice(path);
+    let mut offset = path.len() + 1;
+    for arg in args {
+        buffer[offset..offset + arg.len()].copy_from_slice(arg);
+        offset += arg.len() + 1;
+    }
+    sys_exec(&buffer, stdio_pack)
+}
+
 pub fn sys_heap_alloc(size: u64) -> u64 {
     let r: u64;
     unsafe {
@@ -448,6 +460,40 @@ pub fn sys_heap_free(ptr: u64) -> u64 {
         );
     }
     r
+}
+
+pub fn sys_shm_create(size: u64) -> u64 {
+    runtime_shm_syscall(SYS_SHM_CREATE, size, 0)
+}
+
+pub fn sys_shm_grant(id: u64, pid: u64) -> u64 {
+    runtime_shm_syscall(SYS_SHM_GRANT, id, pid)
+}
+
+pub fn sys_shm_map(id: u64) -> u64 {
+    runtime_shm_syscall(SYS_SHM_MAP, id, 0)
+}
+
+pub fn sys_shm_unmap(id: u64) -> u64 {
+    runtime_shm_syscall(SYS_SHM_UNMAP, id, 0)
+}
+
+pub fn sys_shm_close(id: u64) -> u64 {
+    runtime_shm_syscall(SYS_SHM_CLOSE, id, 0)
+}
+
+fn runtime_shm_syscall(number: u64, arg0: u64, arg1: u64) -> u64 {
+    let result: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number => result,
+            in("rdi") arg0,
+            in("rsi") arg1,
+            in("rdx") 0,
+        );
+    }
+    result
 }
 
 pub fn sys_sleep(ms: u64) {

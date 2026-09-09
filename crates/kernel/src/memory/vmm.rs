@@ -91,6 +91,15 @@ pub fn current_cr3() -> u64 {
     unsafe { *CURRENT_PML4.0.get() }
 }
 
+pub unsafe fn flush_tlb(cr3: u64) {
+    let cr3 = cr3 & ADDR_MASK;
+    if active_cr3() == cr3 {
+        unsafe {
+            core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
+        }
+    }
+}
+
 /// Read this CPU's *actual* CR3 register (masked to the PML4 base). Unlike
 /// `current_cr3()` — which returns a single global cache shared by all CPUs and
 /// is therefore unreliable under SMP — this reflects the real address space
