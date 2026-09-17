@@ -19,13 +19,21 @@ pub(crate) fn handle(number: u64, arg0: u64, arg1: u64, _arg2: u64) -> u64 {
                 let caller = crate::scheduler::current_user_pid().unwrap_or(0);
                 if process::privilege_level(caller) > process::PrivilegeLevel::Driver { return u64::MAX; }
                 let irq = arg0 as u8;
-                process::block_current(process::WaitTarget::Irq(irq));
-                syscall::BLOCK_TO_SCHEDULER
+                crate::task::thread::with_threads_lock(|| {
+                    if !owns_driver_irq(caller, irq) { return u64::MAX; }
+                    process::block_current(process::WaitTarget::Irq(irq));
+                    syscall::BLOCK_TO_SCHEDULER
+                })
             }
             SYS_DMA_ALLOC => sys_dma_alloc(arg0, arg1),
             SYS_DMA_FREE => sys_dma_free(arg0),
             SYS_PCI_BAR_MAP => sys_pci_bar_map(arg0, arg1),
             SYS_PCI_BAR_UNMAP => sys_pci_bar_unmap(arg0),
+            SYS_PCI_ENABLE => sys_pci_enable(arg0, true),
+            SYS_PCI_DISABLE => sys_pci_enable(arg0, false),
+            SYS_IRQ_CLAIM => sys_irq_claim(arg0),
+            SYS_IRQ_RELEASE => sys_irq_release(arg0),
+            SYS_IRQ_ACK => sys_irq_ack(arg0),
 
         
     // Keyboard (non-blocking). Returns the next key event word for the graphical focus

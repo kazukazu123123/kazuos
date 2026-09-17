@@ -282,7 +282,7 @@ in the kernel?" is **not** "is it important?" (everything matters to the user) b
 syscalls, IDT/GDT/TSS, interrupt controllers (LAPIC/IOAPIC/PIC), PIT, ACPI boot,
 serial debug output, exec/process, IPC, VFS core — plus the plumbing that lets
 ring3 drivers reach hardware: `SYS_IOPORT_REQUEST` (TSS I/O permission bitmap),
-`SYS_DMA_ALLOC`, `SYS_IRQ_WAIT`, `SYS_PCI_BAR_MAP`. A **minimal framebuffer blit**
+`SYS_DMA_ALLOC`, `SYS_IRQ_CLAIM`, `SYS_IRQ_WAIT`, `SYS_PCI_BAR_MAP`, `SYS_PCI_ENABLE`. A **minimal framebuffer blit**
 is also justified in ring0 so the kernel can show panic / early-boot diagnostics.
 
 **Belongs in ring3:** device drivers. They run as kernel modules — `.kkm` files
@@ -291,12 +291,14 @@ ring3 processes at `PrivilegeLevel::Driver` (which only gates *which syscalls ar
 allowed*; all processes run ring3). The format, source contract, build pipeline,
 and load/unload lifecycle are documented in `docs/MODULES.md`. `ps2mouse` is the reference example: it does
 PS/2 `in`/`out` from ring3 after requesting the ports, and delivers events over
-IPC. Rich console/terminal rendering (font shaping, scrollback) is also a ring3
-concern, distinct from the minimal panic blit above.
+IPC. `hda` is a ring3 PCI/DMA driver that receives PCM from the hardware-neutral
+`/dev/audio` frontend over `module_audio` and services its claimed IRQ on a dedicated thread.
+Rich console/terminal rendering (font shaping, scrollback) is also a ring3 concern,
+distinct from the minimal panic blit above.
 
 **Rule of thumb for new drivers:** write them as ring3 `.kkm` modules, not as new
-files under `crates/kernel/src/drivers/`. The existing in-kernel drivers (`hda`,
-framebuffer rendering, `beep`, `pci` enumeration, `power`) predate this policy; they
+files under `crates/kernel/src/drivers/`. The existing in-kernel drivers
+(framebuffer rendering, `beep`, `pci` enumeration, `power`) predate this policy; they
 work and need not be moved urgently, but they are candidates to migrate to ring3 over
 time. Large protocol/library stacks (e.g. a TLS library) must never live in ring0 —
 `panic = "abort"` means a driver panic in ring0 takes down the whole kernel.

@@ -105,6 +105,42 @@ pub enum SendResult {
 }
 
 /// Try to enqueue a message. If a RECV waiter exists, wake it immediately.
+pub fn try_send_reliable(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
+    if data.len() > MAX_MSG_SIZE {
+        return SendResult::Error;
+    }
+    with_lock(|| {
+        let ch = channels();
+        let Some(c) = slot(ch, channel_id) else {
+            return SendResult::Error;
+        };
+        if c.queue.len() >= MAX_QUEUE {
+            return SendResult::Block;
+        }
+        let _ = sender;
+        c.queue.push_back(Message { data: data.to_vec() });
+        if !c.recv_waiters.is_empty() {
+            let waiter_pid = c.recv_waiters.remove(0);
+            crate::process::wakeup_ipc_waiter(waiter_pid, 0);
+        }
+        SendResult::Ok
+    })
+}
+
+pub fn wait_send_space(channel_id: u64, pid: u64) -> bool {
+    with_lock(|| {
+        let ch = channels();
+        let Some(c) = slot(ch, channel_id) else { return false; };
+        if c.queue.len() < MAX_QUEUE { return false; }
+        if pid != 0 && !c.send_waiters.contains(&pid) {
+            c.send_waiters.push(pid);
+            crate::process::set_wait_target(pid, crate::process::WaitTarget::Ipc(channel_id));
+            crate::process::set_sleeping(pid);
+        }
+        true
+    })
+}
+
 pub fn try_send(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
     if data.len() > MAX_MSG_SIZE {
         return SendResult::Error;
@@ -198,6 +234,17 @@ pub fn try_recv_nonblock(channel_id: u64, buf: &mut [u8]) -> RecvResult {
                 }
                 RecvResult::Ok(len)
             }
+        }
+    })
+}
+
+pub fn abort_senders(channel_id: u64) {
+    with_lock(|| {
+        let ch = channels();
+        let Some(c) = slot(ch, channel_id) else { return; };
+        c.queue.clear();
+        for waiter in c.send_waiters.drain(..) {
+            crate::process::wakeup_ipc_waiter(waiter, 0);
         }
     })
 }

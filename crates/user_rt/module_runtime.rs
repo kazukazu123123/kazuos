@@ -312,6 +312,69 @@ pub fn sys_module_info(id: u64, buf: &mut [u8]) -> bool {
     r != u64::MAX
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct PciDeviceInfo {
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub _pad: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class_code: u8,
+    pub subclass: u8,
+    pub prog_if: u8,
+    pub header_type: u8,
+}
+
+pub fn sys_pci_info(index: u64, info: &mut PciDeviceInfo) -> u64 {
+    syscall(SYS_PCI_INFO, index, info as *mut _ as u64, 0)
+}
+
+pub fn sys_pci_enable(bdf: u32) -> u64 {
+    syscall(SYS_PCI_ENABLE, bdf as u64, 0, 0)
+}
+
+pub fn sys_pci_disable(bdf: u32) -> bool {
+    syscall(SYS_PCI_DISABLE, bdf as u64, 0, 0) != u64::MAX
+}
+
+pub fn sys_irq_claim(bdf: u32) -> Option<u8> {
+    let irq = syscall(SYS_IRQ_CLAIM, bdf as u64, 0, 0);
+    if irq == u64::MAX { None } else { Some(irq as u8) }
+}
+
+pub fn sys_irq_release(irq: u8) -> bool {
+    syscall(SYS_IRQ_RELEASE, irq as u64, 0, 0) == 0
+}
+
+pub fn sys_irq_ack(irq: u8) -> bool {
+    syscall(SYS_IRQ_ACK, irq as u64, 0, 0) == 0
+}
+
+pub fn sys_thread_spawn(entry: extern "C" fn(u64) -> !, arg: u64, stack_top: u64) -> u64 {
+    syscall(SYS_THREAD_SPAWN, entry as u64, arg, stack_top)
+}
+
+pub fn sys_thread_exit() -> ! {
+    syscall(SYS_THREAD_EXIT, 0, 0, 0);
+    loop { core::hint::spin_loop(); }
+}
+
+pub fn sys_thread_join(tid: u64) -> u64 {
+    syscall(SYS_THREAD_JOIN, tid, 0, 0)
+}
+
+pub fn sys_dma_alloc(size: usize) -> Option<(*mut u8, u64)> {
+    let mut phys = 0u64;
+    let virt = syscall(SYS_DMA_ALLOC, size as u64, &mut phys as *mut _ as u64, 0);
+    if virt == u64::MAX { None } else { Some((virt as *mut u8, phys)) }
+}
+
+pub fn sys_dma_free(virt: *mut u8) -> bool {
+    syscall(SYS_DMA_FREE, virt as u64, 0, 0) == 0
+}
+
 /// Map a PCI BAR into the caller's address space. Returns user VA or u64::MAX.
 pub fn sys_pci_bar_map(bdf: u32, bar_index: u8) -> u64 {
     let r: u64;

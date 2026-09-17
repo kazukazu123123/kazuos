@@ -1,3 +1,38 @@
+use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+
+static DRIVER_IOAPIC_BASE: AtomicU64 = AtomicU64::new(0);
+static DRIVER_LAPIC_ID: AtomicU8 = AtomicU8::new(0);
+
+pub fn configure_driver_irqs(base: u64, lapic_id: u8) {
+    DRIVER_LAPIC_ID.store(lapic_id, Ordering::Release);
+    DRIVER_IOAPIC_BASE.store(base, Ordering::Release);
+}
+
+pub fn mask_driver_irq(irq: u8, masked: bool) -> bool {
+    let base = DRIVER_IOAPIC_BASE.load(Ordering::Acquire);
+    if base == 0 { return false; }
+    let ioapic = unsafe { IoApic::new(base) };
+    unsafe {
+        if masked { ioapic.mask_irq(irq); } else { ioapic.unmask_irq(irq); }
+    }
+    true
+}
+
+pub fn route_driver_irq(irq: u8, enable: bool) -> bool {
+    let base = DRIVER_IOAPIC_BASE.load(Ordering::Acquire);
+    if base == 0 { return false; }
+    let ioapic = unsafe { IoApic::new(base) };
+    unsafe {
+        if enable {
+            ioapic.set_irq_ext(irq, 0x31, DRIVER_LAPIC_ID.load(Ordering::Acquire), 0x0f);
+            ioapic.unmask_irq(irq);
+        } else {
+            ioapic.mask_irq(irq);
+        }
+    }
+    true
+}
+
 /// IOAPIC driver.
 /// NOTE: `base` is a **physical address**. Under UEFI, identity mapping is
 /// typically active so phys == virt, but this is not guaranteed once a custom

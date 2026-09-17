@@ -434,7 +434,9 @@ pub fn exit_current() {
             crate::drivers::fb_owner::release(pid);
             crate::scheduler::clear_current_user(pid);
             crate::fs::fd::close_all(pid);
+            crate::syscall::runtime::release_irq_for_pid(pid);
             crate::syscall::runtime::free_dma_for_pid(pid);
+            crate::syscall::runtime::free_pci_mmio_for_pid(pid);
             crate::syscall::runtime::free_heap_for_pid(pid);
             if let Some(cr3) = user_cr3(pid) {
                 crate::memory::shm::cleanup_pid(pid, cr3);

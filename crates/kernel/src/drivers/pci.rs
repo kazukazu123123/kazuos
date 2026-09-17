@@ -94,33 +94,34 @@ pub fn bar_size(bus: u8, device: u8, function: u8, bar_index: u8) -> u64 {
         return 0;
     }
     let ty = bar_type(original);
-    let mask = if ty == BarType::Io {
-        0xFFFFFFFC
-    } else {
-        0xFFFFFFF0
-    };
-    write_u32(bus, device, function, offset, 0xFFFFFFFF);
-    let decoded = read_u32(bus, device, function, offset);
-    write_u32(bus, device, function, offset, original);
-    let size_low = (!(decoded & mask)).wrapping_add(1) as u64;
-    if size_low == 0 {
-        return 0;
-    }
-    if ty == BarType::Mmio64 {
-        let offset_high = offset + 4;
-        let original_high = read_u32(bus, device, function, offset_high);
-        write_u32(bus, device, function, offset_high, 0xFFFFFFFF);
-        let decoded_high = read_u32(bus, device, function, offset_high);
-        write_u32(bus, device, function, offset_high, original_high);
-        let size_high = (!(decoded_high as u64)).wrapping_add(1);
-        if size_high != 0 {
-            (size_high << 32) | size_low
+    let command = read_command(bus, device, function);
+    write_command(bus, device, function, command & !0x03);
+
+    let size = if ty == BarType::Mmio64 {
+        if bar_index >= 5 {
+            0
         } else {
-            size_low
+            let high_offset = offset + 4;
+            let original_high = read_u32(bus, device, function, high_offset);
+            write_u32(bus, device, function, offset, u32::MAX);
+            write_u32(bus, device, function, high_offset, u32::MAX);
+            let decoded_low = read_u32(bus, device, function, offset);
+            let decoded_high = read_u32(bus, device, function, high_offset);
+            write_u32(bus, device, function, high_offset, original_high);
+            write_u32(bus, device, function, offset, original);
+            let mask = ((decoded_high as u64) << 32) | (decoded_low & 0xffff_fff0) as u64;
+            (!mask).wrapping_add(1)
         }
     } else {
-        size_low
-    }
+        let address_mask = if ty == BarType::Io { 0xffff_fffc } else { 0xffff_fff0 };
+        write_u32(bus, device, function, offset, u32::MAX);
+        let decoded = read_u32(bus, device, function, offset);
+        write_u32(bus, device, function, offset, original);
+        (!(decoded & address_mask)).wrapping_add(1) as u64
+    };
+
+    write_command(bus, device, function, command);
+    size
 }
 
 pub fn read_command(bus: u8, device: u8, function: u8) -> u16 {
