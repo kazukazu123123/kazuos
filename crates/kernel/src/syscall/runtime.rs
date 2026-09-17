@@ -172,7 +172,10 @@ pub(crate) fn sys_dma_alloc(size: u64, phys_out_ptr: u64) -> u64 {
     }
     let cr3 = match process::user_cr3(caller) {
         Some(c) => c,
-        None => return u64::MAX,
+        None => {
+            unsafe { alloc::alloc::dealloc(phys as *mut u8, layout); }
+            return u64::MAX;
+        }
     };
     let virt = unsafe {
         let bump = &mut *DMA_VA_BUMP.0.get();
@@ -184,9 +187,12 @@ pub(crate) fn sys_dma_alloc(size: u64, phys_out_ptr: u64) -> u64 {
         if crate::vmm::map_range(cr3, virt, phys, aligned, crate::vmm::MapFlags::USER_READ_WRITE)
             .is_err()
         {
+            alloc::alloc::dealloc(phys as *mut u8, layout);
             return u64::MAX;
         }
         if phys_out_ptr != 0 && !crate::memory::uaccess::write_value(phys_out_ptr, phys) {
+            crate::vmm::unmap_range(cr3, virt, aligned);
+            alloc::alloc::dealloc(phys as *mut u8, layout);
             return u64::MAX;
         }
         let allocs = &mut *DMA_ALLOCS.0.get();
@@ -287,6 +293,118 @@ pub(crate) fn sys_pci_bar_unmap(virt: u64) -> u64 {
         crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
     }
     0
+}
+
+static DRIVER_IRQ_OWNER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static DRIVER_IRQ_NUMBER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+static DRIVER_IRQ_BDF: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static DRIVER_IRQ_AUDIO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn claimed_driver_irq() -> u8 {
+    DRIVER_IRQ_NUMBER.load(core::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) fn owns_driver_irq(pid: u64, irq: u8) -> bool {
+    DRIVER_IRQ_OWNER.load(core::sync::atomic::Ordering::Acquire) == pid
+        && DRIVER_IRQ_NUMBER.load(core::sync::atomic::Ordering::Acquire) == irq
+}
+
+pub(crate) fn sys_irq_claim(bdf: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if caller == 0 || process::privilege_level(caller) > process::PrivilegeLevel::Driver {
+        return u64::MAX;
+    }
+    let bus = ((bdf >> 16) & 0xff) as u8;
+    let device = ((bdf >> 8) & 0xff) as u8;
+    let function = (bdf & 0xff) as u8;
+    build_pci_cache();
+    let cache = unsafe { &*PCI_CACHE.0.get() };
+    let Some(pci_device) = cache.iter().find(|entry| entry.bus == bus && entry.device == device && entry.function == function) else {
+        return u64::MAX;
+    };
+    let irq = crate::drivers::pci::read_interrupt_line(bus, device, function);
+    if irq == 0 || irq == 0xff { return u64::MAX; }
+    if DRIVER_IRQ_OWNER.compare_exchange(0, caller, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_err() {
+        return u64::MAX;
+    }
+    DRIVER_IRQ_BDF.store(bdf as u32, core::sync::atomic::Ordering::Release);
+    let is_audio = pci_device.class_code == 0x04 && pci_device.subclass == 0x03;
+    DRIVER_IRQ_AUDIO.store(is_audio, core::sync::atomic::Ordering::Release);
+    DRIVER_IRQ_NUMBER.store(irq, core::sync::atomic::Ordering::Release);
+    if !crate::drivers::ioapic::route_driver_irq(irq, true) {
+        DRIVER_IRQ_NUMBER.store(0, core::sync::atomic::Ordering::Release);
+        DRIVER_IRQ_BDF.store(0, core::sync::atomic::Ordering::Release);
+        DRIVER_IRQ_AUDIO.store(false, core::sync::atomic::Ordering::Release);
+        DRIVER_IRQ_OWNER.store(0, core::sync::atomic::Ordering::Release);
+        return u64::MAX;
+    }
+    crate::handlers::interrupts::set_use_ioapic(true);
+    if is_audio { crate::drivers::audio::driver_started(); }
+    irq as u64
+}
+
+pub(crate) fn sys_irq_ack(irq: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if !owns_driver_irq(caller, irq as u8) { return u64::MAX; }
+    if crate::drivers::ioapic::mask_driver_irq(irq as u8, false) { 0 } else { u64::MAX }
+}
+
+pub(crate) fn sys_irq_release(irq: u64) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if DRIVER_IRQ_OWNER.load(core::sync::atomic::Ordering::Acquire) != caller
+        || DRIVER_IRQ_NUMBER.load(core::sync::atomic::Ordering::Acquire) != irq as u8
+    {
+        return u64::MAX;
+    }
+    crate::drivers::ioapic::route_driver_irq(irq as u8, false);
+    crate::process::wakeup_irq_waiter(irq as u8);
+    DRIVER_IRQ_NUMBER.store(0, core::sync::atomic::Ordering::Release);
+    DRIVER_IRQ_BDF.store(0, core::sync::atomic::Ordering::Release);
+    if DRIVER_IRQ_AUDIO.swap(false, core::sync::atomic::Ordering::AcqRel) {
+        crate::drivers::audio::driver_stopped();
+    }
+    DRIVER_IRQ_OWNER.store(0, core::sync::atomic::Ordering::Release);
+    0
+}
+
+pub fn release_irq_for_pid(pid: u64) {
+    if DRIVER_IRQ_OWNER.load(core::sync::atomic::Ordering::Acquire) == pid {
+        let irq = DRIVER_IRQ_NUMBER.swap(0, core::sync::atomic::Ordering::AcqRel);
+        if irq != 0 { crate::drivers::ioapic::route_driver_irq(irq, false); }
+        let bdf = DRIVER_IRQ_BDF.swap(0, core::sync::atomic::Ordering::AcqRel);
+        if bdf != 0 {
+            let bus = ((bdf >> 16) & 0xff) as u8;
+            let device = ((bdf >> 8) & 0xff) as u8;
+            let function = (bdf & 0xff) as u8;
+            let command = crate::drivers::pci::read_command(bus, device, function);
+            crate::drivers::pci::write_command(bus, device, function, command & !0x06);
+        }
+        if DRIVER_IRQ_AUDIO.swap(false, core::sync::atomic::Ordering::AcqRel) {
+            crate::drivers::audio::driver_stopped();
+        }
+        DRIVER_IRQ_OWNER.store(0, core::sync::atomic::Ordering::Release);
+    }
+}
+
+pub(crate) fn sys_pci_enable(bdf: u64, enable: bool) -> u64 {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if process::privilege_level(caller) > process::PrivilegeLevel::Driver {
+        return u64::MAX;
+    }
+    let bus = ((bdf >> 16) & 0xff) as u8;
+    let device = ((bdf >> 8) & 0xff) as u8;
+    let function = (bdf & 0xff) as u8;
+    build_pci_cache();
+    let cache = unsafe { &*PCI_CACHE.0.get() };
+    if !cache.iter().any(|entry| {
+        entry.bus == bus && entry.device == device && entry.function == function
+    }) {
+        return u64::MAX;
+    }
+    let command = crate::drivers::pci::read_command(bus, device, function);
+    let command = if enable { command | 0x06 } else { command & !0x06 };
+    crate::drivers::pci::write_command(bus, device, function, command);
+    crate::drivers::pci::read_interrupt_line(bus, device, function) as u64
 }
 
 /// Heap alloc for user programs. Backed by individual PMM frames (each page is a
@@ -478,6 +596,23 @@ pub fn free_dma_for_pid(pid: u64) {
                 if let Ok(layout) = alloc::alloc::Layout::from_size_align(alloc.size as usize, 4096)
                 {
                     alloc::alloc::dealloc(alloc.phys as *mut u8, layout);
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+pub fn free_pci_mmio_for_pid(pid: u64) {
+    unsafe {
+        let allocs = &mut *PCI_MMIO_ALLOCS.0.get();
+        let mut i = 0;
+        while i < allocs.len() {
+            if allocs[i].pid == pid {
+                let alloc = allocs.swap_remove(i);
+                if let Some(cr3) = process::user_cr3(pid) {
+                    crate::vmm::unmap_range(cr3, alloc.virt, alloc.size);
                 }
             } else {
                 i += 1;

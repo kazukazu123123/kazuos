@@ -96,6 +96,13 @@ pub const SYS_SHM_MAP:    u64 = 61;
 pub const SYS_SHM_UNMAP:  u64 = 62;
 pub const SYS_SHM_CLOSE:  u64 = 63;
 
+// Driver PCI control
+pub const SYS_PCI_ENABLE:  u64 = 64;
+pub const SYS_PCI_DISABLE: u64 = 65;
+pub const SYS_IRQ_CLAIM:   u64 = 66;
+pub const SYS_IRQ_RELEASE: u64 = 67;
+pub const SYS_IRQ_ACK:     u64 = 68;
+
 // SYS_EXEC stdio pack: bits[0..16] = stdin fd, bits[16..32] = stdout fd (0xFFFF on either
 // = console default). When this bit is also set, the child additionally gets fd 3 as a
 // controlling-terminal handle — a dup of the *caller's* fd 0 (the shell's keyboard source:

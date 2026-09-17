@@ -96,7 +96,9 @@ pub struct KkmInfo {
 ### Available syscall helpers
 
 `module_runtime.rs` exposes (among others): `sys_ioport_request`, `sys_irq_wait`,
-`sys_pci_bar_map`/`sys_pci_bar_unmap`, `sys_ipc_open`/`sys_ipc_send`/`sys_ipc_recv`,
+`sys_pci_info`, `sys_pci_enable`/`sys_pci_disable`, `sys_pci_bar_map`/`sys_pci_bar_unmap`,
+`sys_irq_claim`/`sys_irq_ack`/`sys_irq_release`, `sys_dma_alloc`/`sys_dma_free`,
+`sys_ipc_open`/`sys_ipc_send`/`sys_ipc_recv`,
 `sys_heap_alloc`/`sys_heap_free` (also wired as the global allocator, so `alloc`
 works), `sys_sleep`/`sys_sleep_tick`, `sys_signal_catch`/`sys_signal_check`, and a
 raw `syscall(n, a0, a1, a2)` escape hatch. `print!`/`println!` macros route to
@@ -115,6 +117,8 @@ privileged**. Modules run at `Driver`. The hardware-facing syscalls check
 | `SYS_IRQ_WAIT` | Block until an IRQ fires (or a stop signal wakes us) |
 | `SYS_DMA_ALLOC` / `SYS_DMA_FREE` | Physically-contiguous DMA buffers |
 | `SYS_PCI_BAR_MAP` / `SYS_PCI_BAR_UNMAP` | Map a PCI BAR into the module's address space |
+| `SYS_PCI_ENABLE` / `SYS_PCI_DISABLE` | Enable or disable PCI memory decoding and bus mastering and return the legacy IRQ line |
+| `SYS_IRQ_CLAIM` / `SYS_IRQ_ACK` / `SYS_IRQ_RELEASE` | Exclusively route one PCI legacy IRQ, unmask it after device acknowledgement, and release it during shutdown |
 
 `SYS_MODULE_LOAD`/`UNLOAD`/`LIST`/`INFO` are **not** privileged — any process
 (including the shell) may load and unload modules.
@@ -146,7 +150,15 @@ non-`#` line is a module path to load in order. The current list:
 
 ```
 /modules/ps2mouse.kkm
+/modules/hda.kkm
 ```
+
+The HDA module owns the controller, allocates its BDL and PCM ring with the DMA API,
+and accepts PCM commands on the `module_audio` IPC channel. The kernel's hardware-neutral
+`/dev/audio` frontend forwards writes and control messages through that channel with
+backpressure. The driver claims its PCI IRQ and uses a dedicated ring3 interrupt thread
+to acknowledge HDA controller and stream interrupts; LPIB remains the source of truth for
+DMA playback position.
 
 ### At runtime
 

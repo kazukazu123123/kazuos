@@ -293,14 +293,15 @@ pub extern "C" fn mouse_irq_handler_inner() {
 pub extern "C" fn hda_irq_handler_inner() {
     let entry_cr3 = crate::vmm::active_cr3();
     unsafe {
-        crate::drivers::hda::on_interrupt();
+        let irq = crate::syscall::runtime::claimed_driver_irq();
+        if irq != 0 {
+            crate::drivers::ioapic::mask_driver_irq(irq, true);
+            crate::process::wakeup_irq_waiter(irq);
+        }
         if USE_IOAPIC {
             lapic::eoi();
-        } else {
-            let irq = crate::drivers::hda::irq();
-            if irq != 0 && irq != 255 {
-                pic::eoi(irq);
-            }
+        } else if irq != 0 {
+            pic::eoi(irq);
         }
     }
     restore_entry_cr3(entry_cr3);

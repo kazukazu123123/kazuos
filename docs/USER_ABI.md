@@ -81,6 +81,11 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `61` | `SYS_SHM_MAP` | `arg0 = SHM id` | VA in `[0x000000B000000000, 0x000000C000000000)`, or `u64::MAX` |
 | `62` | `SYS_SHM_UNMAP` | `arg0 = SHM id` | `0` on success; `u64::MAX` on error |
 | `63` | `SYS_SHM_CLOSE` | `arg0 = SHM id` | `0` on success; `u64::MAX` on error |
+| `64` | `SYS_PCI_ENABLE` | `arg0 = BDF` | legacy IRQ line, or `u64::MAX` on error (driver only); enables PCI memory decoding and bus mastering |
+| `65` | `SYS_PCI_DISABLE` | `arg0 = BDF` | legacy IRQ line, or `u64::MAX` on error (driver only); disables PCI memory decoding and bus mastering |
+| `66` | `SYS_IRQ_CLAIM` | `arg0 = PCI BDF` | claimed legacy IRQ, or `u64::MAX` on error (driver only) |
+| `67` | `SYS_IRQ_RELEASE` | `arg0 = claimed IRQ` | `0` on success; `u64::MAX` on error (driver only) |
+| `68` | `SYS_IRQ_ACK` | `arg0 = claimed IRQ` | `0` on success; `u64::MAX` on error (driver only); unmasks a level-triggered IRQ after device acknowledgement |
 
 Each SHM owner and grantee holds one reference. A holder can map an object once per process, and repeated maps return the existing VA. `SYS_SHM_UNMAP` removes only the caller's mapping. `SYS_SHM_CLOSE` removes only the caller's mapping and reference; closing the owner's reference does not revoke grantees. The object and its frames are released after the last holder closes or exits. Only a current owner-holder can grant access, and the target PID must name a live process.
 
@@ -290,7 +295,7 @@ A blocking `SYS_READ` on console input (and any other syscall that returns `BLOC
 Driver processes are spawned by the kernel at boot via `exec::spawn_driver()`. They differ from normal user processes in the following ways:
 
 - `privilege = Driver` in the process table
-- Can call the driver-only syscalls: `SYS_IOPORT_REQUEST`, `SYS_IRQ_WAIT`, `SYS_DMA_ALLOC`, `SYS_DMA_FREE`
+- Can call the driver-only syscalls: `SYS_IOPORT_REQUEST`, `SYS_IRQ_WAIT`, `SYS_DMA_ALLOC`, `SYS_DMA_FREE`, `SYS_PCI_BAR_MAP`, `SYS_PCI_BAR_UNMAP`, `SYS_PCI_ENABLE`, `SYS_PCI_DISABLE`, `SYS_IRQ_CLAIM`, `SYS_IRQ_RELEASE`, `SYS_IRQ_ACK`
 - **Cannot be killed** — `SYS_KILL` and `send_sigint` both refuse to terminate a driver process
 - Currently started at fixed boot time; dynamic stop/start is not yet implemented
 
