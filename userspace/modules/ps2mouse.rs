@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/module_runtime.rs");
+include!("../runtime/module_runtime.rs");
 
 pub fn kkm_info() -> KkmInfo {
     KkmInfo { name: "ps2mouse", depends: &[] }

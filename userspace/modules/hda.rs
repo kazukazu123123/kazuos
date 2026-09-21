@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/module_runtime.rs");
+include!("../runtime/module_runtime.rs");
 
 const HDA_GCAP: u32 = 0x00;
 const HDA_GCTL: u32 = 0x08;

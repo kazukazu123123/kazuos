@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/runtime.rs");
+include!("../runtime/runtime.rs");
 
 const ENTRY_SIZE: usize = 48;
 const MAX_MODULES: usize = 16;

@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/runtime.rs");
+include!("../runtime/runtime.rs");
 
 const CURSOR_COLOR: u32 = 0x00_FF_FF_00; // yellow
 const BG_COLOR:     u32 = 0x00_10_10_10; // near-black

@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/runtime.rs");
+include!("../runtime/runtime.rs");
 
 // keyboard.rs extended key codes
 const KEY_UP:    u8 = 0x82;

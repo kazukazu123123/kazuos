@@ -102,8 +102,8 @@ cargo +nightly build -p kazuos-kernel \
 Output: `target/x86_64-kazuos/release/kazuos-kernel`
 
 > The kernel build script (`crates/kernel/build.rs`) also compiles every `.rs` file
-> under `crates/user_programs/` into a flat `.kxe` binary and every `.rs` under
-> `crates/user_modules/` into a `.kkm`, then bundles them into `target/initrd.kfs`
+> under `userspace/programs/` into a flat `.kxe` binary and every `.rs` under
+> `userspace/modules/` into a `.kkm`, then bundles them into `target/initrd.kfs`
 > (the initramfs). These are compiled with `rustc` directly against
 > `x86_64-unknown-none`.
 
@@ -129,9 +129,9 @@ esp/
 
 ## User programs and modules
 
-User programs live in `crates/user_programs/*.rs`; each is compiled independently
+User programs live in `userspace/programs/*.rs`; each is compiled independently
 into a flat `.kxe` binary and bundled into the initramfs at `/bin/<name>.kxe`.
-Kernel modules live in `crates/user_modules/*.rs`, compiled into `.kkm` and placed
+Kernel modules live in `userspace/modules/*.rs`, compiled into `.kkm` and placed
 under `/modules/`.
 
 Both are `#![no_std] #![no_main]` binaries that run in ring3 and call the kernel via

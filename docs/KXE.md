@@ -22,7 +22,7 @@ The kernel loads the KXE at `USER_BASE` (0x8000000000), applies `R_X86_64_RELATI
 
 ## Writing a User Program
 
-All user programs are `.rs` files in `crates/user_programs/`. They are compiled automatically by `build.rs` during kernel build.
+All user programs are `.rs` files in `userspace/programs/`. They are compiled automatically by `build.rs` during kernel build.
 
 ### Minimal User Program
 
@@ -66,10 +66,10 @@ fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 
 ### Build Integration
 
-`build.rs` automatically picks up any `.rs` file in `crates/user_programs/` (except `syscall_numbers.rs`). It:
+`build.rs` automatically picks up any `.rs` file in `userspace/programs/` (except `syscall_numbers.rs`). It:
 
 1. Compiles each `.rs` with `rustc` targeting `x86_64-unknown-none`
-2. Links with `crates/user_programs/link.ld` (code at virtual address 0)
+2. Links with `userspace/programs/link.ld` (code at virtual address 0)
 3. Extracts the raw binary via `objcopy`
 4. Patches `R_X86_64_RELATIVE` relocations to `USER_BASE`
 5. Wraps it in a KXE header

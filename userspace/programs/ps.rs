@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/runtime.rs");
+include!("../runtime/runtime.rs");
 // v2: blocking-syscall aware
 
 const NAME_LEN: usize = PROC_NAME_LEN;

@@ -220,13 +220,13 @@ Three resume paths in `enter_next_process`:
 
 ### Shell
 
-Located in `crates/user_programs/shell.rs` (a ring3 user-space KXE binary — **not** a kernel
+Located in `userspace/programs/shell.rs` (a ring3 user-space KXE binary — **not** a kernel
 module). It communicates with the kernel only via `int 0x80` syscalls.
 
 Built-in commands include `help`, `clear`, `ls`, `cat`, `mem`, `ps`, `sysinfo`, `smpinfo`,
 `exec`, the filesystem mutations (`touch`/`rm`/`mkdir`/`rmdir`), `shutdown`, and `reboot`,
 plus `cmd1 | cmd2` pipelines and `&` background jobs. Other programs in
-`crates/user_programs/` (`ps`, `ktop`, `cpuburner`, `gui`, …) are launched by name.
+`userspace/programs/` (`ps`, `ktop`, `cpuburner`, `gui`, …) are launched by name.
 
 Planned:
 
@@ -286,7 +286,7 @@ ring3 drivers reach hardware: `SYS_IOPORT_REQUEST` (TSS I/O permission bitmap),
 is also justified in ring0 so the kernel can show panic / early-boot diagnostics.
 
 **Belongs in ring3:** device drivers. They run as kernel modules — `.kkm` files
-built from `crates/user_modules/*.rs`, loaded via `SYS_MODULE_LOAD`, running as
+built from `userspace/modules/*.rs`, loaded via `SYS_MODULE_LOAD`, running as
 ring3 processes at `PrivilegeLevel::Driver` (which only gates *which syscalls are
 allowed*; all processes run ring3). The format, source contract, build pipeline,
 and load/unload lifecycle are documented in `docs/MODULES.md`. `ps2mouse` is the reference example: it does

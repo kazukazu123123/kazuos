@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/runtime.rs");
+include!("../runtime/runtime.rs");
 
 fn fail(message: &str) -> ! {
     println!("shmtest: FAIL: {}", message);
