@@ -40,10 +40,10 @@ Examples:
 cargo +nightly -Zscript scripts/auto_test_pipeline.rs
 
 # boot verbose and run shell commands
-cargo +nightly -Zscript scripts/auto_test_pipeline.rs -- --verbose --send help --send mem --send ps
+cargo +nightly -Zscript scripts/auto_test_pipeline.rs --verbose --send help --send mem --send ps
 
 # check serial output for a specific pattern
-cargo +nightly -Zscript scripts/auto_test_pipeline.rs -- --verbose --send help --send ps --wait 6 --expect "commands:"
+cargo +nightly -Zscript scripts/auto_test_pipeline.rs --verbose --send help --send ps --wait 6 --expect "commands:"
 ```
 
 Do not use plain `cargo check` for kernel validation because stable Rust fails on current nightly features.
@@ -121,7 +121,9 @@ Hardware-facing code.
 Current modules include:
 
 - `acpi.rs`
+- `audio.rs`
 - `beep.rs`
+- `fb_owner.rs`
 - `framebuffer.rs`
 - `ioapic.rs`
 - `keyboard.rs`
@@ -168,42 +170,49 @@ Syscall entry path and dispatch trampoline.
 
 Keep arch-specific syscall assembly here. High-level syscall behavior can dispatch to subsystem modules.
 
-### `uaccess.rs`
+### `memory/uaccess.rs`
 
 The user/kernel pointer boundary. Validates that a caller-supplied range lies in the user
 half and is mapped user-accessible in the caller's page tables before any copy. All
 syscall pointer handling belongs here; see the Safety Rules below.
 
-### `user.rs`
+### `syscall/`
 
-High-level syscall dispatch (core logic).
+High-level syscall dispatch is split by responsibility under `syscall/`. `dispatch.rs`
+routes syscall numbers, while `console.rs`, `device.rs`, `fs.rs`, `ipc.rs`, `memory.rs`,
+`module.rs`, `process.rs`, `signals.rs`, and `system.rs` own subsystem behavior. Shared
+state and compatibility bridges belong in `syscall/runtime.rs`.
 
-Syscall number constants live in the `kazuos-abi` crate. Keep real exec/loading code in `exec.rs`, `process.rs`, or VFS/filesystem modules.
+Syscall number constants live in the `kazuos-abi` crate. Keep real exec/loading code in `task/exec.rs`, `task/process.rs`, or VFS/filesystem modules.
 
 ### `kazuos-abi` crate
 
 Single source of truth for all `SYS_*` constants — the kernel/user ABI.
 
-Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`user.rs` does `pub use kazuos_abi::*;`). Standalone-compiled code that can't use Cargo deps — the user-space runtimes (`userspace/runtime/*.rs`) and, transitively, all user programs/modules — pulls the same file in with `include!("../../crates/kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
+Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`syscall/runtime.rs` re-exports `kazuos_abi::*`). Standalone-compiled code that can't use Cargo deps — `userspace/runtime/runtime.rs` and `module_runtime.rs`, and transitively all user programs/modules — pulls the same file in with `include!("../../crates/kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
 
 ### shell (user program, not a kernel module)
 
 The shell is a ring3 KXE user program at `userspace/programs/shell.rs`, not a kernel
 module. It talks to the kernel only via `int 0x80` syscalls. Other built-in user programs
-(`ps`, `ktop`, `cpuburner`, `gui`, …) also live in `userspace/programs/`. Do not add shell
-or app logic to the kernel.
+(`ps`, `ktop`, `cpuburner`, …) also live in `userspace/programs/`. Do not add shell or app
+logic to the kernel.
+
+GUI compositor and client work currently lives only on the `wip/gui` branch. It is not
+part of `main`, and there is currently no plan to merge it into `main`. Do not treat GUI
+as a shipped subsystem or move WIP GUI code into `main` unless explicitly requested.
 
 ### Other core kernel modules
 
-- `smp.rs` — AP bring-up (INIT-SIPI-SIPI, trampoline), per-CPU `CpuData`, APIC-id↔index.
-- `gdt.rs` / `idt.rs` — per-CPU GDT/TSS and the IDT.
+- `arch/x86_64/smp.rs` — AP bring-up (INIT-SIPI-SIPI, trampoline), per-CPU `CpuData`, APIC-id↔index.
+- `arch/x86_64/gdt.rs` / `arch/x86_64/idt.rs` — per-CPU GDT/TSS and the IDT.
 - `task/` — see above (processes, threads, scheduler).
 - `kmod.rs` — ring3 kernel modules (`.kkm`): load/unload/list (`SYS_MODULE_*`).
-- `ipc.rs` / `pipe.rs` / `fd.rs` — named IPC channels, pipes, and the per-process fd table.
-- `terminal/` (+ `tty.rs`, `console.rs` shim) — text console rendering and TTY; `devfs.rs`
-  and `vfs.rs` — device/virtual filesystem.
+- `ipc.rs` / `fs/pipe.rs` / `fs/fd.rs` — named IPC channels, pipes, and the per-process fd table.
+- `terminal/` (+ `tty.rs`, `console.rs` shim) — text console rendering and TTY; `fs/devfs.rs`
+  and `fs/vfs.rs` — device/virtual filesystem.
 
-### `exec.rs`
+### `task/exec.rs`
 
 User program loading and process address space creation.
 
@@ -221,19 +230,18 @@ KXE format definitions and embedded user binaries.
 Responsibilities:
 
 - `KxeHeader` struct
-- `INIT_KXE`, `STRESS_EXIT_KXE` minimal test binaries
-- auto-generated `*_KXE` blobs (built from `userspace/programs/*.rs` via `build.rs`)
+- inclusion of auto-generated `*_KXE` blobs built from `userspace/programs/*.rs` by `build.rs`
 
 The `build.rs` compiles all `.rs` files in `userspace/programs/` (except `syscall_numbers.rs`) to ELF, parses `.rela.dyn` for `R_X86_64_RELATIVE` relocations, applies `USER_BASE` fixup, builds KXE blobs, and emits `user_programs_generated.rs` into `OUT_DIR`. It also builds `initrd.kfs` containing all binaries.
 
-### `vfs.rs`
+### `fs/vfs.rs`
 
 Current VFS responsibilities:
 
-- initramfs image parsing
-- path lookup
-- file metadata
-- read/readdir operations
+- initramfs image parsing into an in-memory writable root filesystem
+- path lookup and file metadata
+- read, write, truncate, and readdir operations
+- create, unlink, mkdir, and rmdir operations
 
 Do not implement filesystem parsing in shell commands. Shell should call VFS/syscall APIs.
 
@@ -241,7 +249,6 @@ Do not implement filesystem parsing in shell commands. Shell should call VFS/sys
 
 Suggested:
 
-- `ramfs.rs`
 - `procfs.rs`
 - later disk-backed FS modules
 
@@ -249,12 +256,15 @@ Suggested:
 
 Already implemented: VFS core, initramfs, shell `ls`/`cat`, `/bin` executables (KXE),
 per-process address spaces, a preemptive SMP round-robin scheduler, user-space threads
-(spawn/exit/join), ring3 driver modules (`.kkm`), IPC, pipes, and `gui` compositor.
+(spawn/exit/join), ring3 driver modules (`.kkm`), IPC, pipes, and the ring3 HDA driver.
+
+The GUI compositor and clients are WIP on `wip/gui`, are not implemented on `main`, and
+are intentionally not planned for merging into `main` at this time.
 
 Remaining direction, roughly in priority order:
 
-1. ramfs / procfs (a writable RAM fs and a process/info fs)
-2. shell background jobs with `&` (partially present; foreground/job control)
+1. procfs (a process/info filesystem)
+2. richer shell foreground/background job control (`&` is already supported)
 3. migrate the remaining in-kernel drivers to ring3 `.kkm` (see Driver Policy in
    `docs/ARCHITECTURE.md`)
 4. richer device drivers (net, disk-backed FS)
@@ -275,7 +285,7 @@ For debugging QEMU, prefer serial output as well as framebuffer output.
 ## Safety Rules
 
 - Never trust userspace pointers. Every read or write of a caller-supplied pointer must
-  go through `crate::uaccess` (`read_bytes`, `read_str`, `write_bytes`, `write_value`, or
+  go through `crate::memory::uaccess` (`read_bytes`, `read_str`, `write_bytes`, `write_value`, or
   `validate_range` when the copy itself has to stay inline). Do not call
   `from_raw_parts`/`write_unaligned` on a raw syscall argument.
 - Never return `u64::MAX - 1` or `u64::MAX - 2` from a syscall as an error. The `int 0x80`
