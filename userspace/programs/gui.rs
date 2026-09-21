@@ -143,9 +143,27 @@ impl DirtyRects {
     fn is_empty(&self) -> bool { self.len == 0 }
     fn add(&mut self, x: i32, y: i32, w: i32, h: i32) {
         if w <= 0 || h <= 0 { return; }
-        let r = Rect { x0: x, y0: y, x1: x + w, y1: y + h };
-        if self.len < MAX_DIRTY_RECTS { self.rects[self.len] = r; self.len += 1; }
-        else { self.rects[0].add(x, y, w, h); }
+        let mut merged = Rect { x0: x, y0: y, x1: x + w, y1: y + h };
+        let mut i = 0;
+        while i < self.len {
+            let current = self.rects[i];
+            let touches = merged.x0 <= current.x1 && merged.x1 >= current.x0
+                && merged.y0 <= current.y1 && merged.y1 >= current.y0;
+            if touches {
+                merged.add(current.x0, current.y0, current.x1 - current.x0, current.y1 - current.y0);
+                self.len -= 1;
+                self.rects[i] = self.rects[self.len];
+                i = 0;
+            } else {
+                i += 1;
+            }
+        }
+        if self.len < MAX_DIRTY_RECTS {
+            self.rects[self.len] = merged;
+            self.len += 1;
+        } else {
+            self.rects[0].add(merged.x0, merged.y0, merged.x1 - merged.x0, merged.y1 - merged.y0);
+        }
     }
     fn iter(&self) -> core::slice::Iter<'_, Rect> { self.rects[..self.len].iter() }
 }
@@ -326,11 +344,16 @@ fn blit_shared(dst: &mut Screen, address: u64, width: i32, height: i32,
     let x1 = (dx + width).min(clip.x1).min(dst.width);
     let y1 = (dy + height).min(clip.y1).min(dst.height);
     if address == u64::MAX || x0 >= x1 || y0 >= y1 { return; }
+    let count = (x1 - x0) as usize;
     for y in y0..y1 {
         let src_row = ((y - dy) * width + (x0 - dx)) as usize;
         let dst_row = (y * dst.stride + x0) as usize;
-        for x in 0..(x1 - x0) as usize {
-            dst.bb[dst_row + x] = unsafe { (address as *const u32).add(src_row + x).read_volatile() };
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (address as *const u32).add(src_row),
+                dst.bb.as_mut_ptr().add(dst_row),
+                count,
+            );
         }
     }
 }

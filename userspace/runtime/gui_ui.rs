@@ -108,7 +108,7 @@ impl UiSurface {
     }
     pub fn put(&mut self, x: i32, y: i32, color: u32) {
         if x < 0 || y < 0 || x >= self.width || y >= self.height { return; }
-        unsafe { (self.address as *mut u32).add((y * self.stride + x) as usize).write_volatile(color); }
+        unsafe { (self.address as *mut u32).add((y * self.stride + x) as usize).write(color); }
     }
     pub fn clear(&mut self, color: u32) { self.fill(0, 0, self.width, self.height, color); }
     pub fn fill(&mut self, x: i32, y: i32, width: i32, height: i32, color: u32) {
