@@ -1,7 +1,7 @@
 # Kernel Modules (`.kkm`)
 
 KazuOS device drivers run in **ring3 as kernel modules** — `.kkm` files compiled
-from `crates/user_modules/*.rs`. This is the companion to `docs/KXE.md` (which
+from `userspace/modules/*.rs`. This is the companion to `docs/KXE.md` (which
 covers ordinary ring3 *programs*); read that first for the executable basics.
 
 For *why* drivers live in ring3 (and which subsystems deliberately stay in the
@@ -43,7 +43,7 @@ panic handler, the global allocator, and all the syscall wrappers.
 ```rust
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/module_runtime.rs");
+include!("../runtime/module_runtime.rs");
 
 pub fn kkm_info() -> KkmInfo {
     KkmInfo { name: "mydrv", depends: &[] }
@@ -125,11 +125,11 @@ privileged**. Modules run at `Driver`. The hardware-facing syscalls check
 
 ## Build pipeline
 
-`crates/kernel/build.rs` compiles every `*.rs` in `crates/user_modules/` (sorted by
+`crates/kernel/build.rs` compiles every `*.rs` in `userspace/modules/` (sorted by
 filename) during the kernel build:
 
 1. `rustc` → ELF: `--edition 2024 --target x86_64-unknown-none -C panic=abort
-   -C opt-level=3` linked with `crates/user_programs/link.ld`.
+   -C opt-level=3` linked with `userspace/programs/link.ld`.
 2. Collect `R_X86_64_RELATIVE` relocations (fixed up to `USER_BASE`) and the ELF
    entry point; compute the load mem size.
 3. `objcopy -O binary` → flat code, resized to mem size, with relocations patched in.
@@ -138,7 +138,7 @@ filename) during the kernel build:
    `/modules/modules.list`.
 
 Requires `rustc` and `objcopy` (LLVM) on `PATH`, same as the program build. No
-manual step is needed — adding a `.rs` file under `crates/user_modules/` and
+manual step is needed — adding a `.rs` file under `userspace/modules/` and
 rebuilding the kernel is enough to produce its `.kkm`.
 
 ## Loading, listing, and unloading
@@ -174,7 +174,7 @@ rejected.** `unload` marks the entry `Unloading` and calls
 via `sys_signal_check()`; the module then leaves `kkm_run`, runs `kkm_exit`, and
 exits. `kmod::on_process_exit` clears the table slot when the process is gone.
 
-The `modules` user program (`crates/user_programs/modules.rs`) wraps these
+The `modules` user program (`userspace/programs/modules.rs`) wraps these
 syscalls as a CLI:
 
 ```
@@ -203,7 +203,7 @@ offset  size  field
 
 ## Reference module: `ps2mouse`
 
-`crates/user_modules/ps2mouse.rs` is the canonical example:
+`userspace/modules/ps2mouse.rs` is the canonical example:
 
 - `kkm_init`: `sys_ioport_request(0x60, 1)` and `(0x64, 1)`, opens the
   `module_mouse` IPC channel, enables the PS/2 auxiliary port and streaming.

@@ -5,14 +5,11 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
 
-    let user_programs_dir = Path::new(&manifest_dir)
-        .parent()
-        .unwrap()
-        .join("user_programs");
-    let user_modules_dir = Path::new(&manifest_dir)
-        .parent()
-        .unwrap()
-        .join("user_modules");
+    let crates_dir = Path::new(&manifest_dir).parent().unwrap();
+    let repository_root = crates_dir.parent().unwrap();
+    let userspace_dir = repository_root.join("userspace");
+    let user_programs_dir = userspace_dir.join("programs");
+    let user_modules_dir = userspace_dir.join("modules");
     let link_ld = user_programs_dir.join("link.ld");
 
     if !link_ld.exists() {
@@ -21,13 +18,12 @@ fn main() {
 
     // Files included by user programs/modules via include!(). Changes must trigger a rebuild
     // of the embedded initrd so syscall numbers and runtime wrappers stay in sync with the kernel.
-    let workspace_root = Path::new(&manifest_dir).parent().unwrap();
-    let syscall_numbers = workspace_root
+    let syscall_numbers = crates_dir
         .join("kazuos_abi")
         .join("src")
         .join("syscall_numbers.rs");
-    let user_rt_runtime = workspace_root.join("user_rt").join("runtime.rs");
-    let user_rt_module_runtime = workspace_root.join("user_rt").join("module_runtime.rs");
+    let user_rt_runtime = userspace_dir.join("runtime").join("runtime.rs");
+    let user_rt_module_runtime = userspace_dir.join("runtime").join("module_runtime.rs");
     println!("cargo:rerun-if-changed={}", syscall_numbers.display());
     println!("cargo:rerun-if-changed={}", user_rt_runtime.display());
     println!("cargo:rerun-if-changed={}", user_rt_module_runtime.display());
@@ -239,8 +235,6 @@ fn main() {
     let gen_path = Path::new(&out_dir).join("user_programs_generated.rs");
     std::fs::write(&gen_path, generated).expect("failed to write user_programs_generated.rs");
 
-    let workspace_root = Path::new(&manifest_dir).parent().unwrap().parent().unwrap();
-
     // Load modules.list if present in user_modules dir.
     let modules_list_data = if user_modules_dir.exists() {
         let p = user_modules_dir.join("modules.list");
@@ -251,7 +245,7 @@ fn main() {
     };
 
     let kfs = build_kfs(&kxe_files, &kkm_files, &modules_list_data);
-    let initrd_path = workspace_root.join("target").join("initrd.kfs");
+    let initrd_path = repository_root.join("target").join("initrd.kfs");
     std::fs::create_dir_all(initrd_path.parent().unwrap()).ok();
     std::fs::write(&initrd_path, &kfs).expect("failed to write initrd.kfs");
 }

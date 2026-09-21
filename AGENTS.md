@@ -184,13 +184,13 @@ Syscall number constants live in the `kazuos-abi` crate. Keep real exec/loading 
 
 Single source of truth for all `SYS_*` constants — the kernel/user ABI.
 
-Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`user.rs` does `pub use kazuos_abi::*;`). Standalone-compiled code that can't use Cargo deps — the user-space runtimes (`crates/user_rt/*.rs`) and, transitively, all user programs/modules — pulls the same file in with `include!("../kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
+Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`user.rs` does `pub use kazuos_abi::*;`). Standalone-compiled code that can't use Cargo deps — the user-space runtimes (`userspace/runtime/*.rs`) and, transitively, all user programs/modules — pulls the same file in with `include!("../../crates/kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
 
 ### shell (user program, not a kernel module)
 
-The shell is a ring3 KXE user program at `crates/user_programs/shell.rs`, not a kernel
+The shell is a ring3 KXE user program at `userspace/programs/shell.rs`, not a kernel
 module. It talks to the kernel only via `int 0x80` syscalls. Other built-in user programs
-(`ps`, `ktop`, `cpuburner`, `gui`, …) also live in `crates/user_programs/`. Do not add shell
+(`ps`, `ktop`, `cpuburner`, `gui`, …) also live in `userspace/programs/`. Do not add shell
 or app logic to the kernel.
 
 ### Other core kernel modules
@@ -222,9 +222,9 @@ Responsibilities:
 
 - `KxeHeader` struct
 - `INIT_KXE`, `STRESS_EXIT_KXE` minimal test binaries
-- auto-generated `*_KXE` blobs (built from `crates/user_programs/*.rs` via `build.rs`)
+- auto-generated `*_KXE` blobs (built from `userspace/programs/*.rs` via `build.rs`)
 
-The `build.rs` compiles all `.rs` files in `crates/user_programs/` (except `syscall_numbers.rs`) to ELF, parses `.rela.dyn` for `R_X86_64_RELATIVE` relocations, applies `USER_BASE` fixup, builds KXE blobs, and emits `user_programs_generated.rs` into `OUT_DIR`. It also builds `initrd.kfs` containing all binaries.
+The `build.rs` compiles all `.rs` files in `userspace/programs/` (except `syscall_numbers.rs`) to ELF, parses `.rela.dyn` for `R_X86_64_RELATIVE` relocations, applies `USER_BASE` fixup, builds KXE blobs, and emits `user_programs_generated.rs` into `OUT_DIR`. It also builds `initrd.kfs` containing all binaries.
 
 ### `vfs.rs`
 
@@ -310,4 +310,4 @@ If QEMU fails, inspect:
 
 Keep `docs/ARCHITECTURE.md` updated when subsystem boundaries or roadmap change.
 Keep `docs/USER_ABI.md` updated when adding or changing syscalls, syscall arguments, return values, or process/user ABI behavior. It is the human-readable companion to `crates/kazuos_abi/src/syscall_numbers.rs`, which is the source of truth for syscall numbers.
-Keep `docs/MODULES.md` updated when the `.kkm` format, the module source contract (`crates/user_rt/module_runtime.rs`), the build pipeline, or the load/unload lifecycle changes.
+Keep `docs/MODULES.md` updated when the `.kkm` format, the module source contract (`userspace/runtime/module_runtime.rs`), the build pipeline, or the load/unload lifecycle changes.

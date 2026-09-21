@@ -7,7 +7,7 @@ use alloc::borrow::ToOwned;
 use alloc::format;
 use core::fmt::Write;
 
-include!("../kazuos_abi/src/syscall_numbers.rs");
+include!("../../crates/kazuos_abi/src/syscall_numbers.rs");
 
 pub struct KazuWriter;
 

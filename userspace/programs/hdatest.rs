@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/runtime.rs");
+include!("../runtime/runtime.rs");
 
 const SAMPLE_RATE: u32 = 48000;
 const AMPLITUDE: i16 = 8000;

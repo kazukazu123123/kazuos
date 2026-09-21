@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../../crates/user_rt/runtime.rs");
+include!("../runtime/runtime.rs");
 
 const STDIO_DEFAULT: u64 = 0xFFFF_FFFF;
 // Child inherits the shell's own stdin (fd 0) and stdout (fd 1), so a foreground child
