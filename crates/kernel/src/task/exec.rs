@@ -6,7 +6,7 @@ const USER_BASE: u64 = 0x0000_0080_0000_0000;
 const USER_STACK_TOP: u64 = 0x0000_0080_8000_0000;
 const USER_STACK_SIZE: u64 = 0x10000;
 
-pub const KXE_FLAG_MODULE: u32 = 1;
+pub const KXE_FLAG_DRIVER: u32 = 1;
 
 #[repr(C, packed)]
 struct KxeHeader {
@@ -99,14 +99,14 @@ pub fn spawn_user_with_args(path: &str, args: &[&[u8]]) -> u64 {
     spawn_kxe(path, kxe, args, crate::process::PrivilegeLevel::User)
 }
 
-pub fn spawn_module(path: &str) -> u64 {
+pub fn spawn_driver(path: &str) -> u64 {
     let image = match crate::fs::vfs::read_file(path) {
         Ok(data) => data,
         Err(_) => return 0,
     };
     let Some(kxe) = parse_kxe(&image) else { return 0; };
-    if kxe.flags & KXE_FLAG_MODULE == 0 { return 0; }
-    // Modules have no post-spawn fd setup, so make it runnable immediately.
+    if kxe.flags & KXE_FLAG_DRIVER == 0 { return 0; }
+    // Drivers have no post-spawn fd setup, so make it runnable immediately.
     let pid = spawn_kxe(path, kxe, &[], crate::process::PrivilegeLevel::Driver);
     if pid != 0 { crate::process::set_ready(pid); }
     pid

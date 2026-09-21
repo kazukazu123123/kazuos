@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../runtime/module_runtime.rs");
+include!("../runtime/driver_runtime.rs");
 
 const HDA_GCAP: u32 = 0x00;
 const HDA_GCTL: u32 = 0x08;
@@ -65,8 +65,8 @@ static IRQ_STREAM_BASE: core::sync::atomic::AtomicU32 = core::sync::atomic::Atom
 static IRQ_TID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static IRQ_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-pub fn kkm_info() -> KkmInfo {
-    KkmInfo { name: "hda", depends: &[] }
+pub fn kdm_info() -> KdmInfo {
+    KdmInfo { name: "hda", depends: &[] }
 }
 
 fn bdf(info: &PciDeviceInfo) -> u32 {
@@ -299,7 +299,7 @@ extern "C" fn irq_worker(_arg: u64) -> ! {
     sys_thread_exit()
 }
 
-pub fn kkm_init() -> bool {
+pub fn kdm_init() -> bool {
     let Some(bdf) = find_hda() else {
         println!("hda: no controller");
         return false;
@@ -388,7 +388,7 @@ pub fn kkm_init() -> bool {
     true
 }
 
-pub fn kkm_run() {
+pub fn kdm_run() {
     let mut message = [0u8; 8192];
     loop {
         if sys_signal_check() { return; }
@@ -415,7 +415,7 @@ pub fn kkm_run() {
     }
 }
 
-pub fn kkm_exit() {
+pub fn kdm_exit() {
     unsafe {
         let state = core::ptr::addr_of_mut!(HDA);
         let current = core::ptr::read(state);

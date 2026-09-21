@@ -9,26 +9,26 @@ fn main() {
     let repository_root = crates_dir.parent().unwrap();
     let userspace_dir = repository_root.join("userspace");
     let user_programs_dir = userspace_dir.join("programs");
-    let user_modules_dir = userspace_dir.join("modules");
+    let user_drivers_dir = userspace_dir.join("drivers");
     let link_ld = user_programs_dir.join("link.ld");
 
     if !link_ld.exists() {
         panic!("link.ld not found at {}", link_ld.display());
     }
 
-    // Files included by user programs/modules via include!(). Changes must trigger a rebuild
+    // Files included by user programs/drivers via include!(). Changes must trigger a rebuild
     // of the embedded initrd so syscall numbers and runtime wrappers stay in sync with the kernel.
     let syscall_numbers = crates_dir
         .join("kazuos_abi")
         .join("src")
         .join("syscall_numbers.rs");
     let user_rt_runtime = userspace_dir.join("runtime").join("runtime.rs");
-    let user_rt_module_runtime = userspace_dir.join("runtime").join("module_runtime.rs");
+    let user_rt_driver_runtime = userspace_dir.join("runtime").join("driver_runtime.rs");
     println!("cargo:rerun-if-changed={}", syscall_numbers.display());
     println!("cargo:rerun-if-changed={}", user_rt_runtime.display());
-    println!("cargo:rerun-if-changed={}", user_rt_module_runtime.display());
+    println!("cargo:rerun-if-changed={}", user_rt_driver_runtime.display());
     println!("cargo:rerun-if-changed={}", user_programs_dir.display());
-    println!("cargo:rerun-if-changed={}", user_modules_dir.display());
+    println!("cargo:rerun-if-changed={}", user_drivers_dir.display());
 
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
     let sysroot = get_sysroot(&rustc);
@@ -142,11 +142,11 @@ fn main() {
         println!("cargo:rerun-if-changed={}", rs_file.display());
     }
 
-    // Compile kernel modules (user_modules/*.rs) → /modules/*.kkm in KFS.
-    let mut kkm_files: Vec<(String, Vec<u8>)> = Vec::new();
-    if user_modules_dir.exists() {
-        let mut mod_entries: Vec<_> = std::fs::read_dir(&user_modules_dir)
-            .expect("failed to read user_modules dir")
+    // Compile KazuOS driver modules (user_drivers/*.rs) → /drivers/*.kdm in KFS.
+    let mut kdm_files: Vec<(String, Vec<u8>)> = Vec::new();
+    if user_drivers_dir.exists() {
+        let mut mod_entries: Vec<_> = std::fs::read_dir(&user_drivers_dir)
+            .expect("failed to read user_drivers dir")
             .filter_map(|e| e.ok())
             .filter(|e| {
                 e.path()
@@ -162,8 +162,8 @@ fn main() {
             let rs_file = entry.path();
             let stem = rs_file.file_stem().unwrap().to_str().unwrap().to_string();
 
-            let elf_path = Path::new(&out_dir).join(format!("kkm_{}.elf", stem));
-            let bin_path = Path::new(&out_dir).join(format!("kkm_{}.bin", stem));
+            let elf_path = Path::new(&out_dir).join(format!("kdm_{}.elf", stem));
+            let bin_path = Path::new(&out_dir).join(format!("kdm_{}.bin", stem));
 
             let status = Command::new(&rustc)
                 .args([
@@ -189,7 +189,7 @@ fn main() {
                 .expect("failed to run rustc");
 
             if !status.success() {
-                panic!("{}.rs (module) compilation failed", stem);
+                panic!("{}.rs (driver) compilation failed", stem);
             }
 
             let elf = std::fs::read(&elf_path).expect("failed to read elf");
@@ -207,7 +207,7 @@ fn main() {
                 .expect("failed to run objcopy");
 
             if !status.success() {
-                panic!("objcopy failed for module {}", stem);
+                panic!("objcopy failed for driver {}", stem);
             }
 
             let entry_addr = read_elf_entry(&elf);
@@ -222,9 +222,9 @@ fn main() {
                 }
             }
 
-            // KXE_FLAG_MODULE = 1
+            // KXE_FLAG_DRIVER = 1
             let kxe = build_kxe(&code, entry_addr, 1u32);
-            kkm_files.push((stem, kxe));
+            kdm_files.push((stem, kxe));
 
             println!("cargo:rerun-if-changed={}", rs_file.display());
         }
@@ -235,16 +235,16 @@ fn main() {
     let gen_path = Path::new(&out_dir).join("user_programs_generated.rs");
     std::fs::write(&gen_path, generated).expect("failed to write user_programs_generated.rs");
 
-    // Load modules.list if present in user_modules dir.
-    let modules_list_data = if user_modules_dir.exists() {
-        let p = user_modules_dir.join("modules.list");
+    // Load drivers.list if present in user_drivers dir.
+    let drivers_list_data = if user_drivers_dir.exists() {
+        let p = user_drivers_dir.join("drivers.list");
         println!("cargo:rerun-if-changed={}", p.display());
         std::fs::read(&p).unwrap_or_default()
     } else {
         Vec::new()
     };
 
-    let kfs = build_kfs(&kxe_files, &kkm_files, &modules_list_data);
+    let kfs = build_kfs(&kxe_files, &kdm_files, &drivers_list_data);
     let initrd_path = repository_root.join("target").join("initrd.kfs");
     std::fs::create_dir_all(initrd_path.parent().unwrap()).ok();
     std::fs::write(&initrd_path, &kfs).expect("failed to write initrd.kfs");
@@ -426,8 +426,8 @@ fn find_objcopy_in_sysroot() -> Option<String> {
 
 fn build_kfs(
     kxe_files: &[(String, Vec<u8>)],
-    kkm_files: &[(String, Vec<u8>)],
-    modules_list: &[u8],
+    kdm_files: &[(String, Vec<u8>)],
+    drivers_list: &[u8],
 ) -> Vec<u8> {
     const MAGIC: &[u8; 4] = b"KFS\0";
     const VERSION: u32 = 1;
@@ -453,18 +453,18 @@ fn build_kfs(
             flags: FLAG_FILE,
         });
     }
-    sources.push(Entry { path: "/modules", data: vec![], flags: FLAG_DIR });
-    for (stem, kkm) in kkm_files {
+    sources.push(Entry { path: "/drivers", data: vec![], flags: FLAG_DIR });
+    for (stem, kdm) in kdm_files {
         sources.push(Entry {
-            path: Box::leak(format!("/modules/{}.kkm", stem).into_boxed_str()),
-            data: kkm.clone(),
+            path: Box::leak(format!("/drivers/{}.kdm", stem).into_boxed_str()),
+            data: kdm.clone(),
             flags: FLAG_FILE,
         });
     }
-    if !modules_list.is_empty() {
+    if !drivers_list.is_empty() {
         sources.push(Entry {
-            path: "/modules/modules.list",
-            data: modules_list.to_vec(),
+            path: "/drivers/drivers.list",
+            data: drivers_list.to_vec(),
             flags: FLAG_FILE,
         });
     }

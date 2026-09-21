@@ -1,45 +1,45 @@
 use crate::util::SyncUnsafeCell;
 
-const MAX_MODULES: usize = 16;
+const MAX_DRIVERS: usize = 16;
 const MAX_NAME: usize = 32;
 
-/// Size of a serialized entry in the SYS_MODULE_LIST/INFO buffer (bytes).
+/// Size of a serialized entry in the SYS_DRIVER_LIST/INFO buffer (bytes).
 pub const ENTRY_SIZE: usize = 48;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum ModuleStatus {
+pub enum DriverStatus {
     Running   = 0,
     Unloading = 1,
     Failed    = 2,
 }
 
 #[derive(Clone, Copy)]
-struct ModuleEntry {
+struct DriverEntry {
     id:       u32,
     name:     [u8; MAX_NAME],
     name_len: u8,
     pid:      u64,
-    status:   ModuleStatus,
+    status:   DriverStatus,
 }
 
-struct ModuleTable {
-    entries: [Option<ModuleEntry>; MAX_MODULES],
+struct DriverTable {
+    entries: [Option<DriverEntry>; MAX_DRIVERS],
     next_id: u32,
 }
 
-static TABLE: SyncUnsafeCell<ModuleTable> = SyncUnsafeCell::new(ModuleTable {
-    entries: [None; MAX_MODULES],
+static TABLE: SyncUnsafeCell<DriverTable> = SyncUnsafeCell::new(DriverTable {
+    entries: [None; MAX_DRIVERS],
     next_id: 1,
 });
 
-fn table() -> &'static mut ModuleTable {
+fn table() -> &'static mut DriverTable {
     unsafe { &mut *TABLE.0.get() }
 }
 
 pub fn load(path: &str) -> u64 {
     let name = extract_name(path);
     let t = table();
-    // Reject duplicate module names.
+    // Reject duplicate driver names.
     for slot in t.entries.iter() {
         if let Some(e) = slot {
             let len = e.name_len as usize;
@@ -48,7 +48,7 @@ pub fn load(path: &str) -> u64 {
             }
         }
     }
-    let pid = crate::task::exec::spawn_module(path);
+    let pid = crate::task::exec::spawn_driver(path);
     if pid == 0 {
         return u64::MAX;
     }
@@ -56,17 +56,17 @@ pub fn load(path: &str) -> u64 {
         if slot.is_none() {
             let id = t.next_id;
             t.next_id += 1;
-            let mut entry = ModuleEntry {
+            let mut entry = DriverEntry {
                 id,
                 name: [0; MAX_NAME],
                 name_len: name.len().min(MAX_NAME) as u8,
                 pid,
-                status: ModuleStatus::Running,
+                status: DriverStatus::Running,
             };
             let len = name.len().min(MAX_NAME);
             entry.name[..len].copy_from_slice(name[..len].as_bytes());
             *slot = Some(entry);
-            crate::log_info!("kmod: loaded '{}' pid={} id={}", name, pid, id);
+            crate::log_info!("driver: loaded '{}' pid={} id={}", name, pid, id);
             return id as u64;
         }
     }
@@ -79,9 +79,9 @@ pub fn unload(id: u32) -> bool {
     for slot in t.entries.iter_mut() {
         if let Some(e) = slot {
             if e.id == id {
-                e.status = ModuleStatus::Unloading;
-                crate::process::send_module_exit(e.pid);
-                crate::log_info!("kmod: unloading id={} pid={}", id, e.pid);
+                e.status = DriverStatus::Unloading;
+                crate::process::send_driver_exit(e.pid);
+                crate::log_info!("driver: unloading id={} pid={}", id, e.pid);
                 return true;
             }
         }
@@ -95,7 +95,7 @@ pub fn on_process_exit(pid: u64) {
         if let Some(e) = slot {
             if e.pid == pid {
                 crate::log_info!(
-                    "kmod: module '{}' exited",
+                    "driver: driver '{}' exited",
                     core::str::from_utf8(&e.name[..e.name_len as usize]).unwrap_or("?")
                 );
                 *slot = None;
@@ -160,13 +160,13 @@ pub fn load_from_list(path: &str) {
         if !line.is_empty() && !line.starts_with('#') {
             let result = load(line);
             if result == u64::MAX {
-                crate::logln!("kmod: failed to load '{}'", line);
+                crate::logln!("driver: failed to load '{}'", line);
             }
         }
     }
 }
 
-fn write_entry(buf_ptr: u64, e: &ModuleEntry) {
+fn write_entry(buf_ptr: u64, e: &DriverEntry) {
     let ptr = buf_ptr as *mut u8;
     unsafe {
         // offset  0: id (u32)
