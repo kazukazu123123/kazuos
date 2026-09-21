@@ -198,9 +198,10 @@ module. It talks to the kernel only via `int 0x80` syscalls. Other built-in user
 (`ps`, `ktop`, `cpuburner`, …) also live in `userspace/programs/`. Do not add shell or app
 logic to the kernel.
 
-GUI compositor and client work currently lives only on the `wip/gui` branch. It is not
-part of `main`, and there is currently no plan to merge it into `main`. Do not treat GUI
-as a shipped subsystem or move WIP GUI code into `main` unless explicitly requested.
+Active GUI compositor and client work lives on the `wip/gui` branch. A legacy mixed
+audio/GUI snapshot remains on `wip/audio-gui`. GUI is not part of `main`, and there is
+currently no plan to merge it into `main`. Do not treat GUI as a shipped subsystem or
+move WIP GUI code into `main` unless explicitly requested.
 
 ### Other core kernel modules
 
