@@ -189,7 +189,7 @@ Syscall number constants live in the `kazuos-abi` crate. Keep real exec/loading 
 
 Single source of truth for all `SYS_*` constants — the kernel/user ABI.
 
-Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`syscall/runtime.rs` re-exports `kazuos_abi::*`). Standalone-compiled code that can't use Cargo deps — `userspace/runtime/runtime.rs` and `module_runtime.rs`, and transitively all user programs/modules — pulls the same file in with `include!("../../crates/kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
+Location: `crates/kazuos_abi/src/syscall_numbers.rs`. The kernel depends on it via Cargo (`syscall/runtime.rs` re-exports `kazuos_abi::*`). Standalone-compiled code that can't use Cargo deps — `userspace/runtime/runtime.rs` and `driver_runtime.rs`, and transitively all user programs/drivers — pulls the same file in with `include!("../../crates/kazuos_abi/src/syscall_numbers.rs")`. Update this file when adding or renumbering syscalls, then update `docs/USER_ABI.md`.
 
 ### shell (user program, not a kernel module)
 
@@ -208,7 +208,7 @@ move WIP GUI code into `main` unless explicitly requested.
 - `arch/x86_64/smp.rs` — AP bring-up (INIT-SIPI-SIPI, trampoline), per-CPU `CpuData`, APIC-id↔index.
 - `arch/x86_64/gdt.rs` / `arch/x86_64/idt.rs` — per-CPU GDT/TSS and the IDT.
 - `task/` — see above (processes, threads, scheduler).
-- `kmod.rs` — ring3 kernel modules (`.kkm`): load/unload/list (`SYS_MODULE_*`).
+- `driver_module.rs` — ring3 KazuOS driver modules (`.kdm`): load/unload/list (`SYS_DRIVER_*`).
 - `ipc.rs` / `fs/pipe.rs` / `fs/fd.rs` — named IPC channels, pipes, and the per-process fd table.
 - `terminal/` (+ `tty.rs`, `console.rs` shim) — text console rendering and TTY; `fs/devfs.rs`
   and `fs/vfs.rs` — device/virtual filesystem.
@@ -257,7 +257,7 @@ Suggested:
 
 Already implemented: VFS core, initramfs, shell `ls`/`cat`, `/bin` executables (KXE),
 per-process address spaces, a preemptive SMP round-robin scheduler, user-space threads
-(spawn/exit/join), ring3 driver modules (`.kkm`), IPC, pipes, and the ring3 HDA driver.
+(spawn/exit/join), ring3 driver modules (`.kdm`), IPC, pipes, and the ring3 HDA driver.
 
 The GUI compositor and clients are WIP on `wip/gui`, are not implemented on `main`, and
 are intentionally not planned for merging into `main` at this time.
@@ -266,7 +266,7 @@ Remaining direction, roughly in priority order:
 
 1. procfs (a process/info filesystem)
 2. richer shell foreground/background job control (`&` is already supported)
-3. migrate the remaining in-kernel drivers to ring3 `.kkm` (see Driver Policy in
+3. migrate the remaining in-kernel drivers to ring3 `.kdm` (see Driver Policy in
    `docs/ARCHITECTURE.md`)
 4. richer device drivers (net, disk-backed FS)
 5. scheduler refinements (load-aware placement / migration; optional priority **with
@@ -321,4 +321,4 @@ If QEMU fails, inspect:
 
 Keep `docs/ARCHITECTURE.md` updated when subsystem boundaries or roadmap change.
 Keep `docs/USER_ABI.md` updated when adding or changing syscalls, syscall arguments, return values, or process/user ABI behavior. It is the human-readable companion to `crates/kazuos_abi/src/syscall_numbers.rs`, which is the source of truth for syscall numbers.
-Keep `docs/MODULES.md` updated when the `.kkm` format, the module source contract (`userspace/runtime/module_runtime.rs`), the build pipeline, or the load/unload lifecycle changes.
+Keep `docs/DRIVERS.md` updated when the `.kdm` format, the driver source contract (`userspace/runtime/driver_runtime.rs`), the build pipeline, or the load/unload lifecycle changes.

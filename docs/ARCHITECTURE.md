@@ -2,7 +2,7 @@
 
 ## Overview
 
-KazuOS is currently a small monolithic-style x86_64 hobby OS. Core services live in kernel space: boot initialization, memory management, interrupt handling, processes/threads/scheduling, syscalls, VFS, and IPC. The shell and apps run in ring3, and device drivers are increasingly ring3 `.kkm` modules (see Driver Policy below).
+KazuOS is currently a small monolithic-style x86_64 hobby OS. Core services live in kernel space: boot initialization, memory management, interrupt handling, processes/threads/scheduling, syscalls, VFS, and IPC. The shell and apps run in ring3, and device drivers are increasingly ring3 `.kdm` modules (see Driver Policy below).
 
 The long-term direction can still move toward a hybrid architecture by introducing clearer boundaries between the kernel core, VFS, process manager, memory manager, and drivers.
 
@@ -285,18 +285,18 @@ ring3 drivers reach hardware: `SYS_IOPORT_REQUEST` (TSS I/O permission bitmap),
 `SYS_DMA_ALLOC`, `SYS_IRQ_CLAIM`, `SYS_IRQ_WAIT`, `SYS_PCI_BAR_MAP`, `SYS_PCI_ENABLE`. A **minimal framebuffer blit**
 is also justified in ring0 so the kernel can show panic / early-boot diagnostics.
 
-**Belongs in ring3:** device drivers. They run as kernel modules — `.kkm` files
-built from `userspace/modules/*.rs`, loaded via `SYS_MODULE_LOAD`, running as
+**Belongs in ring3:** device drivers. They run as KazuOS driver modules — `.kdm` files
+built from `userspace/drivers/*.rs`, loaded via `SYS_DRIVER_LOAD`, running as
 ring3 processes at `PrivilegeLevel::Driver` (which only gates *which syscalls are
 allowed*; all processes run ring3). The format, source contract, build pipeline,
-and load/unload lifecycle are documented in `docs/MODULES.md`. `ps2mouse` is the reference example: it does
+and load/unload lifecycle are documented in `docs/DRIVERS.md`. `ps2mouse` is the reference example: it does
 PS/2 `in`/`out` from ring3 after requesting the ports, and delivers events over
 IPC. `hda` is a ring3 PCI/DMA driver that receives PCM from the hardware-neutral
 `/dev/audio` frontend over `module_audio` and services its claimed IRQ on a dedicated thread.
 Rich console/terminal rendering (font shaping, scrollback) is also a ring3 concern,
 distinct from the minimal panic blit above.
 
-**Rule of thumb for new drivers:** write them as ring3 `.kkm` modules, not as new
+**Rule of thumb for new drivers:** write them as ring3 `.kdm` modules, not as new
 files under `crates/kernel/src/drivers/`. The existing in-kernel drivers
 (framebuffer rendering, `beep`, `pci` enumeration, `power`) predate this policy; they
 work and need not be moved urgently, but they are candidates to migrate to ring3 over
@@ -305,7 +305,7 @@ time. Large protocol/library stacks (e.g. a TLS library) must never live in ring
 
 **`keyboard` is deliberately kept in-kernel** and is *not* a migration candidate. It
 is the recovery input path: a ring3 keyboard module that is accidentally unloaded
-(`SYS_MODULE_UNLOAD`) or crashes would leave no way to type to recover — the system
+(`SYS_DRIVER_UNLOAD`) or crashes would leave no way to type to recover — the system
 is bricked. This is asymmetric with the mouse (losing the mouse is survivable via the
 keyboard; losing the keyboard is not). Keyboard is also the stdin source for every
 program (`FdEntry::ConsoleIn` reads it directly). Keeping it in ring0 is an

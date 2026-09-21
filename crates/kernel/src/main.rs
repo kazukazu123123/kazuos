@@ -7,7 +7,7 @@ extern crate alloc;
 pub mod allocator;
 pub mod arch;
 pub mod fs;
-pub mod kmod;
+pub mod driver_module;
 pub mod boot;
 pub mod console;
 pub mod debug;
@@ -62,12 +62,12 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) {
         panic!("initramfs invalid: {:?}", error);
     }
     // Disable interrupts while spawning processes so the timer cannot preempt the
-    // kernel before all processes are fully configured. This MUST cover module
-    // loading too: a module (e.g. ps2mouse.kkm) entered via the timer path before
+    // kernel before all processes are fully configured. This MUST cover driver
+    // loading too: a driver (e.g. ps2mouse.kdm) entered via the timer path before
     // enter_next_process() runs would make its first blocking syscall with
     // KERNEL_RETURN_STACK still 0 → rsp=0 → double fault.
     unsafe { core::arch::asm!("cli"); }
-    kmod::load_from_list("/modules/modules.list");
+    driver_module::load_from_list("/drivers/drivers.list");
     let pid = crate::task::exec::spawn("/bin/shell.kxe");
     if pid == 0 {
         panic!("shell spawn failed");
