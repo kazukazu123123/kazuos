@@ -24,9 +24,15 @@ fn main() {
         .join("syscall_numbers.rs");
     let user_rt_runtime = userspace_dir.join("runtime").join("runtime.rs");
     let user_rt_module_runtime = userspace_dir.join("runtime").join("module_runtime.rs");
+    let user_rt_gui_protocol = userspace_dir.join("runtime").join("gui_protocol.rs");
+    let user_rt_gui_client = userspace_dir.join("runtime").join("gui_client.rs");
+    let user_rt_gui_ui = userspace_dir.join("runtime").join("gui_ui.rs");
     println!("cargo:rerun-if-changed={}", syscall_numbers.display());
     println!("cargo:rerun-if-changed={}", user_rt_runtime.display());
     println!("cargo:rerun-if-changed={}", user_rt_module_runtime.display());
+    println!("cargo:rerun-if-changed={}", user_rt_gui_protocol.display());
+    println!("cargo:rerun-if-changed={}", user_rt_gui_client.display());
+    println!("cargo:rerun-if-changed={}", user_rt_gui_ui.display());
     println!("cargo:rerun-if-changed={}", user_programs_dir.display());
     println!("cargo:rerun-if-changed={}", user_modules_dir.display());
 

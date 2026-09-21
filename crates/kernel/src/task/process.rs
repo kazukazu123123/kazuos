@@ -435,6 +435,7 @@ pub fn exit_current() {
             crate::scheduler::clear_current_user(pid);
             crate::fs::fd::close_all(pid);
             crate::syscall::runtime::release_irq_for_pid(pid);
+            crate::ipc::cleanup_pid(pid);
             crate::syscall::runtime::free_dma_for_pid(pid);
             crate::syscall::runtime::free_pci_mmio_for_pid(pid);
             crate::syscall::runtime::free_heap_for_pid(pid);
@@ -675,6 +676,15 @@ pub fn foreground_leaf(root: u64) -> u64 {
             }
         }
         cur
+    })
+}
+
+pub fn send_sigint_foreground(root: u64) -> bool {
+    crate::task::thread::with_threads_lock(|| {
+        let leaf = foreground_leaf(root);
+        if leaf == 0 || leaf == root { return false; }
+        send_sigint(leaf);
+        true
     })
 }
 

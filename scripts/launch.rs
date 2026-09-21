@@ -102,6 +102,7 @@ fn run() -> Result<(), String> {
         "-m".into(), "1G".into(),
         "-net".into(), "none".into(),
         "-device".into(), "VGA".into(),
+        "-display".into(), "gtk,grab-on-hover=on,show-cursor=off".into(),
         "-audiodev".into(), format!("{audiodev_backend},id=snd0"),
         "-serial".into(), "stdio".into(),
         "-smp".into(), "4".into(),

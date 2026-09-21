@@ -86,10 +86,14 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `66` | `SYS_IRQ_CLAIM` | `arg0 = PCI BDF` | claimed legacy IRQ, or `u64::MAX` on error (driver only) |
 | `67` | `SYS_IRQ_RELEASE` | `arg0 = claimed IRQ` | `0` on success; `u64::MAX` on error (driver only) |
 | `68` | `SYS_IRQ_ACK` | `arg0 = claimed IRQ` | `0` on success; `u64::MAX` on error (driver only); unmasks a level-triggered IRQ after device acknowledgement |
+| `69` | `SYS_IPC_TRY_SEND_TO` | `arg0 = channel id`, `arg1 = target-prefixed envelope`, `arg2 = envelope len` | payload bytes queued, `0` if full, or `u64::MAX` on error/unreachable target |
+| `70` | `SYS_IPC_TRY_RECV_FROM` | `arg0 = channel id`, `arg1 = receive envelope`, `arg2 = envelope capacity` | sender prefix plus payload bytes, `0` if no message targets caller, or `u64::MAX` on error/short buffer |
 
 Each SHM owner and grantee holds one reference. A holder can map an object once per process, and repeated maps return the existing VA. `SYS_SHM_UNMAP` removes only the caller's mapping. `SYS_SHM_CLOSE` removes only the caller's mapping and reference; closing the owner's reference does not revoke grantees. The object and its frames are released after the last holder closes or exits. Only a current owner-holder can grant access, and the target PID must name a live process.
 
 `SYS_SHM_UNMAP` and `SYS_SHM_CLOSE` currently return `u64::MAX` when the caller has more than one live thread. KazuOS does not yet implement cross-CPU TLB shootdown, so this restriction prevents another thread in the same address space from retaining a stale mapping after its physical frames are released. Process-exit cleanup runs only after the process's other threads have exited.
+
+Anonymous pipes buffer at most 1 MiB each. A pipe write that would exceed the limit writes nothing and returns `0`; callers that require reliable delivery must retry, apply backpressure, or disconnect the peer.
 
 ## `SYS_PROCESS_INFO` selectors
 
@@ -322,30 +326,44 @@ The driver plays the file synchronously (one file at a time); the next `SYS_IPC_
 
 ## IPC (Inter-Process Communication)
 
-KazuOS provides named message-passing channels. Any process can create or attach to a channel by name.
+KazuOS provides named message-passing channels. Any process can create or attach to a channel by name. Send and receive operations require the calling process to hold an open reference to that channel; stale or guessed IDs are rejected.
 
 ### Channel lifecycle
 
 ```
 channel_id = SYS_IPC_OPEN("my-service", 10)   // create or attach
-SYS_IPC_SEND(channel_id, buf, len)             // send a message (blocks if queue full)
+SYS_IPC_SEND(channel_id, buf, len)             // legacy shared-queue send
 len = SYS_IPC_RECV(channel_id, buf, max_len)   // receive a message (blocks until available)
 SYS_IPC_CLOSE(channel_id)                      // decrement ref count; destroyed when it reaches 0
 ```
 
 ### Constraints
 
-- Max message size: 8192 bytes
-- Max queued messages per channel: 8
+- Max message payload: 8192 bytes
+- Max legacy shared-queue messages per channel: 8
+- Max directed queued messages per sender/target route: 8
+- Max directed queued messages per target PID and channel: 64
+- Max directed queued messages per channel: 256
+- Max directed payload bytes per channel: 1 MiB
 - Max open channels: 32
-- `SYS_IPC_SEND` blocks when the queue is full; unblocked when a receiver calls `SYS_IPC_RECV`
-- `SYS_IPC_RECV` blocks when the queue is empty; unblocked when a sender calls `SYS_IPC_SEND`
+- Existing `SYS_IPC_SEND`, `SYS_IPC_RECV`, and `SYS_IPC_TRY_RECV` use one shared consumptive queue: each message is removed by one receiver, not copied to every holder. When that queue is full, `SYS_IPC_SEND` discards the oldest message before enqueueing the new one; this keeps hardware publishers nonblocking.
+- `SYS_IPC_RECV` blocks when the shared queue is empty. `SYS_IPC_TRY_RECV` returns `0` instead.
+- Directed messages use a separate per-target bounded queue and are never evicted. A full queue for that target makes `SYS_IPC_TRY_SEND_TO` return `0`, so the sender must retry, apply backpressure, or disconnect.
+
+### Directed envelopes
+
+The directed syscalls keep the three-argument syscall ABI by placing routing metadata in the user buffer:
+
+- Send envelope: `u64 target_pid` followed by 1..8192 payload bytes.
+- Receive envelope: capacity for `u64 sender_pid` followed by payload. The kernel writes the authenticated current sender PID; user space cannot spoof it.
+
+A directed send succeeds only while both sender and target have the same named channel open and the target PID is live. Receive considers only messages whose target equals the caller's kernel-known PID; one process cannot consume another target's messages. A too-small receive buffer returns `u64::MAX` without dequeuing the message. Closing the channel or exiting removes messages targeting that PID and releases its channel references. Already queued messages sent by it remain deliverable to their live targets. The final close destroys the channel even if unread legacy messages remain.
+
+`SYS_IPC_TRY_SEND_TO` returns the payload length on success. `SYS_IPC_TRY_RECV_FROM` returns the total envelope length, including the 8-byte sender prefix. Both are nonblocking.
 
 ### Intended use
 
-A driver or service process opens a named channel at startup and loops on `SYS_IPC_RECV`.  
-Client processes open the same channel by name and call `SYS_IPC_SEND` to make requests.  
-Responses can be sent back on a separate per-client channel opened by the client.
+Lossy shared-queue IPC remains suitable for single-consumer hardware/event channels such as `module_mouse`. Services that need authenticated request/reply routing open one named channel, receive directed requests with kernel-stamped sender PIDs, and direct replies to those PIDs without private response channels.
 
 ---
 
@@ -377,7 +395,7 @@ loop:
 To silently ignore Ctrl+C, call `SYS_SIGNAL_CATCH(1)` and never check `SYS_SIGNAL_CHECK`.  
 To restore default kill behavior, call `SYS_SIGNAL_CATCH(0)`.
 
-For processes that do not own the framebuffer, Ctrl+C is delivered by the shell's `wait_foreground` loop via `SYS_KILL`.
+A GUI terminal handles Ctrl+C with `SYS_SIGINT_FG(root_shell_pid)`. The kernel follows nested `SYS_WAIT` links from that root and delivers SIGINT to the foreground leaf. If the root shell itself is at its prompt, the terminal writes `0x03` to its input pipe instead. This preserves Ctrl+C behavior across nested shells and foreground commands.
 
 ---
 

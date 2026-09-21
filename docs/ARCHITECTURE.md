@@ -196,6 +196,16 @@ Current status:
 - `SYS_EXIT` terminates the process and returns to the scheduler
 - `SYS_EXEC` loads a KXE binary from VFS and spawns a new process
 
+### GUI Compositor
+
+`userspace/programs/gui.rs` is a ring3 compositor and the exclusive physical framebuffer and input owner while the desktop is active. The launcher remains compositor-local for now. Task Manager, Terminal, Profiler, and GUI Demo are independent ring3 clients in `userspace/programs/`.
+
+GUI clients rendezvous on the `gui-control` named channel and use directed IPC with kernel-stamped sender PIDs and kernel-enforced target filtering. A client discovers the live `/bin/gui.kxe` PID through process enumeration and sends Connect with its requested content size and title; the compositor treats only the authenticated IPC sender as the client identity. The built-in launcher only executes the selected KXE, so the same client can also be started from the console shell or compositor Terminal.
+
+For each accepted bounded Connect request, the compositor creates, maps, and grants two SHM pixel buffers to the sender PID. Clients alternate between released buffers; Commit transfers a buffer to the compositor, and BufferRelease returns the previous front buffer. Window chrome, focus, stacking, dragging, close policy, taskbar, and final framebuffer composition remain compositor-owned. Shared client lifecycle and drawing support lives in `userspace/runtime/gui_client.rs` and `gui_ui.rs`; the wire protocol is documented in `docs/GUI_PROTOCOL.md`.
+
+The compositor event loop polls mouse, keyboard, and directed client messages on one thread. This is required until cross-CPU TLB shootdown exists, because explicit SHM close is restricted to single-threaded processes. `ps2mouse.kkm` publishes cumulative movement totals, allowing the compositor to recover the correct relative delta even if intermediate lossy broadcast messages are dropped.
+
 ### Process Tracking and Scheduler
 
 Located in `crates/kernel/src/task/process.rs`, `crates/kernel/src/task/thread.rs`, and

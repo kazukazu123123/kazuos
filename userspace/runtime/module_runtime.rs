@@ -420,7 +420,7 @@ pub fn sys_ipc_open(name: &[u8]) -> u64 {
     r
 }
 
-/// Send data to an IPC channel. Blocks if queue is full.
+/// Send data to the legacy shared IPC queue.
 pub fn sys_ipc_send(channel: u64, data: &[u8]) -> u64 {
     let r: u64;
     unsafe {
@@ -448,6 +448,26 @@ pub fn sys_ipc_recv(channel: u64, buf: &mut [u8]) -> u64 {
         );
     }
     r
+}
+
+pub fn sys_ipc_try_send_to(channel: u64, target: u64, data: &[u8]) -> u64 {
+    if data.is_empty() || data.len() > IPC_MAX_MESSAGE_SIZE { return u64::MAX; }
+    let mut envelope = alloc::vec![0u8; IPC_PID_PREFIX_SIZE + data.len()];
+    envelope[..IPC_PID_PREFIX_SIZE].copy_from_slice(&target.to_le_bytes());
+    envelope[IPC_PID_PREFIX_SIZE..].copy_from_slice(data);
+    syscall(SYS_IPC_TRY_SEND_TO, channel, envelope.as_ptr() as u64, envelope.len() as u64)
+}
+
+pub fn sys_ipc_try_recv_from(channel: u64, data: &mut [u8]) -> (u64, u64) {
+    if data.is_empty() || data.len() > IPC_MAX_MESSAGE_SIZE { return (u64::MAX, 0); }
+    let mut envelope = alloc::vec![0u8; IPC_PID_PREFIX_SIZE + data.len()];
+    let result = syscall(SYS_IPC_TRY_RECV_FROM, channel, envelope.as_mut_ptr() as u64, envelope.len() as u64);
+    if result == 0 || result == u64::MAX { return (result, 0); }
+    if result < IPC_PID_PREFIX_SIZE as u64 || result as usize > envelope.len() { return (u64::MAX, 0); }
+    let sender = u64::from_le_bytes(envelope[..IPC_PID_PREFIX_SIZE].try_into().unwrap());
+    let len = result as usize - IPC_PID_PREFIX_SIZE;
+    data[..len].copy_from_slice(&envelope[IPC_PID_PREFIX_SIZE..IPC_PID_PREFIX_SIZE + len]);
+    (sender, len as u64)
 }
 
 pub fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {

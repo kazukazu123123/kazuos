@@ -41,6 +41,9 @@ fn mouse_cmd(cmd: u8) {
 
 static mut PKT: [u8; 3] = [0; 3];
 static mut PKT_IDX: u8  = 0;
+static mut EPOCH: u64 = 0;
+static mut TOTAL_X: i64 = 0;
+static mut TOTAL_Y: i64 = 0;
 
 /// Returns Some((buttons, dx, dy)) when a complete 3-byte packet is ready.
 fn feed_byte(data: u8) -> Option<(u8, i16, i16)> {
@@ -56,10 +59,22 @@ fn feed_byte(data: u8) -> Option<(u8, i16, i16)> {
             PKT_IDX = 0;
             let pb = PKT;
             let buttons = pb[0] & 0x07;
-            let mut dx = pb[1] as i16;
-            let mut dy = pb[2] as i16;
-            if pb[0] & 0x10 != 0 { dx -= 256; }
-            if pb[0] & 0x20 != 0 { dy -= 256; }
+            let x_negative = pb[0] & 0x10 != 0;
+            let y_negative = pb[0] & 0x20 != 0;
+            let dx = if pb[0] & 0x40 != 0 {
+                if x_negative { -255 } else { 255 }
+            } else if x_negative {
+                pb[1] as i16 - 256
+            } else {
+                pb[1] as i16
+            };
+            let dy = if pb[0] & 0x80 != 0 {
+                if y_negative { -255 } else { 255 }
+            } else if y_negative {
+                pb[2] as i16 - 256
+            } else {
+                pb[2] as i16
+            };
             return Some((buttons, dx, dy));
         }
         None
@@ -69,10 +84,16 @@ fn feed_byte(data: u8) -> Option<(u8, i16, i16)> {
 fn send_event(buttons: u8, dx: i16, dy: i16) {
     let ch = unsafe { IPC_CH };
     if ch == 0 || ch == u64::MAX { return; }
-    let mut msg = [0u8; 5];
+    let (epoch, total_x, total_y) = unsafe {
+        TOTAL_X = TOTAL_X.wrapping_add(dx as i64);
+        TOTAL_Y = TOTAL_Y.wrapping_add(dy as i64);
+        (EPOCH, TOTAL_X, TOTAL_Y)
+    };
+    let mut msg = [0u8; 25];
     msg[0] = buttons;
-    msg[1..3].copy_from_slice(&dx.to_le_bytes());
-    msg[3..5].copy_from_slice(&dy.to_le_bytes());
+    msg[1..9].copy_from_slice(&epoch.to_le_bytes());
+    msg[9..17].copy_from_slice(&total_x.to_le_bytes());
+    msg[17..25].copy_from_slice(&total_y.to_le_bytes());
     sys_ipc_send(ch, &msg);
 }
 
@@ -85,7 +106,14 @@ pub fn kkm_init() -> bool {
     // Open IPC channel before initialising hardware so no events are missed.
     let ch = sys_ipc_open(b"module_mouse");
     if ch == u64::MAX { return false; }
-    unsafe { IPC_CH = ch; }
+    unsafe {
+        IPC_CH = ch;
+        PKT_IDX = 0;
+        EPOCH = syscall(SYS_CPU_INFO, 0, 0, 0).wrapping_shl(32)
+            ^ syscall(SYS_PROCESS_INFO, 0, 0, 0);
+        TOTAL_X = 0;
+        TOTAL_Y = 0;
+    }
 
     // Enable PS/2 auxiliary port and start streaming.
     outb(0x64, 0xA8);

@@ -894,13 +894,15 @@ pub(crate) fn sys_try_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
             }
         }
         Some(crate::fs::fd::FdEntry::PipeRead(pipe_id)) => {
-            if crate::fs::pipe::is_empty(pipe_id) {
-                return if crate::fs::pipe::writer_closed(pipe_id) { u64::MAX } else { 0 };
-            }
-            let mut kbuf = alloc::vec![0u8; buf_len as usize];
-            let n = crate::fs::pipe::read(pipe_id, &mut kbuf);
-            unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
-            n as u64
+            crate::task::thread::with_threads_lock(|| {
+                if crate::fs::pipe::is_empty(pipe_id) {
+                    return if crate::fs::pipe::writer_closed(pipe_id) { u64::MAX } else { 0 };
+                }
+                let mut kbuf = alloc::vec![0u8; buf_len as usize];
+                let n = crate::fs::pipe::read(pipe_id, &mut kbuf);
+                unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
+                n as u64
+            })
         }
         _ => u64::MAX,
     }

@@ -295,19 +295,20 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     let mut buttons: u8 = 0;
     let mut last_dx: i16 = 0;
     let mut last_dy: i16 = 0;
+    let mut last_total: Option<(u64, i64, i64)> = None;
 
     draw_hud(&info, mx, my, 0, 0, 0);
     save_cross(&info, mx, my);
     draw_cross(&info, mx, my, pack(&info, 0xFF, 0xFF, 0x00));
 
-    let mut msg = [0u8; 5];
+    let mut msg = [0u8; 25];
 
     loop {
         // Ctrl+C check
         if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) != 0 { break; }
 
         // Receive mouse event (blocking)
-        let n = syscall(SYS_IPC_RECV, ipc, msg.as_mut_ptr() as u64, 5);
+        let n = syscall(SYS_IPC_RECV, ipc, msg.as_mut_ptr() as u64, msg.len() as u64);
         if n == u64::MAX {
             continue;
         }
@@ -315,13 +316,22 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
             // Woken without data (e.g. by signal) — check at top of loop
             continue;
         }
-        if n < 5 {
+        if n != msg.len() as u64 {
             continue;
         }
 
         buttons = msg[0];
-        let dx = i16::from_le_bytes([msg[1], msg[2]]);
-        let dy = i16::from_le_bytes([msg[3], msg[4]]);
+        let epoch = u64::from_le_bytes(msg[1..9].try_into().unwrap());
+        let total_x = i64::from_le_bytes(msg[9..17].try_into().unwrap());
+        let total_y = i64::from_le_bytes(msg[17..25].try_into().unwrap());
+        let (dx, dy) = match last_total {
+            Some((last_epoch, x, y)) if last_epoch == epoch => (
+                total_x.wrapping_sub(x).clamp(i16::MIN as i64, i16::MAX as i64) as i16,
+                total_y.wrapping_sub(y).clamp(i16::MIN as i64, i16::MAX as i64) as i16,
+            ),
+            _ => (0, 0),
+        };
+        last_total = Some((epoch, total_x, total_y));
         last_dx = dx;
         last_dy = dy;
 

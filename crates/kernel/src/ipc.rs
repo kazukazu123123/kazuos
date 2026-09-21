@@ -5,9 +5,19 @@ use crate::util::SyncUnsafeCell;
 const MAX_CHANNELS: usize = 32;
 const MAX_MSG_SIZE: usize = 8192;
 const MAX_QUEUE:    usize = 8;
+const MAX_DIRECTED_PER_ROUTE: usize = 8;
+const MAX_DIRECTED_PER_TARGET: usize = 64;
+const MAX_DIRECTED_PER_CHANNEL: usize = 256;
+const MAX_DIRECTED_BYTES_PER_CHANNEL: usize = 1024 * 1024;
 const NAME_LEN:     usize = 32;
 
 struct Message {
+    data: Vec<u8>,
+}
+
+struct DirectedMessage {
+    sender: u64,
+    target: u64,
     data: Vec<u8>,
 }
 
@@ -15,10 +25,12 @@ struct Channel {
     name: [u8; NAME_LEN],
     name_len: usize,
     queue: VecDeque<Message>,
+    directed_queue: VecDeque<DirectedMessage>,
     // PIDs blocked in RECV waiting for a message
     recv_waiters: Vec<u64>,
     // PIDs blocked in SEND waiting for queue space
     send_waiters: Vec<u64>,
+    holders: Vec<(u64, usize)>,
     ref_count: usize,
 }
 
@@ -53,7 +65,7 @@ fn slot(ch: &mut Vec<Option<Channel>>, channel_id: u64) -> Option<&mut Channel> 
 }
 
 /// Open or create a named channel. Returns channel id (1-based), or u64::MAX on error.
-pub fn open(name: &[u8]) -> u64 {
+pub fn open(name: &[u8], pid: u64) -> u64 {
     if name.is_empty() || name.len() > NAME_LEN {
         return u64::MAX;
     }
@@ -65,6 +77,11 @@ pub fn open(name: &[u8]) -> u64 {
             if let Some(c) = slot {
                 if c.name_len == name.len() && c.name[..c.name_len] == *name {
                     c.ref_count += 1;
+                    if let Some(holder) = c.holders.iter_mut().find(|holder| holder.0 == pid) {
+                        holder.1 += 1;
+                    } else {
+                        c.holders.push((pid, 1));
+                    }
                     return (i + 1) as u64;
                 }
             }
@@ -76,8 +93,10 @@ pub fn open(name: &[u8]) -> u64 {
             name: n,
             name_len: name.len(),
             queue: VecDeque::new(),
+            directed_queue: VecDeque::new(),
             recv_waiters: Vec::new(),
             send_waiters: Vec::new(),
+            holders: alloc::vec![(pid, 1)],
             ref_count: 1,
         };
 
@@ -150,6 +169,9 @@ pub fn try_send(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
         let Some(c) = slot(ch, channel_id) else {
             return SendResult::Error;
         };
+        if !c.holders.iter().any(|holder| holder.0 == sender) {
+            return SendResult::Error;
+        }
         // Drop the oldest message instead of blocking the sender when the queue is full.
         // A hardware event publisher (e.g. ps2mouse.kkm) must never block: if it did, it
         // would stop draining the shared PS/2 controller, which then backs up with mouse
@@ -166,6 +188,68 @@ pub fn try_send(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
             crate::process::wakeup_ipc_waiter(waiter_pid, 0);
         }
         SendResult::Ok
+    })
+}
+
+pub enum DirectedSendResult {
+    Ok(usize),
+    WouldBlock,
+    Error,
+}
+
+pub fn try_send_to(channel_id: u64, sender: u64, target: u64, data: &[u8]) -> DirectedSendResult {
+    if sender == 0 || target == 0 || data.is_empty() || data.len() > MAX_MSG_SIZE
+        || crate::process::info(target).is_none() {
+        return DirectedSendResult::Error;
+    }
+    with_lock(|| {
+        let Some(c) = slot(channels(), channel_id) else {
+            return DirectedSendResult::Error;
+        };
+        if !c.holders.iter().any(|holder| holder.0 == sender)
+            || !c.holders.iter().any(|holder| holder.0 == target) {
+            return DirectedSendResult::Error;
+        }
+        let queued_bytes = c.directed_queue.iter().map(|message| message.data.len()).sum::<usize>();
+        if c.directed_queue.len() >= MAX_DIRECTED_PER_CHANNEL
+            || queued_bytes > MAX_DIRECTED_BYTES_PER_CHANNEL.saturating_sub(data.len())
+            || c.directed_queue.iter().filter(|message| message.target == target).count()
+                >= MAX_DIRECTED_PER_TARGET
+            || c.directed_queue.iter().filter(|message| message.sender == sender && message.target == target).count()
+                >= MAX_DIRECTED_PER_ROUTE {
+            return DirectedSendResult::WouldBlock;
+        }
+        c.directed_queue.push_back(DirectedMessage { sender, target, data: data.to_vec() });
+        DirectedSendResult::Ok(data.len())
+    })
+}
+
+pub enum DirectedRecvResult {
+    Ok { sender: u64, len: usize },
+    WouldBlock,
+    Error,
+}
+
+pub fn try_recv_from(channel_id: u64, target: u64, buf: &mut [u8]) -> DirectedRecvResult {
+    if target == 0 {
+        return DirectedRecvResult::Error;
+    }
+    with_lock(|| {
+        let Some(c) = slot(channels(), channel_id) else {
+            return DirectedRecvResult::Error;
+        };
+        if !c.holders.iter().any(|holder| holder.0 == target) {
+            return DirectedRecvResult::Error;
+        }
+        let Some(index) = c.directed_queue.iter().position(|message| message.target == target) else {
+            return DirectedRecvResult::WouldBlock;
+        };
+        if c.directed_queue[index].data.len() > buf.len() {
+            return DirectedRecvResult::Error;
+        }
+        let message = c.directed_queue.remove(index).unwrap();
+        buf[..message.data.len()].copy_from_slice(&message.data);
+        DirectedRecvResult::Ok { sender: message.sender, len: message.data.len() }
     })
 }
 
@@ -190,6 +274,9 @@ pub fn try_recv(channel_id: u64, buf: &mut [u8], pid: u64) -> RecvResult {
         let Some(c) = slot(ch, channel_id) else {
             return RecvResult::Error;
         };
+        if !c.holders.iter().any(|holder| holder.0 == pid) {
+            return RecvResult::Error;
+        }
         match c.queue.pop_front() {
             None => {
                 if pid != 0 {
@@ -217,12 +304,15 @@ pub fn try_recv(channel_id: u64, buf: &mut [u8], pid: u64) -> RecvResult {
 /// Non-blocking dequeue: like `try_recv` but never registers a waiter or sleeps —
 /// returns `Block` immediately when the queue is empty so a single-threaded poller
 /// (e.g. the GUI compositor) can multiplex several sources in one loop.
-pub fn try_recv_nonblock(channel_id: u64, buf: &mut [u8]) -> RecvResult {
+pub fn try_recv_nonblock(channel_id: u64, buf: &mut [u8], pid: u64) -> RecvResult {
     with_lock(|| {
         let ch = channels();
         let Some(c) = slot(ch, channel_id) else {
             return RecvResult::Error;
         };
+        if !c.holders.iter().any(|holder| holder.0 == pid) {
+            return RecvResult::Error;
+        }
         match c.queue.pop_front() {
             None => RecvResult::Block,
             Some(msg) => {
@@ -258,23 +348,37 @@ pub fn add_send_waiter(channel_id: u64, pid: u64) {
     })
 }
 
-pub fn close(channel_id: u64) {
+pub fn close(channel_id: u64, pid: u64) {
     with_lock(|| {
         let ch = channels();
-        let Some(c) = slot(ch, channel_id) else {
-            return;
-        };
-        if c.ref_count > 1 {
-            c.ref_count -= 1;
-            return;
+        let Some(c) = slot(ch, channel_id) else { return; };
+        let Some(index) = c.holders.iter().position(|holder| holder.0 == pid) else { return; };
+        c.holders[index].1 -= 1;
+        c.ref_count -= 1;
+        if c.holders[index].1 == 0 {
+            c.holders.remove(index);
+            c.directed_queue.retain(|message| message.target != pid);
         }
-        if !c.queue.is_empty() {
-            // Messages still pending — keep channel alive so the receiver can open it later.
-            c.ref_count = 0;
-            return;
-        }
-        // Last reference and nothing queued: free the slot in place. The id is never
-        // reused for a different channel until a later open() claims this hole.
+        if c.ref_count != 0 { return; }
         ch[channel_id as usize - 1] = None;
+    })
+}
+
+pub fn cleanup_pid(pid: u64) {
+    with_lock(|| {
+        let ch = channels();
+        for slot in ch.iter_mut() {
+            let Some(channel) = slot else { continue; };
+            if let Some(index) = channel.holders.iter().position(|holder| holder.0 == pid) {
+                channel.ref_count = channel.ref_count.saturating_sub(channel.holders[index].1);
+                channel.holders.remove(index);
+            }
+            channel.directed_queue.retain(|message| message.target != pid);
+            channel.recv_waiters.retain(|waiter| *waiter != pid);
+            channel.send_waiters.retain(|waiter| *waiter != pid);
+            if channel.ref_count == 0 {
+                *slot = None;
+            }
+        }
     })
 }
