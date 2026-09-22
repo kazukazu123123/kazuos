@@ -384,7 +384,6 @@ pub fn kdm_init() -> bool {
         HDA = Some(hda);
         COMMAND_CH = channel;
     }
-    println!("hda: ring3 driver ready");
     true
 }
 
@@ -434,7 +433,6 @@ pub fn kdm_exit() {
         IRQ_MMIO.store(0, Ordering::Release);
         IRQ_STREAM_BASE.store(0, Ordering::Release);
         if let Some(hda) = current { hda.release(); }
-        println!("hda: handled {} interrupts", IRQ_COUNT.load(Ordering::Acquire));
         if COMMAND_CH != u64::MAX { syscall(SYS_IPC_CLOSE, COMMAND_CH, 0, 0); }
     }
 }
