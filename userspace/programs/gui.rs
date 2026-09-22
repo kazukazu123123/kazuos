@@ -1234,11 +1234,34 @@ static GUI_COMPOSITE_TICKS: AtomicU64 = AtomicU64::new(0);
 static GUI_PRESENT_TICKS: AtomicU64 = AtomicU64::new(0);
 static GUI_TICKS_PER_SEC: AtomicU64 = AtomicU64::new(1);
 
+fn mouse_driver_running() -> bool {
+    const ENTRY_SIZE: usize = 48;
+    const MAX_DRIVERS: usize = 16;
+    let mut entries = [0u8; ENTRY_SIZE * MAX_DRIVERS];
+    let count = syscall(
+        SYS_DRIVER_LIST,
+        entries.as_mut_ptr() as u64,
+        entries.len() as u64,
+        0,
+    );
+    if count == u64::MAX { return false; }
+    for entry in entries.chunks_exact(ENTRY_SIZE).take((count as usize).min(MAX_DRIVERS)) {
+        let status = u32::from_le_bytes(entry[8..12].try_into().unwrap());
+        let name_len = (u32::from_le_bytes(entry[44..48].try_into().unwrap()) as usize).min(32);
+        if status == 0 && &entry[12..12 + name_len] == b"ps2mouse" { return true; }
+    }
+    false
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
+    if !mouse_driver_running() {
+        sys_write(b"gui: mouse driver is not running (load ps2mouse.kdm first)\r\n");
+        sys_exit(1);
+    }
     let ipc = syscall(SYS_IPC_OPEN, b"driver_mouse".as_ptr() as u64, 12, 0);
     if ipc == u64::MAX {
-        sys_write(b"gui: mouse driver is not ready (is ps2mouse.kdm loaded?)\r\n");
+        sys_write(b"gui: failed to open mouse driver channel\r\n");
         sys_exit(1);
     }
 
