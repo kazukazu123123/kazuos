@@ -41,7 +41,7 @@ struct Channel {
 /// channel 3.
 static CHANNELS: SyncUnsafeCell<Vec<Option<Channel>>> = SyncUnsafeCell::new(Vec::new());
 
-// All channel state is shared between CPUs: a hardware publisher (e.g. ps2mouse.kkm)
+// All channel state is shared between CPUs: a hardware publisher (e.g. ps2mouse.kdm)
 // sends from one CPU while a consumer receives on another. Every access goes through
 // the thread lock so the queue and waiter lists are never mutated concurrently, and
 // so the "queue empty? then register as a waiter" decision is atomic with the sender's
@@ -173,7 +173,7 @@ pub fn try_send(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
             return SendResult::Error;
         }
         // Drop the oldest message instead of blocking the sender when the queue is full.
-        // A hardware event publisher (e.g. ps2mouse.kkm) must never block: if it did, it
+        // A hardware event publisher (e.g. ps2mouse.kdm) must never block: if it did, it
         // would stop draining the shared PS/2 controller, which then backs up with mouse
         // data and wedges the keyboard too. Stale relative-movement events are safe to drop.
         while c.queue.len() >= MAX_QUEUE {

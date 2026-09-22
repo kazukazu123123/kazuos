@@ -16,7 +16,7 @@ static AUDIO_OPS: DeviceOps = DeviceOps {
 };
 
 pub fn init() {
-    let channel = ipc::open(b"module_audio", 0);
+    let channel = ipc::open(b"driver_audio", 0);
     unsafe { *CHANNEL.0.get() = channel; }
     crate::fs::devfs::register("/dev/audio", &AUDIO_OPS);
 }

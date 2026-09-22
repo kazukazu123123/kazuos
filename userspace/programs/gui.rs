@@ -1241,9 +1241,9 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         sys_write(b"gui: failed to acquire framebuffer\r\n");
         sys_exit(1);
     }
-    let ipc = syscall(SYS_IPC_OPEN, b"module_mouse".as_ptr() as u64, 12, 0);
+    let ipc = syscall(SYS_IPC_OPEN, b"driver_mouse".as_ptr() as u64, 12, 0);
     if ipc == u64::MAX {
-        sys_write(b"gui: IPC module_mouse not found (is ps2mouse.kkm loaded?)\r\n");
+        sys_write(b"gui: IPC driver_mouse not found (is ps2mouse.kdm loaded?)\r\n");
         syscall(SYS_FB_RELEASE, 0, 0, 0);
         sys_exit(1);
     }

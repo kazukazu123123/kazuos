@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
-include!("../runtime/module_runtime.rs");
+include!("../runtime/driver_runtime.rs");
 
-pub fn kkm_info() -> KkmInfo {
-    KkmInfo { name: "ps2mouse", depends: &[] }
+pub fn kdm_info() -> KdmInfo {
+    KdmInfo { name: "ps2mouse", depends: &[] }
 }
 
 // ── IPC channel ───────────────────────────────────────────────────────────────
@@ -99,12 +99,12 @@ fn send_event(buttons: u8, dx: i16, dy: i16) {
 
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 
-pub fn kkm_init() -> bool {
+pub fn kdm_init() -> bool {
     if !sys_ioport_request(0x60, 1) { return false; }
     if !sys_ioport_request(0x64, 1) { return false; }
 
     // Open IPC channel before initialising hardware so no events are missed.
-    let ch = sys_ipc_open(b"module_mouse");
+    let ch = sys_ipc_open(b"driver_mouse");
     if ch == u64::MAX { return false; }
     unsafe {
         IPC_CH = ch;
@@ -130,7 +130,7 @@ pub fn kkm_init() -> bool {
     true
 }
 
-pub fn kkm_run() {
+pub fn kdm_run() {
     loop {
         // Wait for the next timer tick (works in both IRQ and polling environments).
         sys_sleep_tick();
@@ -152,7 +152,7 @@ pub fn kkm_run() {
     }
 }
 
-pub fn kkm_exit() {
+pub fn kdm_exit() {
     mouse_cmd(0xF5); // disable streaming
 
     // Drain any remaining mouse bytes from the PS/2 controller.

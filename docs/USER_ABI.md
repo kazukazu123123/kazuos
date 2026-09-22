@@ -67,10 +67,10 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `47` | `SYS_SHUTDOWN` | none | does not return |
 | `48` | `SYS_REBOOT` | none | does not return |
 | `49` | `SYS_READDIR` | `arg0 = path ptr`, `arg1 = path len`, `arg2 = caller buffer` | entry count, or `u64::MAX` on error |
-| `50` | `SYS_MODULE_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
-| `51` | `SYS_MODULE_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
-| `52` | `SYS_MODULE_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count |
-| `53` | `SYS_MODULE_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
+| `50` | `SYS_DRIVER_LOAD` | `arg0 = path ptr`, `arg1 = path len` | module id, or `u64::MAX` on error |
+| `51` | `SYS_DRIVER_UNLOAD` | `arg0 = module id` | `0` on success; `u64::MAX` on error |
+| `52` | `SYS_DRIVER_LIST` | `arg0 = buf ptr`, `arg1 = buf len` | entry count |
+| `53` | `SYS_DRIVER_INFO` | `arg0 = module id`, `arg1 = buf ptr` | `0` on success; `u64::MAX` on error |
 | `54` | `SYS_CREATE` | `arg0 = path ptr`, `arg1 = path len` | fd on success; `u64::MAX` on error |
 | `55` | `SYS_UNLINK` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
 | `56` | `SYS_MKDIR` | `arg0 = path ptr`, `arg1 = path len` | `0` on success; `u64::MAX` on error |
@@ -363,7 +363,7 @@ A directed send succeeds only while both sender and target have the same named c
 
 ### Intended use
 
-Lossy shared-queue IPC remains suitable for single-consumer hardware/event channels such as `module_mouse`. Services that need authenticated request/reply routing open one named channel, receive directed requests with kernel-stamped sender PIDs, and direct replies to those PIDs without private response channels.
+Lossy shared-queue IPC remains suitable for single-consumer hardware/event channels such as `driver_mouse`. Services that need authenticated request/reply routing open one named channel, receive directed requests with kernel-stamped sender PIDs, and direct replies to those PIDs without private response channels.
 
 ---
 

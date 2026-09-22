@@ -103,7 +103,7 @@ Output: `target/x86_64-kazuos/release/kazuos-kernel`
 
 > The kernel build script (`crates/kernel/build.rs`) also compiles every `.rs` file
 > under `userspace/programs/` into a flat `.kxe` binary and every `.rs` under
-> `userspace/modules/` into a `.kkm`, then bundles them into `target/initrd.kfs`
+> `userspace/drivers/` into a `.kdm`, then bundles them into `target/initrd.kfs`
 > (the initramfs). These are compiled with `rustc` directly against
 > `x86_64-unknown-none`.
 
@@ -121,18 +121,18 @@ esp/
       BOOTX64.EFI      ← KazuOS bootloader (firmware boot entry)
   KazuOS/
     kernel.elf         ← kernel
-    initrd.kfs         ← initramfs (user programs + modules)
+    initrd.kfs         ← initramfs (user programs + drivers)
     font.ttf           ← optional TrueType font (copied if font.ttf exists in repo root)
 ```
 
 ---
 
-## User programs and modules
+## User programs and drivers
 
 User programs live in `userspace/programs/*.rs`; each is compiled independently
 into a flat `.kxe` binary and bundled into the initramfs at `/bin/<name>.kxe`.
-Kernel modules live in `userspace/modules/*.rs`, compiled into `.kkm` and placed
-under `/modules/`.
+KazuOS driver modules live in `userspace/drivers/*.rs`, compiled into `.kdm` and placed
+under `/drivers/`.
 
 Both are `#![no_std] #![no_main]` binaries that run in ring3 and call the kernel via
 `int 0x80`. See `docs/USER_ABI.md` for the syscall interface and

@@ -277,10 +277,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
     syscall(SYS_SIGNAL_CATCH, 1, 0, 0);
 
-    // Open IPC channel (ps2mouse.kkm must be loaded)
-    let ipc = syscall(SYS_IPC_OPEN, b"module_mouse".as_ptr() as u64, 12, 0);
+    // Open IPC channel (ps2mouse.kdm must be loaded)
+    let ipc = syscall(SYS_IPC_OPEN, b"driver_mouse".as_ptr() as u64, 12, 0);
     if ipc == u64::MAX {
-        sys_write(b"mousetest: IPC module_mouse not found (is ps2mouse.kkm loaded?)\r\n");
+        sys_write(b"mousetest: IPC driver_mouse not found (is ps2mouse.kdm loaded?)\r\n");
         syscall(SYS_FB_RELEASE, 0, 0, 0);
         sys_exit(1);
     }

@@ -9,7 +9,7 @@ pub mod ipc;
 pub mod fs;
 pub mod device;
 pub mod system;
-pub mod module;
+pub mod driver;
 
 use core::arch::global_asm;
 
@@ -166,7 +166,7 @@ extern "C" fn syscall_return_to_kernel() -> ! {
         crate::syscall::context::set_exiting_pid_tmp(0);
         crate::scheduler::set_current_user_pid(None);
         if exiting_pid != 0 {
-            crate::kmod::on_process_exit(exiting_pid);
+            crate::driver_module::on_process_exit(exiting_pid);
         }
         crate::scheduler::run_exit_handler();
         core::arch::asm!("pop rax", options(nostack, preserves_flags),);

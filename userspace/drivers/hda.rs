@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-include!("../runtime/module_runtime.rs");
+include!("../runtime/driver_runtime.rs");
 
 const HDA_GCAP: u32 = 0x00;
 const HDA_GCTL: u32 = 0x08;
@@ -65,8 +65,8 @@ static IRQ_STREAM_BASE: core::sync::atomic::AtomicU32 = core::sync::atomic::Atom
 static IRQ_TID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static IRQ_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-pub fn kkm_info() -> KkmInfo {
-    KkmInfo { name: "hda", depends: &[] }
+pub fn kdm_info() -> KdmInfo {
+    KdmInfo { name: "hda", depends: &[] }
 }
 
 fn bdf(info: &PciDeviceInfo) -> u32 {
@@ -299,7 +299,7 @@ extern "C" fn irq_worker(_arg: u64) -> ! {
     sys_thread_exit()
 }
 
-pub fn kkm_init() -> bool {
+pub fn kdm_init() -> bool {
     let Some(bdf) = find_hda() else {
         println!("hda: no controller");
         return false;
@@ -372,7 +372,7 @@ pub fn kkm_init() -> bool {
     IRQ_TID.store(irq_tid, Ordering::Release);
     let stream_index = ((hda.read16(HDA_GCAP) >> 8) & 0x0f) as u32;
     hda.write32(HDA_INTCTL, (1 << 31) | (1 << stream_index));
-    let channel = sys_ipc_open(b"module_audio");
+    let channel = sys_ipc_open(b"driver_audio");
     if channel == u64::MAX {
         IRQ_RUNNING.store(false, Ordering::Release);
         sys_irq_release(irq);
@@ -384,11 +384,10 @@ pub fn kkm_init() -> bool {
         HDA = Some(hda);
         COMMAND_CH = channel;
     }
-    println!("hda: ring3 driver ready");
     true
 }
 
-pub fn kkm_run() {
+pub fn kdm_run() {
     let mut message = [0u8; 8192];
     loop {
         if sys_signal_check() { return; }
@@ -415,7 +414,7 @@ pub fn kkm_run() {
     }
 }
 
-pub fn kkm_exit() {
+pub fn kdm_exit() {
     unsafe {
         let state = core::ptr::addr_of_mut!(HDA);
         let current = core::ptr::read(state);
@@ -434,7 +433,6 @@ pub fn kkm_exit() {
         IRQ_MMIO.store(0, Ordering::Release);
         IRQ_STREAM_BASE.store(0, Ordering::Release);
         if let Some(hda) = current { hda.release(); }
-        println!("hda: handled {} interrupts", IRQ_COUNT.load(Ordering::Acquire));
         if COMMAND_CH != u64::MAX { syscall(SYS_IPC_CLOSE, COMMAND_CH, 0, 0); }
     }
 }

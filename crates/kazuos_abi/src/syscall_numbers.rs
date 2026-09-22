@@ -72,11 +72,11 @@ pub const SYS_SHUTDOWN:  u64 = 47;
 pub const SYS_REBOOT:    u64 = 48;
 pub const SYS_READDIR:   u64 = 49; // enumerate a directory into a caller buffer (no kernel-side printing)
 
-// Kernel modules
-pub const SYS_MODULE_LOAD:   u64 = 50;
-pub const SYS_MODULE_UNLOAD: u64 = 51;
-pub const SYS_MODULE_LIST:   u64 = 52;
-pub const SYS_MODULE_INFO:   u64 = 53;
+// KazuOS driver modules
+pub const SYS_DRIVER_LOAD:   u64 = 50;
+pub const SYS_DRIVER_UNLOAD: u64 = 51;
+pub const SYS_DRIVER_LIST:   u64 = 52;
+pub const SYS_DRIVER_INFO:   u64 = 53;
 
 // Filesystem mutations (RAM rootfs)
 pub const SYS_CREATE: u64 = 54; // create an empty file, returns fd (RW)

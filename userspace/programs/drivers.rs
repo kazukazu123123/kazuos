@@ -3,10 +3,10 @@
 include!("../runtime/runtime.rs");
 
 const ENTRY_SIZE: usize = 48;
-const MAX_MODULES: usize = 16;
+const MAX_DRIVERS: usize = 16;
 
 #[repr(C, packed)]
-struct ModuleEntry {
+struct DriverEntry {
     id:       u32,
     pid:      u32,
     status:   u32,
@@ -14,8 +14,8 @@ struct ModuleEntry {
     name_len: u32,
 }
 
-fn parse_entry(buf: &[u8]) -> ModuleEntry {
-    unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const ModuleEntry) }
+fn parse_entry(buf: &[u8]) -> DriverEntry {
+    unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const DriverEntry) }
 }
 
 fn status_str(s: u32) -> &'static str {
@@ -27,10 +27,10 @@ fn status_str(s: u32) -> &'static str {
 }
 
 fn cmd_list() {
-    let mut buf = [0u8; ENTRY_SIZE * MAX_MODULES];
-    let count = sys_module_list(&mut buf) as usize;
+    let mut buf = [0u8; ENTRY_SIZE * MAX_DRIVERS];
+    let count = sys_driver_list(&mut buf) as usize;
     if count == 0 {
-        println!("No modules loaded.");
+        println!("No drivers loaded.");
         return;
     }
     println!("{:<4} {:<20} {:<6} {}", "ID", "NAME", "PID", "STATUS");
@@ -47,24 +47,24 @@ fn cmd_list() {
 }
 
 fn cmd_load(arg: &[u8]) {
-    // Accept a bare module name ("ps2mouse") or a full path
-    // ("/modules/ps2mouse.kkm"). Only composing the path meant that the form the
-    // help text advertises produced "/modules//modules/ps2mouse.kkm.kkm" and failed.
+    // Accept a bare driver name ("ps2mouse") or a full path
+    // ("/drivers/ps2mouse.kdm"). Only composing the path meant that the form the
+    // help text advertises produced "/drivers//drivers/ps2mouse.kdm.kdm" and failed.
     let mut full_path = alloc::vec::Vec::new();
     if arg.first() == Some(&b'/') {
         full_path.extend_from_slice(arg);
     } else {
-        full_path.extend_from_slice(b"/modules/");
+        full_path.extend_from_slice(b"/drivers/");
         full_path.extend_from_slice(arg);
     }
-    if !full_path.ends_with(b".kkm") {
-        full_path.extend_from_slice(b".kkm");
+    if !full_path.ends_with(b".kdm") {
+        full_path.extend_from_slice(b".kdm");
     }
-    let r = sys_module_load(&full_path);
+    let r = sys_driver_load(&full_path);
     if r == u64::MAX {
-        println!("Error: failed to load module.");
+        println!("Error: failed to load driver.");
     } else {
-        println!("Module loaded: id={}", r);
+        println!("Driver loaded: id={}", r);
     }
 }
 
@@ -74,20 +74,20 @@ fn cmd_unload(id_str: &[u8]) {
         if b < b'0' || b > b'9' { break; }
         id = id * 10 + (b - b'0') as u64;
     }
-    let r = sys_module_unload(id);
+    let r = sys_driver_unload(id);
     if r == 0 {
-        println!("Module {} unloading.", id);
+        println!("Driver {} unloading.", id);
     } else {
-        println!("Error: module {} not found.", id);
+        println!("Error: driver {} not found.", id);
     }
 }
 
-fn sys_module_list(buf: &mut [u8]) -> u64 {
+fn sys_driver_list(buf: &mut [u8]) -> u64 {
     let r: u64;
     unsafe {
         core::arch::asm!(
             "int 0x80",
-            inlateout("rax") SYS_MODULE_LIST => r,
+            inlateout("rax") SYS_DRIVER_LIST => r,
             in("rdi") buf.as_mut_ptr(),
             in("rsi") buf.len(),
             in("rdx") 0u64,
@@ -96,12 +96,12 @@ fn sys_module_list(buf: &mut [u8]) -> u64 {
     r
 }
 
-fn sys_module_load(path: &[u8]) -> u64 {
+fn sys_driver_load(path: &[u8]) -> u64 {
     let r: u64;
     unsafe {
         core::arch::asm!(
             "int 0x80",
-            inlateout("rax") SYS_MODULE_LOAD => r,
+            inlateout("rax") SYS_DRIVER_LOAD => r,
             in("rdi") path.as_ptr(),
             in("rsi") path.len(),
             in("rdx") 0u64,
@@ -110,12 +110,12 @@ fn sys_module_load(path: &[u8]) -> u64 {
     r
 }
 
-fn sys_module_unload(id: u64) -> u64 {
+fn sys_driver_unload(id: u64) -> u64 {
     let r: u64;
     unsafe {
         core::arch::asm!(
             "int 0x80",
-            inlateout("rax") SYS_MODULE_UNLOAD => r,
+            inlateout("rax") SYS_DRIVER_UNLOAD => r,
             in("rdi") id,
             in("rsi") 0u64,
             in("rdx") 0u64,
@@ -125,12 +125,12 @@ fn sys_module_unload(id: u64) -> u64 {
 }
 
 fn cmd_help() {
-    println!("Usage: modules <command> [args]");
+    println!("Usage: drivers <command> [args]");
     println!();
     println!("Commands:");
-    println!("  list             List loaded kernel modules");
-    println!("  load <name|path> Load a kernel module (e.g. ps2mouse)");
-    println!("  unload <id>      Unload a module by id");
+    println!("  list             List loaded KazuOS drivers");
+    println!("  load <name|path> Load a KazuOS driver module (e.g. ps2mouse)");
+    println!("  unload <id>      Unload a driver by id");
     println!("  help             Show this help");
 }
 
@@ -144,18 +144,18 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         cmd_list();
     } else if args[0] == b"load" as &[u8] {
         if args.len() < 2 {
-            println!("Usage: modules load <path>");
+            println!("Usage: drivers load <path>");
         } else {
             cmd_load(args[1]);
         }
     } else if args[0] == b"unload" as &[u8] {
         if args.len() < 2 {
-            println!("Usage: modules unload <id>");
+            println!("Usage: drivers unload <id>");
         } else {
             cmd_unload(args[1]);
         }
     } else {
-        println!("modules: unknown command");
+        println!("drivers: unknown command");
         cmd_help();
     }
 

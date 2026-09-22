@@ -81,10 +81,10 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         | SYS_SHUTDOWN
         | SYS_REBOOT
         | SYS_READDIR => crate::syscall::system::handle(number, arg0, arg1, arg2),
-        SYS_MODULE_LOAD
-        | SYS_MODULE_UNLOAD
-        | SYS_MODULE_LIST
-        | SYS_MODULE_INFO => crate::syscall::module::handle(number, arg0, arg1, arg2),
+        SYS_DRIVER_LOAD
+        | SYS_DRIVER_UNLOAD
+        | SYS_DRIVER_LIST
+        | SYS_DRIVER_INFO => crate::syscall::driver::handle(number, arg0, arg1, arg2),
         _ => u64::MAX,
     }
 }

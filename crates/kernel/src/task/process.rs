@@ -552,7 +552,7 @@ pub fn foreground_pid() -> Option<u64> {
     })
 }
 
-pub fn send_module_exit(pid: u64) {
+pub fn send_driver_exit(pid: u64) {
     crate::task::thread::with_threads_lock(|| unsafe {
         let processes = &mut *PROCESSES.0.get();
         if let Some(p) = processes.iter_mut().find(|p| p.pid == pid) {
