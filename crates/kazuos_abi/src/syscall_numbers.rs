@@ -103,6 +103,14 @@ pub const SYS_IRQ_CLAIM:   u64 = 66;
 pub const SYS_IRQ_RELEASE: u64 = 67;
 pub const SYS_IRQ_ACK:     u64 = 68;
 
+// Directed named IPC. SEND_TO reads an envelope prefixed by target pid; RECV_FROM
+// writes an envelope prefixed by the kernel-authenticated sender pid.
+pub const SYS_IPC_TRY_SEND_TO:   u64 = 69;
+pub const SYS_IPC_TRY_RECV_FROM: u64 = 70;
+pub const IPC_PID_PREFIX_SIZE: usize = 8;
+pub const IPC_MAX_MESSAGE_SIZE: usize = 8192;
+pub const IPC_MAX_ENVELOPE_SIZE: usize = IPC_PID_PREFIX_SIZE + IPC_MAX_MESSAGE_SIZE;
+
 // SYS_EXEC stdio pack: bits[0..16] = stdin fd, bits[16..32] = stdout fd (0xFFFF on either
 // = console default). When this bit is also set, the child additionally gets fd 3 as a
 // controlling-terminal handle — a dup of the *caller's* fd 0 (the shell's keyboard source:

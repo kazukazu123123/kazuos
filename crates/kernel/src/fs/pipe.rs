@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 use crate::util::SyncUnsafeCell;
 
+const MAX_PIPE_BYTES: usize = 1024 * 1024;
+
 struct PipeState {
     data: Vec<u8>,
     write_refs: u32,
@@ -56,7 +58,9 @@ pub fn clone_read(id: u64) {
 pub fn write(id: u64, data: &[u8]) -> usize {
     with_lock(|| {
         if let Some(Some(pipe)) = pipes().get_mut(id as usize) {
-            if pipe.read_refs == 0 { return 0; }
+            if pipe.read_refs == 0 || data.len() > MAX_PIPE_BYTES.saturating_sub(pipe.data.len()) {
+                return 0;
+            }
             pipe.data.extend_from_slice(data);
             return data.len();
         }

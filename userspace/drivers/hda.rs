@@ -372,7 +372,7 @@ pub fn kdm_init() -> bool {
     IRQ_TID.store(irq_tid, Ordering::Release);
     let stream_index = ((hda.read16(HDA_GCAP) >> 8) & 0x0f) as u32;
     hda.write32(HDA_INTCTL, (1 << 31) | (1 << stream_index));
-    let channel = sys_ipc_open(b"module_audio");
+    let channel = sys_ipc_open(b"driver_audio");
     if channel == u64::MAX {
         IRQ_RUNNING.store(false, Ordering::Release);
         sys_irq_release(irq);
