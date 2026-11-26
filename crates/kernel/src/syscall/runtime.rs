@@ -225,7 +225,7 @@ pub(crate) fn sys_dma_free(virt: u64) -> u64 {
     0
 }
 
-pub(crate) fn sys_pci_bar_map(bdf: u64, bar_index: u64) -> u64 {
+pub(crate) fn sys_pci_bar_map(bdf: u64, bar_index: u64, size_out: u64) -> u64 {
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
     if process::privilege_level(caller) > process::PrivilegeLevel::Driver {
         return u64::MAX;
@@ -250,6 +250,9 @@ pub(crate) fn sys_pci_bar_map(bdf: u64, bar_index: u64) -> u64 {
         return u64::MAX;
     }
     let aligned_size = (size + 4095) & !4095;
+    if size_out != 0 && !crate::memory::uaccess::validate_range(size_out, core::mem::size_of::<u64>() as u64, true) {
+        return u64::MAX;
+    }
     let cr3 = match process::user_cr3(caller) {
         Some(c) => c,
         None => return u64::MAX,
@@ -267,6 +270,10 @@ pub(crate) fn sys_pci_bar_map(bdf: u64, bar_index: u64) -> u64 {
             return u64::MAX;
         }
         let allocs = &mut *PCI_MMIO_ALLOCS.0.get();
+        if size_out != 0 && !crate::memory::uaccess::write_value(size_out, size) {
+            crate::vmm::unmap_range(cr3, virt, aligned_size);
+            return u64::MAX;
+        }
         allocs.push(PciMmioAlloc {
             pid: caller,
             virt,
@@ -295,18 +302,48 @@ pub(crate) fn sys_pci_bar_unmap(virt: u64) -> u64 {
     0
 }
 
-static DRIVER_IRQ_OWNER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static DRIVER_IRQ_NUMBER: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-static DRIVER_IRQ_BDF: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static DRIVER_IRQ_AUDIO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+struct DriverIrqClaim {
+    owner: core::sync::atomic::AtomicU64,
+    number: core::sync::atomic::AtomicU8,
+    bdf: core::sync::atomic::AtomicU32,
+    audio: core::sync::atomic::AtomicBool,
+}
 
-pub(crate) fn claimed_driver_irq() -> u8 {
-    DRIVER_IRQ_NUMBER.load(core::sync::atomic::Ordering::Acquire)
+impl DriverIrqClaim {
+    const fn new() -> Self {
+        Self {
+            owner: core::sync::atomic::AtomicU64::new(0),
+            number: core::sync::atomic::AtomicU8::new(0),
+            bdf: core::sync::atomic::AtomicU32::new(0),
+            audio: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+static DRIVER_IRQ_CLAIMS: [DriverIrqClaim; 2] = [DriverIrqClaim::new(), DriverIrqClaim::new()];
+static DRIVER_IRQ_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn with_driver_irq_lock<T>(f: impl FnOnce() -> T) -> T {
+    use core::sync::atomic::Ordering;
+    let flags = crate::util::irq_save();
+    while DRIVER_IRQ_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+    let result = f();
+    DRIVER_IRQ_LOCK.store(false, Ordering::Release);
+    crate::util::restore_flags(flags);
+    result
+}
+
+pub(crate) fn claimed_driver_irq(slot: usize) -> u8 {
+    DRIVER_IRQ_CLAIMS[slot].number.load(core::sync::atomic::Ordering::Acquire)
 }
 
 pub(crate) fn owns_driver_irq(pid: u64, irq: u8) -> bool {
-    DRIVER_IRQ_OWNER.load(core::sync::atomic::Ordering::Acquire) == pid
-        && DRIVER_IRQ_NUMBER.load(core::sync::atomic::Ordering::Acquire) == irq
+    use core::sync::atomic::Ordering;
+    DRIVER_IRQ_CLAIMS.iter().any(|claim| {
+        claim.owner.load(Ordering::Acquire) == pid && claim.number.load(Ordering::Acquire) == irq
+    })
 }
 
 pub(crate) fn sys_irq_claim(bdf: u64) -> u64 {
@@ -324,23 +361,31 @@ pub(crate) fn sys_irq_claim(bdf: u64) -> u64 {
     };
     let irq = crate::drivers::pci::read_interrupt_line(bus, device, function);
     if irq == 0 || irq == 0xff { return u64::MAX; }
-    if DRIVER_IRQ_OWNER.compare_exchange(0, caller, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_err() {
-        return u64::MAX;
-    }
-    DRIVER_IRQ_BDF.store(bdf as u32, core::sync::atomic::Ordering::Release);
     let is_audio = pci_device.class_code == 0x04 && pci_device.subclass == 0x03;
-    DRIVER_IRQ_AUDIO.store(is_audio, core::sync::atomic::Ordering::Release);
-    DRIVER_IRQ_NUMBER.store(irq, core::sync::atomic::Ordering::Release);
-    if !crate::drivers::ioapic::route_driver_irq(irq, true) {
-        DRIVER_IRQ_NUMBER.store(0, core::sync::atomic::Ordering::Release);
-        DRIVER_IRQ_BDF.store(0, core::sync::atomic::Ordering::Release);
-        DRIVER_IRQ_AUDIO.store(false, core::sync::atomic::Ordering::Release);
-        DRIVER_IRQ_OWNER.store(0, core::sync::atomic::Ordering::Release);
-        return u64::MAX;
-    }
-    crate::handlers::interrupts::set_use_ioapic(true);
-    if is_audio { crate::drivers::audio::driver_started(); }
-    irq as u64
+    with_driver_irq_lock(|| {
+        use core::sync::atomic::Ordering;
+        if DRIVER_IRQ_CLAIMS.iter().any(|claim| claim.number.load(Ordering::Acquire) == irq) {
+            return u64::MAX;
+        }
+        let Some((slot, claim)) = DRIVER_IRQ_CLAIMS.iter().enumerate()
+            .find(|(_, claim)| claim.owner.load(Ordering::Acquire) == 0) else {
+            return u64::MAX;
+        };
+        claim.owner.store(caller, Ordering::Release);
+        claim.bdf.store(bdf as u32, Ordering::Release);
+        claim.audio.store(is_audio, Ordering::Release);
+        claim.number.store(irq, Ordering::Release);
+        if !crate::drivers::ioapic::route_driver_irq(irq, 0x31 + slot as u8 * 2, true) {
+            claim.number.store(0, Ordering::Release);
+            claim.bdf.store(0, Ordering::Release);
+            claim.audio.store(false, Ordering::Release);
+            claim.owner.store(0, Ordering::Release);
+            return u64::MAX;
+        }
+        crate::handlers::interrupts::set_use_ioapic(true);
+        if is_audio { crate::drivers::audio::driver_started(); }
+        irq as u64
+    })
 }
 
 pub(crate) fn sys_irq_ack(irq: u64) -> u64 {
@@ -351,39 +396,40 @@ pub(crate) fn sys_irq_ack(irq: u64) -> u64 {
 
 pub(crate) fn sys_irq_release(irq: u64) -> u64 {
     let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-    if DRIVER_IRQ_OWNER.load(core::sync::atomic::Ordering::Acquire) != caller
-        || DRIVER_IRQ_NUMBER.load(core::sync::atomic::Ordering::Acquire) != irq as u8
-    {
-        return u64::MAX;
-    }
-    crate::drivers::ioapic::route_driver_irq(irq as u8, false);
-    crate::process::wakeup_irq_waiter(irq as u8);
-    DRIVER_IRQ_NUMBER.store(0, core::sync::atomic::Ordering::Release);
-    DRIVER_IRQ_BDF.store(0, core::sync::atomic::Ordering::Release);
-    if DRIVER_IRQ_AUDIO.swap(false, core::sync::atomic::Ordering::AcqRel) {
-        crate::drivers::audio::driver_stopped();
-    }
-    DRIVER_IRQ_OWNER.store(0, core::sync::atomic::Ordering::Release);
-    0
+    with_driver_irq_lock(|| {
+        use core::sync::atomic::Ordering;
+        let Some((slot, claim)) = DRIVER_IRQ_CLAIMS.iter().enumerate().find(|(_, claim)| {
+            claim.owner.load(Ordering::Acquire) == caller && claim.number.load(Ordering::Acquire) == irq as u8
+        }) else { return u64::MAX; };
+        crate::drivers::ioapic::route_driver_irq(irq as u8, 0x31 + slot as u8 * 2, false);
+        crate::process::wakeup_irq_waiter(irq as u8);
+        claim.number.store(0, Ordering::Release);
+        claim.bdf.store(0, Ordering::Release);
+        if claim.audio.swap(false, Ordering::AcqRel) { crate::drivers::audio::driver_stopped(); }
+        claim.owner.store(0, Ordering::Release);
+        0
+    })
 }
 
 pub fn release_irq_for_pid(pid: u64) {
-    if DRIVER_IRQ_OWNER.load(core::sync::atomic::Ordering::Acquire) == pid {
-        let irq = DRIVER_IRQ_NUMBER.swap(0, core::sync::atomic::Ordering::AcqRel);
-        if irq != 0 { crate::drivers::ioapic::route_driver_irq(irq, false); }
-        let bdf = DRIVER_IRQ_BDF.swap(0, core::sync::atomic::Ordering::AcqRel);
-        if bdf != 0 {
-            let bus = ((bdf >> 16) & 0xff) as u8;
-            let device = ((bdf >> 8) & 0xff) as u8;
-            let function = (bdf & 0xff) as u8;
-            let command = crate::drivers::pci::read_command(bus, device, function);
-            crate::drivers::pci::write_command(bus, device, function, command & !0x06);
+    with_driver_irq_lock(|| {
+        use core::sync::atomic::Ordering;
+        for (slot, claim) in DRIVER_IRQ_CLAIMS.iter().enumerate() {
+            if claim.owner.load(Ordering::Acquire) != pid { continue; }
+            let irq = claim.number.swap(0, Ordering::AcqRel);
+            if irq != 0 { crate::drivers::ioapic::route_driver_irq(irq, 0x31 + slot as u8 * 2, false); }
+            let bdf = claim.bdf.swap(0, Ordering::AcqRel);
+            if bdf != 0 {
+                let bus = ((bdf >> 16) & 0xff) as u8;
+                let device = ((bdf >> 8) & 0xff) as u8;
+                let function = (bdf & 0xff) as u8;
+                let command = crate::drivers::pci::read_command(bus, device, function);
+                crate::drivers::pci::write_command(bus, device, function, command & !0x06);
+            }
+            if claim.audio.swap(false, Ordering::AcqRel) { crate::drivers::audio::driver_stopped(); }
+            claim.owner.store(0, Ordering::Release);
         }
-        if DRIVER_IRQ_AUDIO.swap(false, core::sync::atomic::Ordering::AcqRel) {
-            crate::drivers::audio::driver_stopped();
-        }
-        DRIVER_IRQ_OWNER.store(0, core::sync::atomic::Ordering::Release);
-    }
+    });
 }
 
 pub(crate) fn sys_pci_enable(bdf: u64, enable: bool) -> u64 {
@@ -903,6 +949,14 @@ pub(crate) fn sys_try_read(fd: u64, buf_ptr: u64, buf_len: u64) -> u64 {
                 unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
                 n as u64
             })
+        }
+        Some(crate::fs::fd::FdEntry::Device { ops, handle }) => {
+            // One shot, like the pipe arm: a device read returns whatever is
+            // available right now (0 when empty), never blocks.
+            let mut kbuf = alloc::vec![0u8; buf_len as usize];
+            let n = (ops.read)(handle, &mut kbuf).min(buf_len as usize);
+            unsafe { core::ptr::copy_nonoverlapping(kbuf.as_ptr(), buf_ptr as *mut u8, n); }
+            n as u64
         }
         _ => u64::MAX,
     }
