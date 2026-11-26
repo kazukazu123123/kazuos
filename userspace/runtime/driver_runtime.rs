@@ -375,8 +375,8 @@ pub fn sys_dma_free(virt: *mut u8) -> bool {
     syscall(SYS_DMA_FREE, virt as u64, 0, 0) == 0
 }
 
-/// Map a PCI BAR into the caller's address space. Returns user VA or u64::MAX.
-pub fn sys_pci_bar_map(bdf: u32, bar_index: u8) -> u64 {
+/// Map a PCI BAR and optionally return its size in bytes.
+pub fn sys_pci_bar_map_with_size(bdf: u32, bar_index: u8, size_out: Option<&mut u64>) -> u64 {
     let r: u64;
     unsafe {
         core::arch::asm!(
@@ -384,10 +384,14 @@ pub fn sys_pci_bar_map(bdf: u32, bar_index: u8) -> u64 {
             inlateout("rax") SYS_PCI_BAR_MAP => r,
             in("rdi") bdf as u64,
             in("rsi") bar_index as u64,
-            in("rdx") 0u64,
+            in("rdx") size_out.map_or(0, |size| size as *mut u64 as u64),
         );
     }
     r
+}
+
+pub fn sys_pci_bar_map(bdf: u32, bar_index: u8) -> u64 {
+    sys_pci_bar_map_with_size(bdf, bar_index, None)
 }
 
 /// Unmap a PCI BAR previously mapped with sys_pci_bar_map. Returns 0 on success.

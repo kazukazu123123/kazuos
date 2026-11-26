@@ -290,10 +290,10 @@ pub extern "C" fn mouse_irq_handler_inner() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn hda_irq_handler_inner() {
+pub extern "C" fn hda_irq_handler_inner(slot: u64) {
     let entry_cr3 = crate::vmm::active_cr3();
     unsafe {
-        let irq = crate::syscall::runtime::claimed_driver_irq();
+        let irq = crate::syscall::runtime::claimed_driver_irq(slot as usize);
         if irq != 0 {
             crate::drivers::ioapic::mask_driver_irq(irq, true);
             crate::process::wakeup_irq_waiter(irq);
@@ -511,6 +511,7 @@ global_asm!(
     "    push r13",
     "    push r14",
     "    push r15",
+    "    mov rdi, 0",
     "    call hda_irq_handler_inner",
     "    pop r15",
     "    pop r14",
@@ -530,8 +531,23 @@ global_asm!(
     "    iretq",
 );
 
+global_asm!(
+    ".global driver_irq_handler_asm_1",
+    "driver_irq_handler_asm_1:",
+    "    push rax", "    push rcx", "    push rdx", "    push rsi", "    push rdi",
+    "    push r8", "    push r9", "    push r10", "    push r11", "    push rbx",
+    "    push rbp", "    push r12", "    push r13", "    push r14", "    push r15",
+    "    mov rdi, 1",
+    "    call hda_irq_handler_inner",
+    "    pop r15", "    pop r14", "    pop r13", "    pop r12", "    pop rbp",
+    "    pop rbx", "    pop r11", "    pop r10", "    pop r9", "    pop r8",
+    "    pop rdi", "    pop rsi", "    pop rdx", "    pop rcx", "    pop rax",
+    "    iretq",
+);
+
 unsafe extern "C" {
     fn hda_irq_handler_asm();
+    fn driver_irq_handler_asm_1();
 }
 
 pub fn timer_handler_addr() -> u64 {
@@ -548,6 +564,10 @@ pub fn mouse_handler_addr() -> u64 {
 
 pub fn hda_handler_addr() -> u64 {
     hda_irq_handler_asm as *const () as usize as u64
+}
+
+pub fn driver_handler_addr_1() -> u64 {
+    driver_irq_handler_asm_1 as *const () as usize as u64
 }
 
 pub fn sci_handler_addr() -> u64 {

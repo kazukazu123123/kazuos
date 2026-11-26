@@ -304,8 +304,14 @@ pub fn kdm_init() -> bool {
         println!("hda: no controller");
         return false;
     };
-    let mmio = sys_pci_bar_map(bdf, 0);
+    let mut bar_size = 0;
+    let mmio = sys_pci_bar_map_with_size(bdf, 0, Some(&mut bar_size));
     if mmio == u64::MAX { return false; }
+    if bar_size < 0x100 {
+        sys_pci_bar_unmap(mmio);
+        return false;
+    }
+    println!("hda: BAR0 size {} bytes", bar_size);
     if sys_pci_enable(bdf) == u64::MAX {
         sys_pci_bar_unmap(mmio);
         return false;
@@ -348,6 +354,7 @@ pub fn kdm_init() -> bool {
         hda.release();
         return false;
     };
+    println!("hda: claimed IRQ {}", irq);
     use core::sync::atomic::Ordering;
     IRQ_NUMBER.store(irq, Ordering::Release);
     IRQ_MMIO.store(mmio, Ordering::Release);
