@@ -1,10 +1,11 @@
+use crate::fs::devfs::DeviceOps;
 use crate::util::{IrqGuard, SpinLock, SyncUnsafeCell};
 use core::arch::asm;
 
 const BUF_SIZE: usize = 1024;
 const EBUF_SIZE: usize = 512;
 
-// Key-event word layout (returned by SYS_KEYBOARD_POLL). Low 8 bits are the key code:
+// Key-event word layout (returned by /dev/input/keyboard reads). Low 8 bits are the key code:
 // a translated character for text keys, or one of the KEY_* codes below for non-text
 // keys (arrows, modifiers, Esc, F-keys). The high bits are flags.
 pub const KEY_RELEASE: u16 = 0x100; // set on release (clear on press)
@@ -72,6 +73,17 @@ pub fn inject_keys(keys: &[u8]) {
     let _guard = KeyboardGuard::new();
     for &ch in keys {
         unsafe { push_byte(ch); }
+    }
+}
+
+pub fn inject_event(event: u16) {
+    let _guard = KeyboardGuard::new();
+    unsafe {
+        let code = event as u8;
+        if event & KEY_RELEASE == 0 && (code < 0x80 || code <= KEY_DOWN as u8) && code != 0 {
+            push_byte(code);
+        }
+        push_event(event);
     }
 }
 
@@ -348,3 +360,54 @@ pub fn get_raw() -> Option<u8> {
         Some(ch)
     }
 }
+
+// ── /dev/input/keyboard ──────────────────────────────────────────────────────
+//
+// The userspace face of the event stream above. read returns whole 2-byte
+// event words (as many as fit), write injects event words (driver processes
+// only). Reads are focus-gated: while a framebuffer owner exists, only the
+// owner may drain the stream. The text/console read path (fd0) is separate
+// and unaffected.
+
+static KEYBOARD_OPS: DeviceOps = DeviceOps {
+    open: keyboard_open,
+    close: keyboard_close,
+    read: keyboard_read,
+    write: keyboard_write,
+    ioctl: keyboard_ioctl,
+};
+
+pub fn init_devfs() {
+    crate::fs::devfs::register("/dev/input/keyboard", &KEYBOARD_OPS);
+}
+
+fn keyboard_open() -> u64 { 1 }
+fn keyboard_close(_handle: u64) {}
+
+fn keyboard_read(_handle: u64, buf: &mut [u8]) -> usize {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if matches!(crate::drivers::fb_owner::owner(), Some(o) if o != caller) { return 0; }
+    let mut written = 0;
+    while written + 2 <= buf.len() {
+        let Some(ev) = get_event() else { break; };
+        buf[written..written + 2].copy_from_slice(&ev.to_le_bytes());
+        written += 2;
+    }
+    written
+}
+
+fn keyboard_write(_handle: u64, buf: &[u8]) -> usize {
+    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
+    if caller == 0 || crate::process::privilege_level(caller) > crate::process::PrivilegeLevel::Driver {
+        return 0;
+    }
+    let mut read = 0;
+    while read + 2 <= buf.len() {
+        let word = u16::from_le_bytes([buf[read], buf[read + 1]]);
+        if word <= 0xfff { inject_event(word); }
+        read += 2;
+    }
+    read
+}
+
+fn keyboard_ioctl(_handle: u64, _cmd: u64, _arg: u64) -> i64 { -1 }

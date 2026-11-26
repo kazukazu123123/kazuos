@@ -24,9 +24,8 @@ const NAME_LEN: usize = PROC_NAME_LEN;
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     // Catch Ctrl+C so that at the prompt it cancels the current line instead of killing
     // the shell. On the console the kernel turns Ctrl+C into a SIGINT to the foreground
-    // (us, when idle at the prompt); in a GUI terminal it arrives as a 0x03 byte on stdin
-    // (handled in read_line). When a command is running it's the foreground, so it gets
-    // the interrupt, not us.
+    // (us, when idle at the prompt). A GUI terminal routes the signal to the leaf of this
+    // shell's wait chain, so nested shells and their foreground commands behave the same way.
     syscall1(SYS_SIGNAL_CATCH, 1);
     let mut buf = [0u8; BUF_SIZE];
     loop {
@@ -76,6 +75,16 @@ fn read_line(buf: &mut [u8]) -> usize {
                     return len;
                 }
                 0x03 => { sys_write(b"^C\r\n"); return 0; } // Ctrl+C: cancel the line
+                0x04 => {
+                    if len == 0 {
+                        sys_write(b"exit\r\n");
+                        sys_exit(0);
+                    }
+                    if pos < len {
+                        for j in pos..len - 1 { buf[j] = buf[j + 1]; }
+                        len -= 1;
+                    }
+                }
                 0x08 | 0x7F => {
                     if pos > 0 {
                         for j in pos - 1..len - 1 { buf[j] = buf[j + 1]; }
@@ -184,6 +193,9 @@ fn execute(cmd: &[u8]) {
     }
     if cmd == b"clear" {
         return cmd_clear();
+    }
+    if cmd == b"exit" {
+        sys_exit(0);
     }
     if cmd == b"mem" {
         return cmd_mem();
@@ -439,7 +451,7 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
 }
 
 fn cmd_help() {
-    sys_write(b"commands: help clear ls mem ps sysinfo smpinfo shutdown reboot\r\n");
+    sys_write(b"commands: help clear exit ls mem ps sysinfo smpinfo shutdown reboot\r\n");
 }
 
 fn cmd_clear() {

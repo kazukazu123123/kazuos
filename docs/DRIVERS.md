@@ -97,6 +97,7 @@ pub struct KdmInfo {
 
 `driver_runtime.rs` exposes (among others): `sys_ioport_request`, `sys_irq_wait`,
 `sys_pci_info`, `sys_pci_enable`/`sys_pci_disable`, `sys_pci_bar_map`/`sys_pci_bar_unmap`,
+`sys_pci_bar_map_with_size`,
 `sys_irq_claim`/`sys_irq_ack`/`sys_irq_release`, `sys_dma_alloc`/`sys_dma_free`,
 `sys_ipc_open`/`sys_ipc_send`/`sys_ipc_recv`,
 `sys_heap_alloc`/`sys_heap_free` (also wired as the global allocator, so `alloc`
@@ -116,9 +117,11 @@ privileged**. Drivers run at `Driver`. The hardware-facing syscalls check
 | `SYS_IOPORT_REQUEST` | Add ports to the process's TSS I/O permission bitmap (then use `in`/`out` directly) |
 | `SYS_IRQ_WAIT` | Block until an IRQ fires (or a stop signal wakes us) |
 | `SYS_DMA_ALLOC` / `SYS_DMA_FREE` | Physically-contiguous DMA buffers |
-| `SYS_PCI_BAR_MAP` / `SYS_PCI_BAR_UNMAP` | Map a PCI BAR into the driver's address space |
+| `SYS_PCI_BAR_MAP` / `SYS_PCI_BAR_UNMAP` | Map a PCI BAR into the driver's address space; optional third argument returns BAR size |
 | `SYS_PCI_ENABLE` / `SYS_PCI_DISABLE` | Enable or disable PCI memory decoding and bus mastering and return the legacy IRQ line |
 | `SYS_IRQ_CLAIM` / `SYS_IRQ_ACK` / `SYS_IRQ_RELEASE` | Exclusively route one PCI legacy IRQ, unmask it after device acknowledgement, and release it during shutdown |
+
+The ring3 xHCI/HID driver at `userspace/drivers/xhci.rs` is auto-loaded when present. It supports directly attached USB boot-protocol keyboards and mice on QEMU xHCI; the keyboard sends translated press/release words through `SYS_KEYBOARD_EVENT`, and the mouse sends relative movement through `module_mouse`. Run `cargo +nightly -Zscript scripts/auto_test_pipeline.rs --usb xhci --usb-hid --verbose --expect "xhci: port 6 slot 2 ready" --send help --expect "commands:"` to exercise USB keyboard input. USB mouse movement was checked in QEMU by running `mousetest`, sending `--mouse-move 20,10`, and observing the five-byte `module_mouse` event at the receiver. QEMU tests also cover key press/release through `keyevents`, hub-attached keyboard/mouse input (`--usb-hub`), root-port mouse unplug/replug via `--monitor-command`, and non-boot `usb-tablet` absolute reports (`--usb-tablet`). The driver supports a bounded subset of descriptor-described non-boot reports, including QEMU's absolute `usb-tablet` (tested with `mousetest`); unsupported layouts and other USB device classes are rejected. `keyevents` acquires keyboard focus and reports translated press/release words; QEMU `--key shift-a` was verified to produce shift, uppercase key press, and release events. It polls xHCI events and port connection state rather than using MSI or a claimed IRQ. Keep the controller and USB protocol handling in ring3. The legacy IRQ path currently supports two exclusive claims, routed to vectors `0x31` and `0x33`; duplicate IRQ lines and reserved kernel IRQs are rejected. Claims are released on process exit, and the existing `SYS_IRQ_WAIT`/`ACK`/`RELEASE` contract is unchanged. Two devices sharing a legacy IRQ line are not supported. MSI/MSI-X needs a separate follow-up API with kernel-owned vector allocation and PCI capability programming; do not expose arbitrary MSI target addresses to ring3. The xHCI driver currently polls rather than claiming an IRQ; simultaneous HDA and xHCI interrupt delivery is not validated.
 
 `SYS_DRIVER_LOAD`/`UNLOAD`/`LIST`/`INFO` are **not** privileged — any process
 (including the shell) may load and unload drivers.

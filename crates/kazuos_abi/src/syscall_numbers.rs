@@ -64,7 +64,6 @@ pub const SYS_PCI_BAR_MAP:   u64 = 43;
 pub const SYS_PCI_BAR_UNMAP: u64 = 44;
 
 // Keyboard
-pub const SYS_KEYBOARD_POLL: u64 = 45;
 
 // System / Misc
 pub const SYS_CPU_INFO:  u64 = 46;
@@ -102,6 +101,18 @@ pub const SYS_PCI_DISABLE: u64 = 65;
 pub const SYS_IRQ_CLAIM:   u64 = 66;
 pub const SYS_IRQ_RELEASE: u64 = 67;
 pub const SYS_IRQ_ACK:     u64 = 68;
+// Keyboard/mouse input has no syscalls: drivers and consumers go through
+// /dev/input/keyboard and /dev/input/mouse (devfs). The old numbers 45
+// (SYS_KEYBOARD_POLL) and 71-73 (SYS_KEYBOARD_EVENT, SYS_MOUSE_EVENT,
+// SYS_MOUSE_POLL) are retired and must not be reused.
+
+// Directed named IPC. SEND_TO reads an envelope prefixed by target pid; RECV_FROM
+// writes an envelope prefixed by the kernel-authenticated sender pid.
+pub const SYS_IPC_TRY_SEND_TO:   u64 = 69;
+pub const SYS_IPC_TRY_RECV_FROM: u64 = 70;
+pub const IPC_PID_PREFIX_SIZE: usize = 8;
+pub const IPC_MAX_MESSAGE_SIZE: usize = 8192;
+pub const IPC_MAX_ENVELOPE_SIZE: usize = IPC_PID_PREFIX_SIZE + IPC_MAX_MESSAGE_SIZE;
 
 // SYS_EXEC stdio pack: bits[0..16] = stdin fd, bits[16..32] = stdout fd (0xFFFF on either
 // = console default). When this bit is also set, the child additionally gets fd 3 as a

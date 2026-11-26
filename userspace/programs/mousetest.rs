@@ -16,6 +16,7 @@ struct FbInfo {
     format: u32, // 0=RGB, 1=BGR
 }
 
+
 // ── pixel helpers ─────────────────────────────────────────────────────────────
 
 fn pack(info: &FbInfo, r: u8, g: u8, b: u8) -> u32 {
@@ -277,10 +278,10 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
 
     syscall(SYS_SIGNAL_CATCH, 1, 0, 0);
 
-    // Open IPC channel (ps2mouse.kdm must be loaded)
-    let ipc = syscall(SYS_IPC_OPEN, b"module_mouse".as_ptr() as u64, 12, 0);
-    if ipc == u64::MAX {
-        sys_write(b"mousetest: IPC module_mouse not found (is ps2mouse.kdm loaded?)\r\n");
+    // Open the unified input device (any mouse driver feeds it).
+    let mouse_fd = sys_open(b"/dev/input/mouse");
+    if mouse_fd == u64::MAX {
+        sys_write(b"mousetest: /dev/input/mouse not found\r\n");
         syscall(SYS_FB_RELEASE, 0, 0, 0);
         sys_exit(1);
     }
@@ -300,28 +301,20 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
     save_cross(&info, mx, my);
     draw_cross(&info, mx, my, pack(&info, 0xFF, 0xFF, 0x00));
 
-    let mut msg = [0u8; 5];
-
     loop {
         // Ctrl+C check
         if syscall(SYS_SIGNAL_CHECK, 0, 0, 0) != 0 { break; }
 
-        // Receive mouse event (blocking)
-        let n = syscall(SYS_IPC_RECV, ipc, msg.as_mut_ptr() as u64, 5);
-        if n == u64::MAX {
-            continue;
-        }
-        if n == 0 {
-            // Woken without data (e.g. by signal) — check at top of loop
-            continue;
-        }
-        if n < 5 {
+        // Read one event record from /dev/input/mouse; sleep a tick while empty.
+        let mut record = [0u8; 12];
+        if sys_try_read(mouse_fd, &mut record) != 12 {
+            sys_sleep(1);
             continue;
         }
 
-        buttons = msg[0];
-        let dx = i16::from_le_bytes([msg[1], msg[2]]);
-        let dy = i16::from_le_bytes([msg[3], msg[4]]);
+        buttons = record[0];
+        let dx = i32::from_le_bytes(record[4..8].try_into().unwrap()).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let dy = i32::from_le_bytes(record[8..12].try_into().unwrap()).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         last_dx = dx;
         last_dy = dy;
 
@@ -343,9 +336,8 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         draw_cross(&info, mx, my, pack(&info, 0xFF, 0xFF, 0x00));
     }
 
-    // Cleanup: restore cursor area, close the mouse channel, release FB.
+    // Cleanup: restore cursor area, release FB.
     restore_cross(&info);
-    syscall(SYS_IPC_CLOSE, ipc, 0, 0);
     syscall(SYS_FB_RELEASE, 0, 0, 0);
     sys_exit(0);
 }

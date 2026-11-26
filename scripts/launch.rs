@@ -89,7 +89,7 @@ fn run() -> Result<(), String> {
     let audiodev_backend = if cfg!(unix) { "pa" } else { "dsound" };
 
     let mut args: Vec<String> = vec![
-        "-machine".into(), "q35,pcspk-audiodev=snd0".into(),
+        "-machine".into(), "q35,pcspk-audiodev=snd0,i8042=off".into(),
         "-drive".into(), format!("if=pflash,format=raw,readonly=on,file={}", ovmf.display()),
     ];
     if ovmf_vars.is_some() {
@@ -102,6 +102,7 @@ fn run() -> Result<(), String> {
         "-m".into(), "1G".into(),
         "-net".into(), "none".into(),
         "-device".into(), "VGA".into(),
+        "-display".into(), "gtk,grab-on-hover=on,show-cursor=off".into(),
         "-audiodev".into(), format!("{audiodev_backend},id=snd0"),
         "-serial".into(), "stdio".into(),
         "-smp".into(), "4".into(),
@@ -110,6 +111,15 @@ fn run() -> Result<(), String> {
         0 => args.extend(["-device".into(), "intel-hda".into(), "-device".into(), "hda-duplex,audiodev=snd0".into()]),
         _ => {}
     }
+    // USB-only input: PS/2 is disabled in the machine line above, so keyboard
+    // and mouse come from these USB HID devices behind the xHCI controller
+    // (same topology the auto test pipeline uses).
+    args.extend([
+        "-device".into(), "pcie-root-port,id=usbport,bus=pcie.0,addr=0x4".into(),
+        "-device".into(), "qemu-xhci,id=usb0,bus=usbport".into(),
+        "-device".into(), "usb-kbd,bus=usb0.0".into(),
+        "-device".into(), "usb-mouse,bus=usb0.0".into(),
+    ]);
     if debug_choice >= 1 {
         args.push("-no-reboot".into());
     }

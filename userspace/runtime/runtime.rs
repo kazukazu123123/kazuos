@@ -593,6 +593,48 @@ pub fn sys_ipc_close(channel: u64) -> u64 {
     r
 }
 
+pub fn sys_ipc_try_send_to_envelope(channel: u64, envelope: &[u8]) -> u64 {
+    runtime_ipc_directed_syscall(SYS_IPC_TRY_SEND_TO, channel, envelope.as_ptr() as u64, envelope.len() as u64)
+}
+
+pub fn sys_ipc_try_recv_from_envelope(channel: u64, envelope: &mut [u8]) -> u64 {
+    runtime_ipc_directed_syscall(SYS_IPC_TRY_RECV_FROM, channel, envelope.as_mut_ptr() as u64, envelope.len() as u64)
+}
+
+fn runtime_ipc_directed_syscall(number: u64, channel: u64, pointer: u64, length: u64) -> u64 {
+    let result: u64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number => result,
+            in("rdi") channel,
+            in("rsi") pointer,
+            in("rdx") length,
+        );
+    }
+    result
+}
+
+pub fn sys_ipc_try_send_to(channel: u64, target: u64, data: &[u8]) -> u64 {
+    if data.is_empty() || data.len() > IPC_MAX_MESSAGE_SIZE { return u64::MAX; }
+    let mut envelope = alloc::vec![0u8; IPC_PID_PREFIX_SIZE + data.len()];
+    envelope[..IPC_PID_PREFIX_SIZE].copy_from_slice(&target.to_le_bytes());
+    envelope[IPC_PID_PREFIX_SIZE..].copy_from_slice(data);
+    sys_ipc_try_send_to_envelope(channel, &envelope)
+}
+
+pub fn sys_ipc_try_recv_from(channel: u64, data: &mut [u8]) -> (u64, u64) {
+    if data.is_empty() || data.len() > IPC_MAX_MESSAGE_SIZE { return (u64::MAX, 0); }
+    let mut envelope = alloc::vec![0u8; IPC_PID_PREFIX_SIZE + data.len()];
+    let result = sys_ipc_try_recv_from_envelope(channel, &mut envelope);
+    if result == 0 || result == u64::MAX { return (result, 0); }
+    if result < IPC_PID_PREFIX_SIZE as u64 || result as usize > envelope.len() { return (u64::MAX, 0); }
+    let sender = u64::from_le_bytes(envelope[..IPC_PID_PREFIX_SIZE].try_into().unwrap());
+    let len = result as usize - IPC_PID_PREFIX_SIZE;
+    data[..len].copy_from_slice(&envelope[IPC_PID_PREFIX_SIZE..IPC_PID_PREFIX_SIZE + len]);
+    (sender, len as u64)
+}
+
 pub const PROC_NAME_LEN: usize = 32;
 
 /// Layout written by `SYS_PROCESS_INFO`. Must match `process::ProcessInfo` in the kernel:

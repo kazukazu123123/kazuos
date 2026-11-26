@@ -16,7 +16,7 @@ static AUDIO_OPS: DeviceOps = DeviceOps {
 };
 
 pub fn init() {
-    let channel = ipc::open(b"module_audio");
+    let channel = ipc::open(b"driver_audio", 0);
     unsafe { *CHANNEL.0.get() = channel; }
     crate::fs::devfs::register("/dev/audio", &AUDIO_OPS);
 }
@@ -43,8 +43,25 @@ fn send(command: u8, data: &[u8]) -> SendResult {
     ipc::try_send_reliable(channel(), sender, &message)
 }
 
+/// Send a control message that must not be lost behind queued PCM data:
+/// the queue is small and usually full while playing, so the stop goes in
+/// by evicting the oldest pending chunk (25 ms of sound nobody will miss).
+fn send_evicting(command: u8, data: &[u8]) -> SendResult {
+    if !ONLINE.load(Ordering::Acquire) { return SendResult::Error; }
+    let mut message = Vec::with_capacity(data.len() + 1);
+    message.push(command);
+    message.extend_from_slice(data);
+    let sender = crate::scheduler::current_user_pid().unwrap_or(0);
+    ipc::try_send_reliable_evicting(channel(), sender, &message)
+}
+
 fn audio_open() -> u64 { 1 }
-fn audio_close(_handle: u64) {}
+fn audio_close(_handle: u64) {
+    // Stopping is the closer's job: the DMA ring is circular, so a stream
+    // nobody stops replays its last samples forever. Command 0 is the same
+    // stop that ioctl(0) sends; process exit lands here too via close_all.
+    let _ = send_evicting(0, &[]);
+}
 fn audio_read(_handle: u64, _buf: &mut [u8]) -> usize { 0 }
 
 fn audio_write(_handle: u64, buf: &[u8]) -> usize {
@@ -57,7 +74,7 @@ fn audio_write(_handle: u64, buf: &[u8]) -> usize {
 
 fn audio_ioctl(_handle: u64, cmd: u64, arg: u64) -> i64 {
     match cmd {
-        0 => match send(0, &[]) {
+        0 => match send_evicting(0, &[]) {
             SendResult::Ok => 0,
             _ => -1,
         },

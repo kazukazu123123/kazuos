@@ -73,6 +73,7 @@ pub fn acquire(pid: u64, cr3: u64, out: *mut FbInfo) -> u64 {
         // The new graphical owner takes keyboard focus; drop any keys the shell
         // had typed-but-unread so they don't bleed into the new program.
         crate::drivers::keyboard::flush();
+        crate::drivers::mouse::flush();
         write_info(out)
     }
 }
@@ -88,6 +89,7 @@ pub fn release(pid: u64) {
         // Focus returns to the text foreground (the shell); drop keys typed while
         // the graphical program had focus so they don't replay at the prompt.
         crate::drivers::keyboard::flush();
+        crate::drivers::mouse::flush();
 
         if let Some(p) = crate::console::fb_params() {
             let fb_bytes = p.stride as usize * p.height as usize * 4;

@@ -50,7 +50,9 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         | SYS_IPC_SEND
         | SYS_IPC_RECV
         | SYS_IPC_TRY_RECV
-        | SYS_IPC_CLOSE => crate::syscall::ipc::handle(number, arg0, arg1, arg2),
+        | SYS_IPC_CLOSE
+        | SYS_IPC_TRY_SEND_TO
+        | SYS_IPC_TRY_RECV_FROM => crate::syscall::ipc::handle(number, arg0, arg1, arg2),
         SYS_OPEN
         | SYS_CLOSE
         | SYS_READ
@@ -73,8 +75,7 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         | SYS_PCI_DISABLE
         | SYS_IRQ_CLAIM
         | SYS_IRQ_RELEASE
-        | SYS_IRQ_ACK
-        | SYS_KEYBOARD_POLL => crate::syscall::device::handle(number, arg0, arg1, arg2),
+        | SYS_IRQ_ACK => crate::syscall::device::handle(number, arg0, arg1, arg2),
         SYS_CPU_INFO
         | SYS_SHUTDOWN
         | SYS_REBOOT

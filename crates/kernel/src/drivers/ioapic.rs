@@ -18,13 +18,14 @@ pub fn mask_driver_irq(irq: u8, masked: bool) -> bool {
     true
 }
 
-pub fn route_driver_irq(irq: u8, enable: bool) -> bool {
+pub fn route_driver_irq(irq: u8, vector: u8, enable: bool) -> bool {
     let base = DRIVER_IOAPIC_BASE.load(Ordering::Acquire);
     if base == 0 { return false; }
     let ioapic = unsafe { IoApic::new(base) };
     unsafe {
+        if irq > ioapic.max_redirection_entry() || matches!(irq, 0 | 1 | 2 | 9 | 12) { return false; }
         if enable {
-            ioapic.set_irq_ext(irq, 0x31, DRIVER_LAPIC_ID.load(Ordering::Acquire), 0x0f);
+            ioapic.set_irq_ext(irq, vector, DRIVER_LAPIC_ID.load(Ordering::Acquire), 0x0f);
             ioapic.unmask_irq(irq);
         } else {
             ioapic.mask_irq(irq);

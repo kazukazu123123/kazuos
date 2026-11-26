@@ -99,6 +99,7 @@ pub(crate) unsafe fn init(keyboard: u64, timer: u64, syscall: u64, mouse: u64, h
         idt.set_handler(0x30, timer);
         idt.set_handler(0x31, hda);
         idt.set_handler(0x32, sci);
+        idt.set_handler(0x33, crate::handlers::interrupts::driver_handler_addr_1());
         idt.set_user_handler(0x80, syscall);
         idt.load();
     }

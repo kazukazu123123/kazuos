@@ -46,6 +46,8 @@ pub fn run(boot_info: &'static BootInfo) -> InitState {
     drivers::power::init(boot_info.rsdp);
     drivers::pci::init(boot_info.rsdp);
     drivers::audio::init();
+    drivers::mouse::init_devfs();
+    drivers::keyboard::init_devfs();
     unsafe {
         vmm::init();
     }

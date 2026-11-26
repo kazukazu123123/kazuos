@@ -49,6 +49,8 @@ edition = "2024"
 //!   --scenario FILE      run steps from a scenario file (see DSL above)
 //!   --send LINE          inline step: type LINE + Enter (repeatable, ordered)
 //!   --key NAME           inline step: press one key (repeatable, ordered)
+//!   --mouse-move DX,DY   inline step: move QEMU mouse by relative offset
+//!   --monitor-command S  inline step: send a QEMU monitor command
 //!   --wait SECS          inline step: sleep (repeatable, ordered)
 //!   --expect PAT         inline step: wait for PAT in serial.log
 //!   --repeat N           repeat the inline step sequence N times
@@ -68,6 +70,11 @@ edition = "2024"
 //!   --early-pattern S    serial substring marking the bootloader
 //!                        (default "KazuOS Bootloader")
 //!   --audio hda|none     audio device (default hda)
+//!   --usb xhci|none      USB host controller (default none); xhci adds QEMU xHCI
+//!   --usb-hid            attach USB keyboard and mouse (requires --usb xhci)
+//!   --usb-hub            attach USB HID devices behind a QEMU hub (requires --usb-hid)
+//!   --usb-tablet         use a non-boot USB tablet instead of USB mouse (requires --usb-hid)
+//!   --xhci-trace         write QEMU xHCI trace to xhci-trace.log
 //!   --cpu-count N        number of CPUs (default 2)
 
 use std::fs;
@@ -106,6 +113,8 @@ fn main() -> std::process::ExitCode {
 enum Step {
     Send(String),
     Key(String),
+    MouseMove(String),
+    MonitorCommand(String),
     Wait(f64),
     Expect(String),
     Repeat { count: u32, body: Vec<Step> },
@@ -129,6 +138,11 @@ struct Cfg {
     wait_pattern: String,
     early_pattern: String,
     audio: String,
+    usb: String,
+    usb_hid: bool,
+    usb_hub: bool,
+    usb_tablet: bool,
+    xhci_trace: bool,
     cpu_count: u32,
 }
 
@@ -151,6 +165,11 @@ fn parse_cfg() -> Result<Cfg, String> {
         wait_pattern: "KazuOS kernel started".into(),
         early_pattern: "KazuOS Bootloader".into(),
         audio: "hda".into(),
+        usb: "none".into(),
+        usb_hid: false,
+        usb_hub: false,
+        usb_tablet: false,
+        xhci_trace: false,
         cpu_count: 2,
     };
     let mut default_fail_on = true;
@@ -167,6 +186,8 @@ fn parse_cfg() -> Result<Cfg, String> {
             "--scenario" => c.scenario = Some(PathBuf::from(val()?)),
             "--send" => c.steps.push(Step::Send(val()?)),
             "--key" => c.steps.push(Step::Key(val()?)),
+            "--mouse-move" => c.steps.push(Step::MouseMove(val()?)),
+            "--monitor-command" => c.steps.push(Step::MonitorCommand(val()?)),
             "--wait" => c.steps.push(Step::Wait(val()?.parse().map_err(|_| "bad --wait")?)),
             "--expect" => c.steps.push(Step::Expect(val()?)),
             "--repeat" => c.repeat = val()?.parse().map_err(|_| "bad --repeat")?,
@@ -179,9 +200,23 @@ fn parse_cfg() -> Result<Cfg, String> {
             "--wait-pattern" => c.wait_pattern = val()?,
             "--early-pattern" => c.early_pattern = val()?,
             "--audio" => c.audio = val()?,
+            "--usb" => c.usb = val()?,
+            "--usb-hid" => c.usb_hid = true,
+            "--usb-hub" => c.usb_hub = true,
+            "--usb-tablet" => c.usb_tablet = true,
+            "--xhci-trace" => c.xhci_trace = true,
             "--cpu-count" => c.cpu_count = val()?.parse().map_err(|_| "bad --cpu-count")?,
             other => return Err(format!("unknown argument: {other}")),
         }
+    }
+    if c.usb_tablet && !c.usb_hid {
+        return Err("--usb-tablet requires --usb-hid".into());
+    }
+    if c.usb_hub && !c.usb_hid {
+        return Err("--usb-hub requires --usb-hid".into());
+    }
+    if c.usb_hid && c.usb != "xhci" {
+        return Err("--usb-hid requires --usb xhci".into());
     }
     if !default_fail_on {
         let extra = c.fail_on.split_off(DEFAULT_FAIL_ON.len());
@@ -229,6 +264,8 @@ fn parse_block(lines: &mut dyn Iterator<Item = String>, top: bool) -> Result<Vec
         match kw {
             "send" => steps.push(Step::Send(rest.to_string())),
             "key" => steps.push(Step::Key(rest.to_string())),
+            "mouse-move" => steps.push(Step::MouseMove(rest.to_string())),
+            "monitor-command" => steps.push(Step::MonitorCommand(rest.to_string())),
             "wait" => steps.push(Step::Wait(rest.parse().map_err(|_| format!("bad wait: {rest}"))?)),
             "expect" => steps.push(Step::Expect(strip_quotes(rest))),
             "repeat" => {
@@ -345,6 +382,25 @@ fn run() -> Result<bool, String> {
         "hda" => args.extend(["-device".into(), "intel-hda".into(), "-device".into(), "hda-duplex,audiodev=snd0".into()]),
         "none" => {}
         other => return Err(format!("bad --audio: {other}")),
+    }
+    match cfg.usb.as_str() {
+        "xhci" => args.extend(["-device".into(), "pcie-root-port,id=usbport,bus=pcie.0,addr=0x4".into(), "-device".into(), "qemu-xhci,id=usb0,bus=usbport".into()]),
+        "none" => {}
+        other => return Err(format!("bad --usb: {other}")),
+    }
+    if cfg.usb_hid {
+        let pointing = if cfg.usb_tablet { "usb-tablet" } else { "usb-mouse" };
+        if cfg.usb_hub {
+            args.extend(["-device".into(), "usb-hub,id=testhub,bus=usb0.0,port=1".into(),
+                         "-device".into(), "usb-kbd,id=testkbd,bus=usb0.0,port=1.1".into(),
+                         "-device".into(), format!("{pointing},id=testmouse,bus=usb0.0,port=1.2")]);
+        } else {
+            args.extend(["-device".into(), "usb-kbd,id=testkbd,bus=usb0.0".into(),
+                         "-device".into(), format!("{pointing},id=testmouse,bus=usb0.0")]);
+        }
+    }
+    if cfg.xhci_trace {
+        args.extend(["-trace".into(), format!("enable=usb_xhci_*,file={}", root.join("xhci-trace.log").display())]);
     }
     args.extend([
         "-no-reboot".into(),
@@ -532,6 +588,15 @@ fn exec_steps(steps: &[Step], cfg: &Cfg, serial_log: &Path, watch: &Watch) -> Re
             }
             Step::Key(name) => {
                 let _ = monitor_send(&[key_to_sendkey(name)], cfg.send_delay_ms);
+            }
+            Step::MonitorCommand(command) => {
+                monitor_send(&[command.clone()], cfg.send_delay_ms)?;
+            }
+            Step::MouseMove(offset) => {
+                let Some((dx, dy)) = offset.split_once(',') else { return Err(format!("bad mouse offset: {offset}")); };
+                let dx: i32 = dx.parse().map_err(|_| format!("bad mouse dx: {dx}"))?;
+                let dy: i32 = dy.parse().map_err(|_| format!("bad mouse dy: {dy}"))?;
+                monitor_send(&[format!("mouse_move {dx} {dy}")], cfg.send_delay_ms)?;
             }
             Step::Wait(secs) => {
                 sleep_checked(Duration::from_secs_f64(*secs), watch);

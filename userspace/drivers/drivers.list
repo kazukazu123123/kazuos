@@ -1,2 +1,3 @@
 /drivers/ps2mouse.kdm
 /drivers/hda.kdm
+/drivers/xhci.kdm
