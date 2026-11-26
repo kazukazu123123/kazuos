@@ -75,8 +75,7 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         | SYS_PCI_DISABLE
         | SYS_IRQ_CLAIM
         | SYS_IRQ_RELEASE
-        | SYS_IRQ_ACK
-        | SYS_KEYBOARD_POLL => crate::syscall::device::handle(number, arg0, arg1, arg2),
+        | SYS_IRQ_ACK => crate::syscall::device::handle(number, arg0, arg1, arg2),
         SYS_CPU_INFO
         | SYS_SHUTDOWN
         | SYS_REBOOT
