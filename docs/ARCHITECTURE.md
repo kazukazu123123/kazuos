@@ -302,7 +302,11 @@ allowed*; all processes run ring3). The format, source contract, build pipeline,
 and load/unload lifecycle are documented in `docs/DRIVERS.md`. `ps2mouse` is the reference example: it does
 PS/2 `in`/`out` from ring3 after requesting the ports, and delivers events over
 IPC. `hda` is a ring3 PCI/DMA driver that receives PCM from the hardware-neutral
-`/dev/audio` frontend over `driver_audio` and services its claimed IRQ on a dedicated thread.
+`/dev/audio` frontend over `module_audio` and services its claimed IRQ on a dedicated thread.
+`xhci` is a ring3 USB HID driver: it polls xHCI event rings, supports directly
+attached and hub-connected keyboard/mouse devices, sends USB mouse events through
+`module_mouse`, and passes translated key press/release events to the kernel's focused
+input stream with the driver-only `SYS_KEYBOARD_EVENT` syscall.
 Rich console/terminal rendering (font shaping, scrollback) is also a ring3 concern,
 distinct from the minimal panic blit above.
 

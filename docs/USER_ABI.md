@@ -60,7 +60,7 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `40` | `SYS_IRQ_WAIT` | `arg0 = irq_num` | blocks until IRQ; `u64::MAX` if interrupted (driver only) |
 | `41` | `SYS_DMA_ALLOC` | `arg0 = size`, `arg1 = *mut u64 phys_out` | user VA, or `u64::MAX` on error (driver only) |
 | `42` | `SYS_DMA_FREE` | `arg0 = VA from SYS_DMA_ALLOC` | `0` on success; `u64::MAX` on error (driver only) |
-| `43` | `SYS_PCI_BAR_MAP` | `arg0 = BDF`, `arg1 = BAR index` | user VA, or `u64::MAX` on error (driver only) |
+| `43` | `SYS_PCI_BAR_MAP` | `arg0 = BDF`, `arg1 = BAR index`, `arg2 = optional *mut u64 size_out` (0 to omit) | user VA and BAR size in bytes via `size_out`, or `u64::MAX` on error (driver only) |
 | `44` | `SYS_PCI_BAR_UNMAP` | `arg0 = VA from SYS_PCI_BAR_MAP` | `0` on success; `u64::MAX` on error (driver only) |
 | `45` | `SYS_KEYBOARD_POLL` | none | next key event word, or `0` if none |
 | `46` | `SYS_CPU_INFO` | `arg0 = selector`, `arg1 = per-CPU index when noted` | selector-dependent |
@@ -88,6 +88,7 @@ The source of truth for these numbers is `crates/kazuos_abi/src/syscall_numbers.
 | `68` | `SYS_IRQ_ACK` | `arg0 = claimed IRQ` | `0` on success; `u64::MAX` on error (driver only); unmasks a level-triggered IRQ after device acknowledgement |
 | `69` | `SYS_IPC_TRY_SEND_TO` | `arg0 = channel id`, `arg1 = target-prefixed envelope`, `arg2 = envelope len` | payload bytes queued, `0` if full, or `u64::MAX` on error/unreachable target |
 | `70` | `SYS_IPC_TRY_RECV_FROM` | `arg0 = channel id`, `arg1 = receive envelope`, `arg2 = envelope capacity` | sender prefix plus payload bytes, `0` if no message targets caller, or `u64::MAX` on error/short buffer |
+| `71` | `SYS_KEYBOARD_EVENT` | `arg0 = translated event word (code low 8 bits, release bit 8, shift bit 9, ctrl bit 10, alt bit 11)` | `0` on success, `u64::MAX` on error (driver only); delivers key events to the graphical focus owner and key presses to the focused text reader |
 
 Each SHM owner and grantee holds one reference. A holder can map an object once per process, and repeated maps return the existing VA. `SYS_SHM_UNMAP` removes only the caller's mapping. `SYS_SHM_CLOSE` removes only the caller's mapping and reference; closing the owner's reference does not revoke grantees. The object and its frames are released after the last holder closes or exits. Only a current owner-holder can grant access, and the target PID must name a live process.
 
@@ -299,7 +300,7 @@ A blocking `SYS_READ` on console input (and any other syscall that returns `BLOC
 Driver processes are spawned by the kernel at boot via `exec::spawn_driver()`. They differ from normal user processes in the following ways:
 
 - `privilege = Driver` in the process table
-- Can call the driver-only syscalls: `SYS_IOPORT_REQUEST`, `SYS_IRQ_WAIT`, `SYS_DMA_ALLOC`, `SYS_DMA_FREE`, `SYS_PCI_BAR_MAP`, `SYS_PCI_BAR_UNMAP`, `SYS_PCI_ENABLE`, `SYS_PCI_DISABLE`, `SYS_IRQ_CLAIM`, `SYS_IRQ_RELEASE`, `SYS_IRQ_ACK`
+- Can call the driver-only syscalls: `SYS_IOPORT_REQUEST`, `SYS_IRQ_WAIT`, `SYS_DMA_ALLOC`, `SYS_DMA_FREE`, `SYS_PCI_BAR_MAP`, `SYS_PCI_BAR_UNMAP`, `SYS_PCI_ENABLE`, `SYS_PCI_DISABLE`, `SYS_IRQ_CLAIM`, `SYS_IRQ_RELEASE`, `SYS_IRQ_ACK`, `SYS_KEYBOARD_EVENT`
 - **Cannot be killed** — `SYS_KILL` and `send_sigint` both refuse to terminate a driver process
 - Currently started at fixed boot time; dynamic stop/start is not yet implemented
 
