@@ -8,7 +8,6 @@ pub fn kdm_info() -> KdmInfo {
 
 // ── IPC channel ───────────────────────────────────────────────────────────────
 
-static mut IPC_CH: u64 = 0;
 
 // ── PS/2 I/O ─────────────────────────────────────────────────────────────────
 
@@ -37,13 +36,27 @@ fn mouse_cmd(cmd: u8) {
     outb(0x60, cmd);
 }
 
+/// Wait for the mouse to ACK a command (0xFA), skipping any stale bytes.
+/// Returns false when nothing ACKs: with no controller present the data
+/// port reads back 0xFF, which is never a valid ACK.
+fn mouse_wait_ack() -> bool {
+    for _ in 0..4 {
+        let mut i = 0u32;
+        let data = loop {
+            if inb(0x64) & 0x01 != 0 { break inb(0x60); }
+            i += 1;
+            if i >= 100_000 { return false; }
+        };
+        if data == 0xFA { return true; }
+    }
+    false
+}
+
 // ── packet state ─────────────────────────────────────────────────────────────
 
+static mut INPUT_FD: u64 = u64::MAX;
 static mut PKT: [u8; 3] = [0; 3];
 static mut PKT_IDX: u8  = 0;
-static mut EPOCH: u64 = 0;
-static mut TOTAL_X: i64 = 0;
-static mut TOTAL_Y: i64 = 0;
 
 /// Returns Some((buttons, dx, dy)) when a complete 3-byte packet is ready.
 fn feed_byte(data: u8) -> Option<(u8, i16, i16)> {
@@ -82,19 +95,14 @@ fn feed_byte(data: u8) -> Option<(u8, i16, i16)> {
 }
 
 fn send_event(buttons: u8, dx: i16, dy: i16) {
-    let ch = unsafe { IPC_CH };
-    if ch == 0 || ch == u64::MAX { return; }
-    let (epoch, total_x, total_y) = unsafe {
-        TOTAL_X = TOTAL_X.wrapping_add(dx as i64);
-        TOTAL_Y = TOTAL_Y.wrapping_add(dy as i64);
-        (EPOCH, TOTAL_X, TOTAL_Y)
-    };
-    let mut msg = [0u8; 25];
-    msg[0] = buttons;
-    msg[1..9].copy_from_slice(&epoch.to_le_bytes());
-    msg[9..17].copy_from_slice(&total_x.to_le_bytes());
-    msg[17..25].copy_from_slice(&total_y.to_le_bytes());
-    sys_ipc_send(ch, &msg);
+    // Write one record to /dev/input/mouse; the kernel queue merges all drivers.
+    let fd = unsafe { INPUT_FD };
+    if fd == u64::MAX { return; }
+    let mut record = [0u8; 12];
+    record[0] = buttons;
+    record[4..8].copy_from_slice(&(dx as i32).to_le_bytes());
+    record[8..12].copy_from_slice(&(dy as i32).to_le_bytes());
+    syscall(SYS_WRITE, fd, record.as_ptr() as u64, record.len() as u64);
 }
 
 // ── lifecycle ─────────────────────────────────────────────────────────────────
@@ -103,20 +111,24 @@ pub fn kdm_init() -> bool {
     if !sys_ioport_request(0x60, 1) { return false; }
     if !sys_ioport_request(0x64, 1) { return false; }
 
-    // Open IPC channel before initialising hardware so no events are missed.
-    let ch = sys_ipc_open(b"driver_mouse");
-    if ch == u64::MAX { return false; }
+    // Enable the auxiliary port, then probe with a reset: a present mouse
+    // ACKs (0xFA). On machines without a PS/2 controller (USB-only input)
+    // the ports read back 0xFF instead, and the poll loop would mistake
+    // that for an endless stream of mouse packets, so stop here.
+    outb(0x64, 0xA8);
+    mouse_cmd(0xFF);
+    if !mouse_wait_ack() { return false; }
+
     unsafe {
-        IPC_CH = ch;
         PKT_IDX = 0;
-        EPOCH = syscall(SYS_CPU_INFO, 0, 0, 0).wrapping_shl(32)
-            ^ syscall(SYS_PROCESS_INFO, 0, 0, 0);
-        TOTAL_X = 0;
-        TOTAL_Y = 0;
     }
 
-    // Enable PS/2 auxiliary port and start streaming.
-    outb(0x64, 0xA8);
+    // Open the unified input device; events are written there as records.
+    let fd = syscall(SYS_OPEN, b"/dev/input/mouse".as_ptr() as u64, 16, 0);
+    if fd == u64::MAX { return false; }
+    unsafe { INPUT_FD = fd; }
+
+    // Set defaults and start streaming (auxiliary port already enabled).
     mouse_cmd(0xF6);
     mouse_cmd(0xF4);
 
@@ -172,8 +184,8 @@ pub fn kdm_exit() {
     ps2_wait_write();
     outb(0x64, 0xA7);
 
-    let ch = unsafe { IPC_CH };
-    if ch != 0 && ch != u64::MAX {
-        syscall(SYS_IPC_CLOSE, ch, 0, 0);
+    let fd = unsafe { INPUT_FD };
+    if fd != u64::MAX {
+        syscall(SYS_CLOSE, fd, 0, 0);
     }
 }

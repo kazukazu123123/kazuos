@@ -139,14 +139,20 @@ impl GuiMessage {
     pub fn height(&self) -> u32 { self.u32(12) }
     pub fn stride(&self) -> u32 { self.u32(16) }
     pub fn format(&self) -> u32 { self.u32(20) }
-    pub fn shm_id(&self, index: usize) -> u64 { self.u64(24 + index * 8) }
+    pub fn shm_id(&self, index: usize) -> u64 {
+        if index >= GUI_BUFFER_COUNT { return u64::MAX; }
+        self.u64(24 + index * 8)
+    }
     pub fn title(&self) -> Option<&[u8]> {
         let length = self.bytes[16] as usize;
         if length == 0 || length > GUI_TITLE_MAX { return None; }
         let title = &self.bytes[17..17 + length];
         if title.iter().any(|byte| !(0x20..=0x7e).contains(byte)) { None } else { Some(title) }
     }
-    pub fn stat(&self, index: usize) -> u64 { self.u64(8 + index * 8) }
+    pub fn stat(&self, index: usize) -> u64 {
+        if index >= 7 { return 0; }
+        self.u64(8 + index * 8)
+    }
 
     fn u16(&self, offset: usize) -> u16 { u16::from_le_bytes([self.bytes[offset], self.bytes[offset + 1]]) }
     fn u32(&self, offset: usize) -> u32 { u32::from_le_bytes(self.bytes[offset..offset + 4].try_into().unwrap()) }

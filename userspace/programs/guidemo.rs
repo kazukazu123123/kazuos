@@ -30,8 +30,7 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         }
         if redraw {
             if let Some((buffer, address)) = gui.acquire() {
-                frame = frame.wrapping_add(1);
-                let mut ui = UiSurface::new(address, gui.width, gui.height, gui.stride, gui.format);
+                let mut ui = UiSurface::new(address, gui.width(), gui.height(), gui.stride(), gui.format());
                 let bg = if focused { ui.pack(28, 48, 76) } else { ui.pack(48, 52, 60) };
                 ui.clear(bg);
                 ui.text(18, 18, b"Independent ring3 GUI client", ui.pack(240, 245, 250));
@@ -43,7 +42,9 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
                 ui.text(98, 76, ui_u64(key as u64, &mut number), accent);
                 ui.text(18, 100, b"Frame: ", ui.pack(220, 225, 230));
                 ui.text(74, 100, ui_u64(frame, &mut number), accent);
-                redraw = !gui.commit(buffer, 0, 0, gui.width, gui.height);
+                let committed = gui.commit(buffer, 0, 0, gui.width(), gui.height());
+                if committed { frame = frame.wrapping_add(1); }
+                redraw = !committed;
             }
         }
         sys_sleep(8);

@@ -12,7 +12,7 @@ fn call(number: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     let result; unsafe { core::arch::asm!("int 0x80", inlateout("rax") number => result, in("rdi") a0, in("rsi") a1, in("rdx") a2); } result
 }
 
-struct Terminal { grid: [[u8; COLS]; ROWS], x: usize, y: usize, input: u64, output: u64, shell: u64, alive: bool, ansi: u8, ansi_a: usize, ansi_b: usize, ansi_param: u8 }
+struct Terminal { grid: [[u8; COLS]; ROWS], x: usize, y: usize, input: u64, output: u64, shell: u64, alive: bool, ansi: u8, ansi_a: usize, ansi_b: usize, ansi_param: u8, ansi_skip: bool }
 impl Terminal {
     fn new() -> Self {
         let mut input = [0u64; 2]; let mut output = [0u64; 2];
@@ -31,9 +31,9 @@ impl Terminal {
             return Self::dead();
         }
         call(SYS_CONSOLE_SIZE, COLS as u64 | ((ROWS as u64) << 16), shell, 0);
-        Self { grid: [[b' '; COLS]; ROWS], x: 0, y: 0, input: input[1], output: output[0], shell, alive: true, ansi: 0, ansi_a: 0, ansi_b: 0, ansi_param: 0 }
+        Self { grid: [[b' '; COLS]; ROWS], x: 0, y: 0, input: input[1], output: output[0], shell, alive: true, ansi: 0, ansi_a: 0, ansi_b: 0, ansi_param: 0, ansi_skip: false }
     }
-    fn dead() -> Self { Self { grid: [[b' '; COLS]; ROWS], x: 0, y: 0, input: 0, output: 0, shell: 0, alive: false, ansi: 0, ansi_a: 0, ansi_b: 0, ansi_param: 0 } }
+    fn dead() -> Self { Self { grid: [[b' '; COLS]; ROWS], x: 0, y: 0, input: 0, output: 0, shell: 0, alive: false, ansi: 0, ansi_a: 0, ansi_b: 0, ansi_param: 0, ansi_skip: false } }
     fn newline(&mut self) { self.x = 0; if self.y + 1 < ROWS { self.y += 1; } else { for row in 1..ROWS { self.grid[row - 1] = self.grid[row]; } self.grid[ROWS - 1] = [b' '; COLS]; } }
     fn finish_csi(&mut self, byte: u8) {
         let count = self.ansi_a.max(1);
@@ -52,40 +52,76 @@ impl Terminal {
                     for row in 0..self.y { self.grid[row] = [b' '; COLS]; }
                     for column in 0..=self.x.min(COLS - 1) { self.grid[self.y][column] = b' '; }
                 }
-                2 | 3 => self.grid = [[b' '; COLS]; ROWS],
+                2 => self.grid = [[b' '; COLS]; ROWS],
+                // ED 3 clears only the scrollback, which this terminal does not keep.
+                3 => {}
                 _ => {
-                    for column in self.x.min(COLS)..COLS { self.grid[self.y][column] = b' '; }
+                    for column in self.x.min(COLS - 1)..COLS { self.grid[self.y][column] = b' '; }
                     for row in self.y + 1..ROWS { self.grid[row] = [b' '; COLS]; }
                 }
             },
             b'K' => match self.ansi_a {
                 1 => for column in 0..=self.x.min(COLS - 1) { self.grid[self.y][column] = b' '; },
                 2 => self.grid[self.y] = [b' '; COLS],
-                _ => for column in self.x.min(COLS)..COLS { self.grid[self.y][column] = b' '; },
+                _ => for column in self.x.min(COLS - 1)..COLS { self.grid[self.y][column] = b' '; },
             },
             _ => {}
         }
         self.ansi = 0;
     }
     fn put(&mut self, byte: u8) {
+        if self.ansi == 3 {
+            // OSC: consume everything until BEL or ST (ESC \) ends the string.
+            if byte == 0x07 { self.ansi = 0; }
+            else if byte == 0x1b { self.ansi = 4; }
+            return;
+        }
+        if self.ansi == 4 {
+            // ESC inside an OSC: only '\' terminates it; anything else starts a new escape.
+            if byte == b'\\' { self.ansi = 0; return; }
+            self.ansi = 1;
+        }
         if self.ansi == 1 {
-            if byte == b'[' { self.ansi = 2; self.ansi_a = 0; self.ansi_b = 0; self.ansi_param = 0; }
-            else { self.ansi = 0; }
+            match byte {
+                b'[' => { self.ansi = 2; self.ansi_a = 0; self.ansi_b = 0; self.ansi_param = 0; self.ansi_skip = false; }
+                b']' => self.ansi = 3,
+                // Charset/designate escapes take one more byte, consumed by state 5.
+                b'(' | b')' | b'*' | b'+' | b'#' | b'%' => self.ansi = 5,
+                _ => self.ansi = 0,
+            }
+            return;
+        }
+        if self.ansi == 5 {
+            // Final byte of a charset/designate escape: consume and ignore it.
+            self.ansi = 0;
             return;
         }
         if self.ansi == 2 {
             match byte {
                 b'0'..=b'9' => {
-                    let value = if self.ansi_param == 0 { &mut self.ansi_a } else { &mut self.ansi_b };
-                    *value = value.saturating_mul(10).saturating_add((byte - b'0') as usize);
+                    // Parameters past the second are consumed but ignored.
+                    if self.ansi_param == 0 {
+                        self.ansi_a = self.ansi_a.saturating_mul(10).saturating_add((byte - b'0') as usize);
+                    } else if self.ansi_param == 1 {
+                        self.ansi_b = self.ansi_b.saturating_mul(10).saturating_add((byte - b'0') as usize);
+                    }
                 }
-                b';' => self.ansi_param = 1,
-                0x40..=0x7e => self.finish_csi(byte),
+                b';' => self.ansi_param = self.ansi_param.saturating_add(1),
+                // Other parameter bytes (':' '<' '=' '>' '?') and intermediate bytes
+                // (0x20..=0x2f) belong to sequences this terminal does not model:
+                // keep consuming until the final byte, then drop the whole sequence.
+                0x30..=0x3f => self.ansi_skip = true,
+                0x20..=0x2f => self.ansi_skip = true,
+                0x40..=0x7e => {
+                    if self.ansi_skip { self.ansi = 0; } else { self.finish_csi(byte); }
+                }
+                0x1b => self.ansi = 1,
                 _ => self.ansi = 0,
             }
             return;
         }
         match byte { 0x1b => self.ansi = 1, b'\n' => self.newline(), b'\r' => self.x = 0, 8 => self.x = self.x.saturating_sub(1),
+            9 => { let next = (self.x / 8 + 1) * 8; if next >= COLS { self.newline(); } else { self.x = next; } }
             byte if (0x20..=0x7e).contains(&byte) => { if self.x >= COLS { self.newline(); } self.grid[self.y][self.x] = byte; self.x += 1; } _ => {} }
     }
     fn pump(&mut self) -> bool { let mut changed = false; let mut bytes = [0u8; 2048]; loop { let count = call(SYS_TRY_READ, self.output, bytes.as_mut_ptr() as u64, bytes.len() as u64); if count == 0 { break; } if count == u64::MAX { self.alive = false; break; } for byte in &bytes[..count as usize] { self.put(*byte); } changed = true; if count < bytes.len() as u64 { break; } } changed }
@@ -98,7 +134,7 @@ impl Terminal {
     }
     fn send_line(&self, line: &[u8]) { if self.alive { call(SYS_WRITE, self.input, line.as_ptr() as u64, line.len() as u64); } }
     fn stop(&mut self) { if self.shell != 0 && self.shell != u64::MAX { call(SYS_SIGKILL, self.shell, 0, 0); } if self.input != 0 { call(SYS_CLOSE, self.input, 0, 0); } if self.output != 0 { call(SYS_CLOSE, self.output, 0, 0); } }
-    fn draw(&self, ui: &mut UiSurface) { let fg = ui.pack(210, 215, 220); ui.clear(ui.pack(8, 10, 16)); for row in 0..ROWS { for column in 0..COLS { let byte = self.grid[row][column]; if byte != b' ' { ui.glyph(6 + column as i32 * 8, 5 + row as i32 * 16, byte, fg); } } } if self.alive { ui.fill(6 + self.x as i32 * 8, 5 + self.y as i32 * 16, 7, 14, ui.pack(55, 195, 85)); } }
+    fn draw(&self, ui: &mut UiSurface) { let fg = ui.pack(210, 215, 220); ui.clear(ui.pack(8, 10, 16)); for row in 0..ROWS { for column in 0..COLS { let byte = self.grid[row][column]; if byte != b' ' { ui.glyph(6 + column as i32 * 8, 5 + row as i32 * 16, byte, fg); } } } if self.alive { let column = self.x.min(COLS - 1); let px = 6 + column as i32 * 8; let py = 5 + self.y as i32 * 16; ui.fill(px, py, 7, 14, ui.pack(55, 195, 85)); let byte = self.grid[self.y][column]; if byte != b' ' { ui.glyph(px, py, byte, ui.pack(8, 10, 16)); } } }
 }
 
 fn has_arg(argc: u64, argv: u64, wanted: &[u8]) -> bool {
@@ -188,6 +224,6 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
     while running { while let Some(event) = gui.poll() { match event { GuiEvent::Key { code, released: false } => { terminal.key(code); }, GuiEvent::Close => running = false, _ => {} } }
         if terminal.pump() { redraw = true; }
         if !terminal.alive { running = false; }
-        if redraw { if let Some((buffer, address)) = gui.acquire() { let mut ui = UiSurface::new(address, gui.width, gui.height, gui.stride, gui.format); terminal.draw(&mut ui); redraw = !gui.commit(buffer, 0, 0, gui.width, gui.height); } } sys_sleep(8); }
+        if redraw { if let Some((buffer, address)) = gui.acquire() { let mut ui = UiSurface::new(address, gui.width(), gui.height(), gui.stride(), gui.format()); terminal.draw(&mut ui); redraw = !gui.commit(buffer, 0, 0, gui.width(), gui.height()); } } sys_sleep(8); }
     terminal.stop(); gui.close(); sys_exit(0);
 }

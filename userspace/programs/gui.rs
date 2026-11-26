@@ -20,7 +20,7 @@ struct FbInfo {
 
 const NAME_LEN: usize = 32;
 
-// SYS_KEYBOARD_POLL event-mode flag: set in the returned word when the key was released.
+// /dev/input/keyboard event-mode flag: set in the event word when the key was released.
 const KEY_RELEASE: u16 = 0x100;
 const MOD_CTRL: u16 = 0x400;
 const MOD_ALT: u16 = 0x800;
@@ -514,13 +514,15 @@ impl Content {
 }
 
 // The launcher's content: just the pressed-button highlight state. Buttons fire on
-// release; the highlight follows the cursor while the mouse is held down.
+// release, but only when the release lands on the button the press started on
+// (`armed`); the highlight (`pressed`) follows the cursor while the mouse is held.
 struct Launcher {
-    pressed: u8, // 0 = none, else 1/2/3 while that button is held
+    pressed: u8, // 0 = none, else the button currently highlighted while held
+    armed: u8,   // 0 = none, else the button the current press started on
 }
 
 impl Launcher {
-    fn new() -> Launcher { Launcher { pressed: 0 } }
+    fn new() -> Launcher { Launcher { pressed: 0, armed: 0 } }
 
     // Body-local hit test for the stacked buttons; mirrors draw_launcher_body's layout.
     fn button_at(x: i32, y: i32) -> u8 {
@@ -534,6 +536,7 @@ impl Launcher {
         let p = if buttons & 1 != 0 { Launcher::button_at(x, y) } else { 0 };
         let dirty = p != self.pressed;
         self.pressed = p;
+        self.armed = p;
         (dirty, InputAction::None)
     }
 
@@ -546,9 +549,13 @@ impl Launcher {
     }
 
     fn on_mouse_up(&mut self, x: i32, y: i32) -> (bool, InputAction) {
+        // Fire only if the release lands on the button the press started on:
+        // pressing empty space and sliding onto a button, or sliding off the
+        // pressed button, just clears the highlight.
         let b = Launcher::button_at(x, y);
+        let action = if b != 0 && b == self.armed { InputAction::Open(b) } else { InputAction::None };
         self.pressed = 0;
-        let action = if b != 0 { InputAction::Open(b) } else { InputAction::None };
+        self.armed = 0;
         (true, action) // clear the highlight
     }
 }
@@ -626,7 +633,13 @@ fn draw_frame(s: &mut Screen, win: &Win, title: &[u8], focused: bool, has_close:
     s.fill(x, y, w, h, border);
     s.fill(x, y, w, TITLE_H, titlebar);
     let txt = if focused { pack_fmt(fmt, 0xFF, 0xFF, 0xFF) } else { pack_fmt(fmt, 0xCE, 0xD6, 0xE0) };
-    s.text(x + BORDER + 4, y + (TITLE_H - GLYPH_H) / 2, title, txt);
+    // Truncate the title to the space left of the close button (or the right
+    // border) so a long title can't spill past the window's right edge — the
+    // same maxch rule draw_tb_button uses.
+    let title_right = if has_close { x + w - CLOSE_SZ - BORDER - 4 } else { x + w - BORDER - 4 };
+    let maxch = ((title_right - (x + BORDER + 4)) / ADVANCE).max(0) as usize;
+    let n = title.len().min(maxch);
+    s.text(x + BORDER + 4, y + (TITLE_H - GLYPH_H) / 2, &title[..n], txt);
     if has_close {
         let (cx, cy, cw, ch) = close_rect(win);
         s.fill(cx, cy, cw, ch, pack_fmt(fmt, 0xC0, 0x40, 0x40));
@@ -879,10 +892,33 @@ fn draw_taskbar(s: &mut Screen, windows: &[Window], focused_id: Option<u64>, tb_
     blend_region(s, 0, top, sw, sh, pack_fmt(fmt, 0x1E, 0x2A, 0x3C), 120);
     blend_region(s, 0, top, sw, top + 1, pack_fmt(fmt, 0x9C, 0xC4, 0xF0), 90); // top hairline
 
+    draw_taskbar_items(s, windows, focused_id, tb_page, uptime_secs);
+}
+
+// The taskbar's foreground (uptime clock, window buttons, pager) over the glass.
+// Everything clips to the screen's current clip rect, so the clock-only repaint
+// (draw_taskbar_clock) shares this with the full repaint.
+fn draw_taskbar_items(s: &mut Screen, windows: &[Window], focused_id: Option<u64>, tb_page: usize, uptime_secs: u64) {
+    let sw = s.width;
+    let sh = s.height;
+    let top = sh - TASKBAR_H;
+    let fmt = s.format;
+
     let mut buf = [0u8; 24];
     let len = fmt_uptime(uptime_secs, &mut buf);
-    let clock_w = len as i32 * ADVANCE;
-    s.text(sw - TB_PAD - clock_w, top + (TASKBAR_H - GLYPH_H) / 2, &buf[..len], pack_fmt(fmt, 0xDA, 0xE4, 0xF0));
+    // Keep the clock inside its fixed TB_CLOCK_W reserve: at very long uptimes
+    // the hour digits outgrow it and the (right-aligned) text would slide left
+    // under the buttons. Drop the "up " prefix first, then leading hour digits;
+    // the time fields themselves stay fully visible.
+    let mut text = &buf[..len];
+    if len as i32 * ADVANCE > TB_CLOCK_W {
+        text = &buf[3.min(len)..];
+        while text.len() as i32 * ADVANCE > TB_CLOCK_W && !text.is_empty() {
+            text = &text[1..];
+        }
+    }
+    let clock_w = text.len() as i32 * ADVANCE;
+    s.text(sw - TB_PAD - clock_w, top + (TASKBAR_H - GLYPH_H) / 2, text, pack_fmt(fmt, 0xDA, 0xE4, 0xF0));
 
     let order = taskbar_order(windows);
     let n = order.len();
@@ -949,24 +985,56 @@ fn composite(s: &mut Screen, windows: &[Window], focused_id: Option<u64>, tb_pag
     if touch_tb { paint.add(0, tb_top, sw, TASKBAR_H); }
     s.set_clip(paint);
     paint_desktop(s, paint, bg, sw);
-    // Redraw the chrome of every window overlapping the repaint (clipped to it) — the opaque
-    // frame is cheap and backdrop-independent, so a neighbour's update can't erase a border.
+    paint_windows(s, windows, focused_id, paint);
+    if touch_tb { draw_taskbar(s, windows, focused_id, tb_page, uptime_secs); }
+    s.present(paint);
+}
+
+// Redraw the chrome of every window overlapping `clip` (the screen clip must
+// already be set to it) — the opaque frame is cheap and backdrop-independent,
+// so a neighbour's update can't erase a border — then blit each window's
+// content over it.
+fn paint_windows(s: &mut Screen, windows: &[Window], focused_id: Option<u64>, clip: Rect) {
     for wn in windows.iter() {
         let g = wn.geo;
-        if !paint.intersects(g.x, g.y, g.w, g.h) { continue; }
+        if !clip.intersects(g.x, g.y, g.w, g.h) { continue; }
         let focused = Some(wn.id) == focused_id;
         draw_frame(s, &g, wn.content.title(), focused, wn.content.has_close());
         if let Content::External(client) = &wn.content {
             if let Some(front) = client.front {
                 blit_shared(s, client.buffers[front].1, client.width, client.height,
-                            g.x + BORDER, g.y + TITLE_H, paint);
+                            g.x + BORDER, g.y + TITLE_H, clip);
             }
         } else {
-            blit(s, &wn.canvas, g.x + BORDER, g.y + TITLE_H, paint);
+            blit(s, &wn.canvas, g.x + BORDER, g.y + TITLE_H, clip);
         }
     }
-    if touch_tb { draw_taskbar(s, windows, focused_id, tb_page, uptime_secs); }
-    s.present(paint);
+}
+
+// Clock-only taskbar repaint, for the once-a-second uptime tick: recompute the
+// backdrop, glass and foreground over just the clock's neighbourhood instead
+// of re-running the whole strip's blur pass. The work rect reaches one blur
+// support (BLUR_PASSES * BLUR_R) left of the clock rect, so the blur over it
+// matches a full-strip repaint on every presented pixel; redrawing the
+// foreground over the whole work rect keeps the back buffer consistent under
+// the software cursor's save-under.
+fn draw_taskbar_clock(s: &mut Screen, windows: &[Window], focused_id: Option<u64>, tb_page: usize, uptime_secs: u64, bg: &[u32]) {
+    let sw = s.width;
+    let sh = s.height;
+    let top = sh - TASKBAR_H;
+    let fmt = s.format;
+    let clock = Rect { x0: sw - TB_PAD - TB_CLOCK_W, y0: top, x1: sw, y1: sh };
+    let work = Rect { x0: (clock.x0 - BLUR_R * BLUR_PASSES as i32).max(0), y0: top, x1: sw, y1: sh };
+    s.set_clip(work);
+    paint_desktop(s, work, bg, sw);
+    paint_windows(s, windows, focused_id, work);
+    if TASKBAR_BLUR {
+        blur_region(s, work.x0, top, sw, sh, BLUR_R);
+    }
+    blend_region(s, work.x0, top, sw, sh, pack_fmt(fmt, 0x1E, 0x2A, 0x3C), 120);
+    blend_region(s, work.x0, top, sw, top + 1, pack_fmt(fmt, 0x9C, 0xC4, 0xF0), 90); // top hairline
+    draw_taskbar_items(s, windows, focused_id, tb_page, uptime_secs);
+    s.present(clock);
 }
 
 fn win_pos(windows: &[Window], id: u64) -> Option<usize> {
@@ -1075,7 +1143,14 @@ fn remove_external(windows: &mut alloc::vec::Vec<Window>, index: usize, kill: bo
     let old = windows.remove(index).geo;
     result.removed += 1;
     dr.add(old.x, old.y, old.w, old.h);
-    for window in windows.iter() { dr.add(window.geo.x, window.geo.y, window.geo.w, window.geo.h); }
+    // Only windows that overlapped the removed one can have pixels to repair;
+    // dirtying every window would recomposite the whole desktop.
+    for window in windows.iter() {
+        let g = window.geo;
+        if g.x < old.x + old.w && g.x + g.w > old.x && g.y < old.y + old.h && g.y + g.h > old.y {
+            dr.add(g.x, g.y, g.w, g.h);
+        }
+    }
 }
 
 fn poll_external(channel: u64, windows: &mut alloc::vec::Vec<Window>, next_id: &mut u64,
@@ -1153,7 +1228,10 @@ fn poll_external(channel: u64, windows: &mut alloc::vec::Vec<Window>, next_id: &
                         client.held[buffer] = true;
                         client.front = Some(buffer);
                         result.commits += 1;
-                        dr.add(geo.x + BORDER, geo.y + TITLE_H, client.width, client.height);
+                        // Repaint only the validated damage rect, not the
+                        // whole window body.
+                        dr.add(geo.x + BORDER + x as i32, geo.y + TITLE_H + y as i32,
+                               w as i32, h as i32);
                     }
                 }
             }
@@ -1234,48 +1312,20 @@ static GUI_COMPOSITE_TICKS: AtomicU64 = AtomicU64::new(0);
 static GUI_PRESENT_TICKS: AtomicU64 = AtomicU64::new(0);
 static GUI_TICKS_PER_SEC: AtomicU64 = AtomicU64::new(1);
 
-fn mouse_driver_running() -> bool {
-    const ENTRY_SIZE: usize = 48;
-    const MAX_DRIVERS: usize = 16;
-    let mut entries = [0u8; ENTRY_SIZE * MAX_DRIVERS];
-    let count = syscall(
-        SYS_DRIVER_LIST,
-        entries.as_mut_ptr() as u64,
-        entries.len() as u64,
-        0,
-    );
-    if count == u64::MAX { return false; }
-    for entry in entries.chunks_exact(ENTRY_SIZE).take((count as usize).min(MAX_DRIVERS)) {
-        let status = u32::from_le_bytes(entry[8..12].try_into().unwrap());
-        let name_len = (u32::from_le_bytes(entry[44..48].try_into().unwrap()) as usize).min(32);
-        if status == 0 && &entry[12..12 + name_len] == b"ps2mouse" { return true; }
-    }
-    false
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
-    if !mouse_driver_running() {
-        sys_write(b"gui: mouse driver is not running (load ps2mouse.kdm first)\r\n");
-        sys_exit(1);
-    }
-    let ipc = syscall(SYS_IPC_OPEN, b"driver_mouse".as_ptr() as u64, 12, 0);
-    if ipc == u64::MAX {
-        sys_write(b"gui: failed to open mouse driver channel\r\n");
-        sys_exit(1);
-    }
-
+    // Input comes from the devfs input devices; any driver may feed them.
+    let mouse_fd = sys_open(b"/dev/input/mouse");
+    let keyboard_fd = sys_open(b"/dev/input/keyboard");
     let mut info = FbInfo { base: 0, width: 0, height: 0, stride: 0, format: 0 };
     if syscall(SYS_FB_ACQUIRE, &mut info as *mut FbInfo as u64, 0, 0) == u64::MAX {
         sys_write(b"gui: failed to acquire framebuffer\r\n");
-        syscall(SYS_IPC_CLOSE, ipc, 0, 0);
         sys_exit(1);
     }
 
     let control = sys_ipc_open(b"gui-control");
     if control == u64::MAX {
         sys_write(b"gui: failed to open gui-control\r\n");
-        syscall(SYS_IPC_CLOSE, ipc, 0, 0);
         syscall(SYS_FB_RELEASE, 0, 0, 0);
         sys_exit(1);
     }
@@ -1306,7 +1356,6 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
     let mut mx = sw / 2;
     let mut my = sh / 2;
     let mut btn = 0u8;
-    let mut mouse_total: Option<(u64, i64, i64)> = None;
     let mut prev_left = false;
     let mut dragging: Option<u64> = None;
     let mut grab_dx = 0i32;
@@ -1343,7 +1392,6 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
             if pid == 0 || pid == u64::MAX {
                 sys_write(b"gui-test: FAIL spawn\r\n");
                 syscall(SYS_IPC_CLOSE, control, 0, 0);
-                syscall(SYS_IPC_CLOSE, ipc, 0, 0);
                 syscall(SYS_FB_RELEASE, 0, 0, 0);
                 sys_exit(1);
             }
@@ -1388,30 +1436,27 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
     let ticks_per_sec = (syscall(SYS_CPU_INFO, 0, 0, 0).saturating_sub(start_ticks) * 2).max(1);
     GUI_TICKS_PER_SEC.store(ticks_per_sec, Ordering::Relaxed);
     let mut uptime_secs: u64 = 0;
-    // (window count, focused id, uptime secs) — when this changes, repaint the taskbar.
-    let mut last_tb_sig: (usize, u64, u64, u64) = (usize::MAX, 0, 0, 0);
+    // (window count, focused id, taskbar page) — when this changes, repaint the
+    // whole taskbar strip. The uptime clock is tracked separately
+    // (last_clock_secs) so its once-a-second tick only repaints its own rect.
+    let mut last_tb_sig: (usize, u64, u64) = (usize::MAX, 0, 0);
+    let mut last_clock_secs: u64 = 0;
 
     loop {
         let old_mx = mx;
         let old_my = my;
         let old_buttons = btn;
-        let mut mouse_message = [0u8; 25];
-        for _ in 0..64 {
-            let n = syscall(SYS_IPC_TRY_RECV, ipc, mouse_message.as_mut_ptr() as u64, mouse_message.len() as u64);
-            if n != mouse_message.len() as u64 { break; }
-            let epoch = u64::from_le_bytes(mouse_message[1..9].try_into().unwrap());
-            let total_x = i64::from_le_bytes(mouse_message[9..17].try_into().unwrap());
-            let total_y = i64::from_le_bytes(mouse_message[17..25].try_into().unwrap());
-            if let Some((last_epoch, last_x, last_y)) = mouse_total {
-                if epoch == last_epoch {
-                    let dx = total_x.wrapping_sub(last_x).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                    let dy = total_y.wrapping_sub(last_y).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-                    mx = mx.saturating_add(dx).clamp(0, sw - 1);
-                    my = my.saturating_sub(dy).clamp(0, sh - 1);
-                }
-            }
-            mouse_total = Some((epoch, total_x, total_y));
-            let next_buttons = mouse_message[0];
+        let mut mouse_buf = [0u8; 12 * 64];
+        let mouse_len = if mouse_fd == u64::MAX { 0 } else { (sys_try_read(mouse_fd, &mut mouse_buf) as usize).min(mouse_buf.len()) };
+        let mut mouse_pos = 0usize;
+        while mouse_pos + 12 <= mouse_len {
+            let rec = &mouse_buf[mouse_pos..mouse_pos + 12];
+            mouse_pos += 12;
+            let dx = i32::from_le_bytes(rec[4..8].try_into().unwrap());
+            let dy = i32::from_le_bytes(rec[8..12].try_into().unwrap());
+            mx = mx.saturating_add(dx).clamp(0, sw - 1);
+            my = my.saturating_sub(dy).clamp(0, sh - 1);
+            let next_buttons = rec[0];
             let changed = next_buttons != btn;
             btn = next_buttons;
             if changed { break; }
@@ -1425,6 +1470,7 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         prev_left = left;
 
         let mut dr = DirtyRects::new();
+        let mut clock_dirty = false;
 
         // Press: window management (raise / close / title-bar drag) is the compositor's
         // job. A press that lands in the body captures the window and is delegated to its
@@ -1449,6 +1495,14 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
                 let geo = windows[p].geo;
                 let (cx, cy, cw, ch) = close_rect(&geo);
                 if windows[p].content.has_close() && in_rect(mx, my, cx, cy, cw, ch) {
+                    if matches!(windows[p].content, Content::External(_)) {
+                        // Focus the window being closed, like any other click on
+                        // it, so focus stays consistent with the raised stacking
+                        // while the client shuts down.
+                        focused_id = Some(id);
+                        notify_focus(&mut windows, notified_focus, focused_id);
+                        notified_focus = focused_id;
+                    }
                     if let Content::External(client) = &mut windows[p].content {
                         if client.close_frames == 0 {
                             let _ = client.send(GuiMessage::close_request());
@@ -1466,7 +1520,10 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
                         dragging = Some(id);
                         grab_dx = mx - geo.x;
                         grab_dy = my - geo.y;
-                    } else {
+                    } else if in_rect(mx, my, geo.x + BORDER, geo.y + TITLE_H, body_w(&geo), body_h(&geo)) {
+                        // Only a press inside the body reaches the content (with
+                        // in-range coordinates); a border press just raises and
+                        // focuses the window.
                         mouse_capture = Some(id);
                         let bx = mx - (geo.x + BORDER);
                         let by = my - (geo.y + TITLE_H);
@@ -1484,6 +1541,31 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
                 focused_id = None;
                 for wn in &windows { dr.add(wn.geo.x, wn.geo.y, wn.geo.w, wn.geo.h); }
                 dr.add(0, sh - TASKBAR_H, sw, TASKBAR_H);
+            }
+        }
+
+        // Apply the drag's motion before the drag state is dropped on the
+        // release frame, so a flick doesn't lose its final delta; the motion is
+        // marked handled (drag_moved) so it isn't re-routed to the hover/capture
+        // handlers below.
+        let drag_moved = moved && dragging.is_some();
+        if drag_moved {
+            if let Some(id) = dragging {
+                if let Some(p) = win_pos(&windows, id) {
+                    let old = windows[p].geo;
+                    // Keep at least 64 px of the window on screen at the left
+                    // and right, so its title bar always stays grabbable.
+                    let nx = (mx - grab_dx).clamp(-(old.w - 64), sw - 64);
+                    // Keep the title bar reachable vertically too: not above
+                    // the screen top, and not under the taskbar.
+                    let ny = (my - grab_dy).clamp(0, sh - TASKBAR_H - TITLE_H);
+                    if nx != old.x || ny != old.y {
+                        dr.add(old.x, old.y, old.w, old.h); // vacated
+                        windows[p].geo.x = nx;
+                        windows[p].geo.y = ny;
+                        dr.add(nx, ny, old.w, old.h);       // new
+                    }
+                }
             }
         }
 
@@ -1518,35 +1600,42 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
             }
         }
 
-        if button_changes & !1 != 0 && !just_pressed && !just_released {
-            let target = mouse_capture.and_then(|id| win_pos(&windows, id)).or_else(|| topmost_at(&windows, mx, my));
+        // Non-left button changes are delivered even on frames where the left
+        // button also changed (the press/release paths above only consume the
+        // left bit), so a simultaneous right-press or right-release isn't lost.
+        if button_changes & !1 != 0 {
+            // Without a capture, the taskbar strip handles its own clicks.
+            let target = if mouse_capture.is_some() || my < sh - TASKBAR_H {
+                mouse_capture.and_then(|id| win_pos(&windows, id)).or_else(|| topmost_at(&windows, mx, my))
+            } else { None };
             if let Some(p) = target {
                 let geo = windows[p].geo;
                 if mouse_capture.is_some() || in_rect(mx, my, geo.x + BORDER, geo.y + TITLE_H, body_w(&geo), body_h(&geo)) {
                     let bx = mx - (geo.x + BORDER);
                     let by = my - (geo.y + TITLE_H);
                     windows[p].content.on_mouse_buttons(bx, by, btn, button_changes);
+                    // A press of any button captures the window (as a left body
+                    // press does) so the rest of the drag routes to it with the
+                    // real button byte.
+                    if mouse_capture.is_none() && button_changes & btn != 0 {
+                        mouse_capture = Some(windows[p].id);
+                    }
                 }
             }
         }
 
-        // Motion: dragging a title bar moves the window (compositor); otherwise the
-        // captured window's content gets on_mouse_move (e.g. launcher button highlight).
-        if moved {
-            if let Some(id) = dragging {
-                if let Some(p) = win_pos(&windows, id) {
-                    let old = windows[p].geo;
-                    let nx = mx - grab_dx;
-                    // Keep the title bar reachable: don't let it slide under the taskbar.
-                    let ny = (my - grab_dy).min(sh - TASKBAR_H - TITLE_H);
-                    if nx != old.x || ny != old.y {
-                        dr.add(old.x, old.y, old.w, old.h); // vacated
-                        windows[p].geo.x = nx;
-                        windows[p].geo.y = ny;
-                        dr.add(nx, ny, old.w, old.h);       // new
-                    }
-                }
-            } else if let Some(id) = mouse_capture {
+        // A capture taken for a non-left press ends when every button is up (a
+        // left release already dropped the capture in the release path above).
+        if btn == 0 && !just_released { mouse_capture = None; }
+
+        // Motion: title-bar dragging was applied above; otherwise the captured
+        // window's content gets on_mouse_move (e.g. launcher button highlight),
+        // or the window under the cursor gets a hover move. Both see the real
+        // button byte, so a right/middle-button drag reports its held buttons
+        // instead of 0.
+        if moved && !drag_moved {
+            let mut captured = false;
+            if let Some(id) = mouse_capture {
                 if let Some(p) = win_pos(&windows, id) {
                     let geo = windows[p].geo;
                     let bx = mx - (geo.x + BORDER);
@@ -1554,15 +1643,23 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
                     let bw = body_w(&geo);
                     let (dirty, _) = windows[p].content.on_mouse_move(bx, by, bw, btn);
                     if dirty { windows[p].dirty_full(); }
+                    captured = true;
+                } else {
+                    // The captured window is gone (its client died mid-press):
+                    // drop the stale capture so hover delivery resumes below.
+                    mouse_capture = None;
                 }
-            } else if let Some(p) = topmost_at(&windows, mx, my) {
-                let geo = windows[p].geo;
-                if in_rect(mx, my, geo.x + BORDER, geo.y + TITLE_H, body_w(&geo), body_h(&geo)) {
-                    let bx = mx - (geo.x + BORDER);
-                    let by = my - (geo.y + TITLE_H);
-                    let bw = body_w(&geo);
-                    let (dirty, _) = windows[p].content.on_mouse_move(bx, by, bw, 0);
-                    if dirty { windows[p].dirty_full(); }
+            }
+            if !captured {
+                if let Some(p) = topmost_at(&windows, mx, my) {
+                    let geo = windows[p].geo;
+                    if in_rect(mx, my, geo.x + BORDER, geo.y + TITLE_H, body_w(&geo), body_h(&geo)) {
+                        let bx = mx - (geo.x + BORDER);
+                        let by = my - (geo.y + TITLE_H);
+                        let bw = body_w(&geo);
+                        let (dirty, _) = windows[p].content.on_mouse_move(bx, by, bw, btn);
+                        if dirty { windows[p].dirty_full(); }
+                    }
                 }
             }
         }
@@ -1633,12 +1730,16 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         // terminals forward/interrupt, others quit on Ctrl+C — and may return an action
         // (the kernel no longer turns Ctrl+C into a signal for us, so it can't kill the
         // compositor by accident).
+        let mut kbd_buf = [0u8; 256];
+        let kbd_len = if keyboard_fd == u64::MAX { 0 } else { (sys_try_read(keyboard_fd, &mut kbd_buf) as usize).min(kbd_buf.len()) };
+        let mut kbd_pos = 0usize;
         loop {
             // Each word is a key code in the low byte (KEY_RELEASE set on release, plus
             // MOD_* modifier-state bits), so the focused window sees every press/release —
             // characters, arrows, Ctrl/Shift/Alt/Caps, Esc, F-keys. `b` keeps just the code.
-            let k = syscall(SYS_KEYBOARD_POLL, 0, 0, 0);
-            if k == 0 { break; }
+            if kbd_pos + 2 > kbd_len { break; }
+            let k = u16::from_le_bytes([kbd_buf[kbd_pos], kbd_buf[kbd_pos + 1]]) as u64;
+            kbd_pos += 2;
             let b = k as u8;
             let release = k & KEY_RELEASE as u64 != 0;
             if !release && b == 27 && k & MOD_CTRL as u64 != 0 && k & MOD_ALT as u64 != 0 {
@@ -1696,10 +1797,16 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         if tb_page >= pages { tb_page = pages - 1; }
 
         uptime_secs = syscall(SYS_CPU_INFO, 0, 0, 0).saturating_sub(start_ticks) / ticks_per_sec;
-        let tb_sig = (windows.len(), focused_id.unwrap_or(0), tb_page as u64, uptime_secs);
+        let tb_sig = (windows.len(), focused_id.unwrap_or(0), tb_page as u64);
         if tb_sig != last_tb_sig {
             last_tb_sig = tb_sig;
+            last_clock_secs = uptime_secs;
             dr.add(0, sh - TASKBAR_H, sw, TASKBAR_H);
+        } else if uptime_secs != last_clock_secs {
+            // Only the clock changed: repaint just its rect (draw_taskbar_clock
+            // below), not the whole strip.
+            last_clock_secs = uptime_secs;
+            clock_dirty = true;
         }
 
         // Cursor as a software overlay with save-under: erase it (restore the saved pixels)
@@ -1708,7 +1815,7 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         let composite_ran = !dr.is_empty();
         GUI_FRAMES.fetch_add(1, Ordering::Relaxed);
         if composite_ran { GUI_COMPOSITES.fetch_add(1, Ordering::Relaxed); }
-        if moved || composite_ran || !cur_shown {
+        if moved || composite_ran || clock_dirty || !cur_shown {
             if cur_shown { s.restore_under(&cur_save, cur_x, cur_y, cursor_w, cursor_h); }
             if composite_ran {
                 let composite_start = syscall(SYS_CPU_INFO, 0, 0, 0);
@@ -1716,6 +1823,9 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
                     composite(&mut s, &windows, focused_id, tb_page, uptime_secs, &bg, region);
                 }
                 GUI_COMPOSITE_TICKS.fetch_add(syscall(SYS_CPU_INFO, 0, 0, 0).saturating_sub(composite_start), Ordering::Relaxed);
+            }
+            if clock_dirty {
+                draw_taskbar_clock(&mut s, &windows, focused_id, tb_page, uptime_secs, &bg);
             }
             let moved_cursor = !cur_shown || cur_x != mx || cur_y != my;
             s.save_under(&mut cur_save, mx, my, cursor_w, cursor_h);
@@ -1744,7 +1854,6 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         }
     }
     syscall(SYS_IPC_CLOSE, control, 0, 0);
-    syscall(SYS_IPC_CLOSE, ipc, 0, 0);
     syscall(SYS_FB_RELEASE, 0, 0, 0);
     sys_exit(exit_code);
 }

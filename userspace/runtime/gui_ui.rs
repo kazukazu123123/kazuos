@@ -112,10 +112,11 @@ impl UiSurface {
     }
     pub fn clear(&mut self, color: u32) { self.fill(0, 0, self.width, self.height, color); }
     pub fn fill(&mut self, x: i32, y: i32, width: i32, height: i32, color: u32) {
-        let x0 = x.max(0); let y0 = y.max(0); let x1 = (x + width).min(self.width); let y1 = (y + height).min(self.height);
+        let x0 = x.max(0); let y0 = y.max(0); let x1 = x.saturating_add(width).min(self.width); let y1 = y.saturating_add(height).min(self.height);
         for yy in y0..y1 { for xx in x0..x1 { self.put(xx, yy, color); } }
     }
     pub fn frame(&mut self, x: i32, y: i32, width: i32, height: i32, color: u32) {
+        if width <= 0 || height <= 0 { return; }
         self.fill(x, y, width, 1, color); self.fill(x, y + height - 1, width, 1, color);
         self.fill(x, y, 1, height, color); self.fill(x + width - 1, y, 1, height, color);
     }
@@ -132,6 +133,8 @@ impl UiSurface {
     pub fn button(&mut self, x: i32, y: i32, width: i32, height: i32, label: &[u8], pressed: bool) {
         let bg = if pressed { self.pack(55, 100, 145) } else { self.pack(45, 55, 70) };
         let border = self.pack(95, 165, 220); self.fill(x, y, width, height, bg); self.frame(x, y, width, height, border);
+        let max_chars = (width.max(0) / UI_ADVANCE) as usize;
+        let label = &label[..label.len().min(max_chars)];
         self.text(x + 8, y + (height - UI_GLYPH_H) / 2, label, self.pack(235, 240, 245));
     }
 }

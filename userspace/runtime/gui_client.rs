@@ -20,10 +20,10 @@ pub struct GuiClient {
     addresses: [u64; GUI_BUFFER_COUNT],
     available: [bool; GUI_BUFFER_COUNT],
     next: usize,
-    pub width: u32,
-    pub height: u32,
-    pub stride: u32,
-    pub format: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: u32,
 }
 
 impl GuiClient {
@@ -67,6 +67,11 @@ impl GuiClient {
             return None;
         }
         let ids = [init.shm_id(0), init.shm_id(1)];
+        if ids[0] == ids[1] {
+            let _ = gui_send(channel, compositor, GuiMessage::destroy());
+            let _ = sys_ipc_close(channel);
+            return None;
+        }
         let mut addresses = [u64::MAX; GUI_BUFFER_COUNT];
         for index in 0..GUI_BUFFER_COUNT {
             addresses[index] = sys_shm_map(ids[index]);
@@ -81,6 +86,11 @@ impl GuiClient {
                     next: 0, width, height, stride, format })
     }
 
+    pub fn width(&self) -> u32 { self.width }
+    pub fn height(&self) -> u32 { self.height }
+    pub fn stride(&self) -> u32 { self.stride }
+    pub fn format(&self) -> u32 { self.format }
+
     pub fn acquire(&mut self) -> Option<(usize, u64)> {
         let index = if self.available[self.next] { self.next }
             else if self.available[self.next ^ 1] { self.next ^ 1 } else { return None; };
@@ -89,6 +99,13 @@ impl GuiClient {
 
     pub fn commit(&mut self, buffer: usize, x: u32, y: u32, width: u32, height: u32) -> bool {
         if buffer >= GUI_BUFFER_COUNT || !self.available[buffer] { return false; }
+        // Validate the damage rect here: the compositor rejects invalid damage
+        // without ever releasing the buffer, which would strand it for good.
+        if width == 0 || height == 0
+            || x.checked_add(width).map_or(true, |end| end > self.width)
+            || y.checked_add(height).map_or(true, |end| end > self.height) {
+            return false;
+        }
         fence(Ordering::Release);
         if gui_send(self.channel, self.compositor,
                     GuiMessage::commit(buffer as u8, x, y, width, height)) != GUI_MESSAGE_SIZE as u64 {
@@ -156,7 +173,7 @@ fn find_gui_compositor() -> Option<u64> {
 
 fn gui_process_alive(pid: u64) -> bool {
     let mut info = ProcessInfo::ZERO;
-    sys_proc_info(pid, &mut info as *mut ProcessInfo as *mut u64) == 0
+    sys_proc_info(pid, &mut info as *mut ProcessInfo as *mut u64) == 0 && info.state != 4
 }
 
 fn gui_send(channel: u64, target: u64, message: GuiMessage) -> u64 {
