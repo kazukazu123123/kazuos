@@ -133,6 +133,7 @@ pub fn shutdown() -> ! {
 
 pub fn reboot() -> ! {
     unsafe {
+        // Keyboard-controller reset pulse: works where an 8042 exists.
         for _ in 0..100000 {
             if inb(0x64) & 0x02 == 0 {
                 break;
@@ -140,6 +141,19 @@ pub fn reboot() -> ! {
             pause();
         }
         outb(0x64, 0xFE);
+        for _ in 0..1_000_000 {
+            pause();
+        }
+        // USB-only machines have no 8042 (i8042=off), so the pulse above
+        // goes nowhere. Fall back to the PCI reset control register,
+        // which chipsets and QEMU implement independently of the keyboard
+        // controller: 0x02 arms the reset, 0x06 triggers a hard reset.
+        outb(0xCF9, 0x02);
+        outb(0xCF9, 0x06);
+        for _ in 0..1_000_000 {
+            pause();
+        }
+        outb(0xCF9, 0x0E);
     }
     loop {
         pause();
