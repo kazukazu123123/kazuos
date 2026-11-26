@@ -146,6 +146,32 @@ pub fn try_send_reliable(channel_id: u64, sender: u64, data: &[u8]) -> SendResul
     })
 }
 
+/// Enqueue a message, evicting the oldest queued message when the queue
+/// is full. For control messages that must not be dropped behind bulk
+/// data (an audio stop behind PCM chunks): the control intent supersedes
+/// the oldest pending data, which the receiver would have consumed next.
+pub fn try_send_reliable_evicting(channel_id: u64, sender: u64, data: &[u8]) -> SendResult {
+    if data.len() > MAX_MSG_SIZE {
+        return SendResult::Error;
+    }
+    with_lock(|| {
+        let ch = channels();
+        let Some(c) = slot(ch, channel_id) else {
+            return SendResult::Error;
+        };
+        if c.queue.len() >= MAX_QUEUE {
+            c.queue.pop_front();
+        }
+        let _ = sender;
+        c.queue.push_back(Message { data: data.to_vec() });
+        if !c.recv_waiters.is_empty() {
+            let waiter_pid = c.recv_waiters.remove(0);
+            crate::process::wakeup_ipc_waiter(waiter_pid, 0);
+        }
+        SendResult::Ok
+    })
+}
+
 pub fn wait_send_space(channel_id: u64, pid: u64) -> bool {
     with_lock(|| {
         let ch = channels();
