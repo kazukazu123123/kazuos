@@ -63,8 +63,6 @@ pub const SYS_DMA_FREE:       u64 = 42;
 pub const SYS_PCI_BAR_MAP:   u64 = 43;
 pub const SYS_PCI_BAR_UNMAP: u64 = 44;
 
-// Keyboard
-
 // System / Misc
 pub const SYS_CPU_INFO:  u64 = 46;
 pub const SYS_SHUTDOWN:  u64 = 47;
@@ -101,11 +99,6 @@ pub const SYS_PCI_DISABLE: u64 = 65;
 pub const SYS_IRQ_CLAIM:   u64 = 66;
 pub const SYS_IRQ_RELEASE: u64 = 67;
 pub const SYS_IRQ_ACK:     u64 = 68;
-// Keyboard/mouse input has no syscalls: drivers and consumers go through
-// /dev/input/keyboard and /dev/input/mouse (devfs). The old numbers 45
-// (SYS_KEYBOARD_POLL) and 71-73 (SYS_KEYBOARD_EVENT, SYS_MOUSE_EVENT,
-// SYS_MOUSE_POLL) are retired and must not be reused.
-
 // Directed named IPC. SEND_TO reads an envelope prefixed by target pid; RECV_FROM
 // writes an envelope prefixed by the kernel-authenticated sender pid.
 pub const SYS_IPC_TRY_SEND_TO:   u64 = 69;
