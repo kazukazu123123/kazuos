@@ -99,6 +99,7 @@ pub const SYS_PCI_DISABLE: u64 = 65;
 pub const SYS_IRQ_CLAIM:   u64 = 66;
 pub const SYS_IRQ_RELEASE: u64 = 67;
 pub const SYS_IRQ_ACK:     u64 = 68;
+
 // Directed named IPC. SEND_TO reads an envelope prefixed by target pid; RECV_FROM
 // writes an envelope prefixed by the kernel-authenticated sender pid.
 pub const SYS_IPC_TRY_SEND_TO:   u64 = 69;
