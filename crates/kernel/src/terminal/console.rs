@@ -273,7 +273,10 @@ impl Console {
     }
 
     pub fn draw_cursor(&self, position: CursorPosition, visible: bool) {
-        let x = position.x as usize;
+        // With a full row the cursor rests one advance past the last column
+        // (the wrap is deferred until the next character); clamp it back
+        // onto the last cell so the caret stays visible in that state.
+        let x = (position.x as usize).min(self.fb.width.saturating_sub(2));
         let ascent = position.height - self.font_descent;
         let top = (position.y - ascent).max(0.0) as usize;
         let height = position.height as usize;
@@ -322,7 +325,11 @@ impl Console {
             bitmap::CHAR_WIDTH as f32
         };
 
-        if self.cursor_x + advance >= self.fb.width as f32 {
+        // A glyph whose advance ends exactly at the right edge still fits
+        // on this row. Wrapping on >= would give every row one column less
+        // than console_size() reports, desyncing anything that lays out
+        // text by the reported size (the shell's line editor, for one).
+        if self.cursor_x + advance > self.fb.width as f32 {
             self.newline();
         }
         if self.cursor_y + self.font_descent >= self.fb.height as f32 {
