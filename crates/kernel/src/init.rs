@@ -92,8 +92,6 @@ fn print_boot_banner(boot_info: &BootInfo) {
     crate::println!("  Welcome to KazuOS Kernel!");
     crate::println!("==============================");
     crate::logln!("");
-    crate::logln!("Real kernel mode (ELF)");
-    crate::logln!("ExitBootServices: DONE");
     crate::logln!(
         "Framebuffer: {}x{}",
         boot_info.framebuffer.width,
@@ -157,7 +155,6 @@ fn init_idt() {
             interrupts::sci_handler_addr(),
         );
     }
-    crate::logln!("IDT loaded successfully");
 }
 
 fn init_acpi(rsdp: u64) -> InterruptConfig {
