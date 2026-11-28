@@ -4,7 +4,7 @@ include!("../runtime/runtime.rs");
 include!("../runtime/gui_protocol.rs");
 
 // Ring3 desktop compositor with a built-in launcher. Applications are independent
-// processes that submit SHM surfaces over directed IPC. Quit with Ctrl+Alt+Esc.
+// processes that submit SHM surfaces over directed IPC.
 // Rendering is double-buffered and the event loop polls input and clients non-blocking.
 
 use core::sync::atomic::{fence, AtomicU64, Ordering};
@@ -22,8 +22,6 @@ const NAME_LEN: usize = 32;
 
 // /dev/input/keyboard event-mode flag: set in the event word when the key was released.
 const KEY_RELEASE: u16 = 0x100;
-const MOD_CTRL: u16 = 0x400;
-const MOD_ALT: u16 = 0x800;
 
 // X11 7x14 BDF font (public domain), ASCII 0x20-0x7E, 14 bytes/glyph.
 const GLYPH_W: i32 = 7;
@@ -405,12 +403,11 @@ struct Win {
 }
 
 // What a content handler asks the compositor to do after consuming an input event.
-// Content can't reach the window list itself, so window-level effects (open a window,
-// quit the desktop) are returned for the compositor to apply.
+// Content can't reach the window list itself, so window-level effects (open a
+// window) are returned for the compositor to apply.
 enum InputAction {
     None,
     Open(u8), // open a window of this launcher kind (1=Task Manager, 2=Terminal, 3=Profiler)
-    Quit,     // request the desktop to exit
 }
 
 struct ExternalClient {
@@ -1603,7 +1600,6 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
                             let _ = sys_exec(path, 1 << 16);
                             for wn in &windows { dr.add(wn.geo.x, wn.geo.y, wn.geo.w, wn.geo.h); }
                         }
-                        InputAction::Quit => quit = true,
                         InputAction::None => {}
                     }
                 }
@@ -1752,20 +1748,15 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
             kbd_pos += 2;
             let b = k as u8;
             let release = k & KEY_RELEASE as u64 != 0;
-            if !release && b == 27 && k & MOD_CTRL as u64 != 0 && k & MOD_ALT as u64 != 0 {
-                quit = true;
-                break;
-            }
             // Route only to the active window; with nothing focused, keys are discarded.
             if let Some(p) = focused_id.and_then(|fid| win_pos(&windows, fid)) {
                 let wn = &mut windows[p];
-                let (dirty, action) = if release {
+                let (dirty, _) = if release {
                     wn.content.on_keyup(b)
                 } else {
                     wn.content.on_keydown(b)
                 };
                 if dirty { wn.dirty_full(); }
-                if let InputAction::Quit = action { quit = true; }
             }
         }
 
@@ -1809,9 +1800,19 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         uptime_secs = syscall(SYS_CPU_INFO, 0, 0, 0).saturating_sub(start_ticks) / ticks_per_sec;
         let tb_sig = (windows.len(), focused_id.unwrap_or(0), tb_page as u64);
         if tb_sig != last_tb_sig {
+            let focus_changed = tb_sig.1 != last_tb_sig.1;
             last_tb_sig = tb_sig;
             last_clock_secs = uptime_secs;
             dr.add(0, sh - TASKBAR_H, sw, TASKBAR_H);
+            if focus_changed {
+                // Focus also changes without a mouse click (a window opening
+                // takes focus, a closing one gives it up). The click paths
+                // dirty every window's chrome themselves; this path must too,
+                // or the previously focused window keeps its active frame.
+                for window in windows.iter() {
+                    dr.add(window.geo.x, window.geo.y, window.geo.w, window.geo.h);
+                }
+            }
         } else if uptime_secs != last_clock_secs {
             // Only the clock changed: repaint just its rect (draw_taskbar_clock
             // below), not the whole strip.
