@@ -51,6 +51,9 @@ fn read_line(buf: &mut [u8]) -> usize {
     let mut hist_age: usize = 0;
     let mut saved_buf = [0u8; BUF_SIZE];
     let mut saved_len = 0usize;
+    // A fresh line starts a fresh prompt region: the previous line's rows
+    // are history now, so the first redraw must not climb back into them.
+    unsafe { *core::ptr::addr_of_mut!(REDRAW_CURSOR_ROW) = 0; }
     redraw(buf, len, pos);
 
     let mut chunk = [0u8; 32];
@@ -140,31 +143,68 @@ fn read_line(buf: &mut [u8]) -> usize {
     }
 }
 
-// ANSI redraw: rewrite the whole line and park the cursor at `pos` by moving it back
-// from the end. Assembled into a single write so the terminal repaints (and redraws
-// its caret) once per keystroke instead of flickering through partial states. Works
-// on anything that understands \r, ESC[K and ESC[<n>D — console and GUI terminal.
+// ANSI redraw: rewrite the whole line and park the cursor at `pos`. Assembled
+// into a single write so the terminal repaints (and redraws its caret) once per
+// keystroke instead of flickering through partial states. Works on anything
+// that understands \r, ESC[J, ESC[<n>A and ESC[<n>C — console and GUI terminal.
+//
+// The line may wrap onto several rows, so the redraw first climbs back to the
+// prompt's row (tracked in REDRAW_CURSOR_ROW) and erases to the end of the
+// screen; erasing only the cursor's row, as a single-row redraw would, leaves
+// the wrapped upper rows of the previous rendering behind on every keystroke.
 const PROMPT: &[u8] = b"KazuOS> ";
+static mut REDRAW_CURSOR_ROW: usize = 0;
+
+fn out_bytes(out: &mut [u8], k: &mut usize, bytes: &[u8]) {
+    for &b in bytes { if *k < out.len() { out[*k] = b; *k += 1; } }
+}
+
+fn out_csi(out: &mut [u8], k: &mut usize, value: usize, final_byte: u8) {
+    let mut digits = [0u8; 10];
+    let mut v = value;
+    let mut d = 0;
+    if v == 0 { digits[d] = b'0'; d += 1; }
+    while v > 0 { digits[d] = b'0' + (v % 10) as u8; v /= 10; d += 1; }
+    out_bytes(out, k, b"\x1b[");
+    for j in (0..d).rev() { if *k < out.len() { out[*k] = digits[j]; *k += 1; } }
+    out_bytes(out, k, &[final_byte]);
+}
+
+// Terminal width in columns, from SYS_CONSOLE_SIZE (arg0 == 0 gets the
+// caller's size as (rows << 32) | cols). The GUI terminal sets it for its
+// shell; on the boot console the kernel falls back to the physical size.
+fn terminal_cols() -> usize {
+    let cols = (syscall1(SYS_CONSOLE_SIZE, 0) & 0xFFFF_FFFF) as usize;
+    if cols > PROMPT.len() { cols } else { 80 }
+}
+
 fn redraw(buf: &[u8], len: usize, pos: usize) {
-    let mut out = [0u8; BUF_SIZE + 32];
+    let cols = terminal_cols();
+    let mut out = [0u8; BUF_SIZE + 64];
     let mut k = 0;
-    let mut put = |bytes: &[u8], out: &mut [u8], k: &mut usize| {
-        for &b in bytes { if *k < out.len() { out[*k] = b; *k += 1; } }
-    };
-    put(b"\r\x1b[K", &mut out, &mut k);
-    put(PROMPT, &mut out, &mut k);
-    put(&buf[..len], &mut out, &mut k);
+    let prev_row = unsafe { *core::ptr::addr_of!(REDRAW_CURSOR_ROW) };
+    if prev_row > 0 { out_csi(&mut out, &mut k, prev_row, b'A'); }
+    out_bytes(&mut out, &mut k, b"\r\x1b[J");
+    out_bytes(&mut out, &mut k, PROMPT);
+    out_bytes(&mut out, &mut k, &buf[..len]);
+    // Row the cursor rests on after printing, relative to the prompt's row:
+    // the last printed character sits on row (total - 1) / cols because both
+    // terminals defer the wrap until the next character arrives.
+    let mut cursor_row = (PROMPT.len() + len - 1) / cols;
     if pos < len {
-        // ESC[<n>D — move the cursor back to `pos`.
-        let n = len - pos;
-        let mut digits = [0u8; 10];
-        let mut v = n;
-        let mut d = 0;
-        while v > 0 { digits[d] = b'0' + (v % 10) as u8; v /= 10; d += 1; }
-        put(b"\x1b[", &mut out, &mut k);
-        for j in (0..d).rev() { if k < out.len() { out[k] = digits[j]; k += 1; } }
-        put(b"D", &mut out, &mut k);
+        // Park the cursor at `pos`: carriage-return to the start of the
+        // last printed row, climb to the target row, step right to the
+        // target column. (ESC[<n>D cannot cross rows, so moving back from
+        // the end only ever worked within a single row.)
+        let target = PROMPT.len() + pos;
+        let target_row = target / cols;
+        let target_col = target % cols;
+        out_bytes(&mut out, &mut k, b"\r");
+        if cursor_row > target_row { out_csi(&mut out, &mut k, cursor_row - target_row, b'A'); }
+        if target_col > 0 { out_csi(&mut out, &mut k, target_col, b'C'); }
+        cursor_row = target_row;
     }
+    unsafe { *core::ptr::addr_of_mut!(REDRAW_CURSOR_ROW) = cursor_row; }
     sys_write(&out[..k]);
 }
 
