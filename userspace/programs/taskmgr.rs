@@ -18,11 +18,12 @@ fn refresh(rows: &mut [ProcessInfo; MAX_ROWS]) -> usize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
-    let Some(mut gui) = GuiClient::connect(b"Task Manager", 620, 430) else { sys_write_raw(b"taskmgr: gui is not running\r\n"); sys_exit(1); };
+    let Some(mut conn) = GuiConnection::connect() else { sys_write_raw(b"taskmgr: gui is not running\r\n"); sys_exit(1); };
+    let Some(mut gui) = conn.create_window(b"Task Manager", 620, 430) else { sys_write_raw(b"taskmgr: gui is not running\r\n"); sys_exit(1); };
     let mut rows = [ProcessInfo::ZERO; MAX_ROWS]; let mut count = refresh(&mut rows);
     let mut selected: Option<u64> = None; let mut redraw = true; let mut running = true; let mut ticks = 0;
     while running {
-        while let Some(event) = gui.poll() { match event {
+        while let Some(event) = gui.poll(&mut conn) { match event {
             GuiEvent::Mouse { x, y, buttons, changed } if changed & 1 != 0 && buttons & 1 == 0 => {
                 if x >= 12 && y >= 52 { let row = ((y - 52) / 16) as usize; if row < count { selected = Some(rows[row].pid); } }
                 if (500..604).contains(&x) && (14..42).contains(&y) { if let Some(pid) = selected { let _ = sys_kill(pid); selected = None; count = refresh(&mut rows); } }
@@ -41,9 +42,9 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
                 ui.text(188, y, ui_u64(rows[index].cpu_ticks, &mut number), dim);
                 let length = rows[index].image_name.iter().position(|byte| *byte == 0).unwrap_or(PROC_NAME_LEN); ui.text(300, y, &rows[index].image_name[..length], fg);
             }
-            redraw = !gui.commit(buffer, 0, 0, gui.width, gui.height);
+            redraw = !gui.commit(&conn, buffer, 0, 0, gui.width, gui.height);
         }}
         sys_sleep(16);
     }
-    gui.close(); sys_exit(0);
+    gui.close(&conn); sys_exit(0);
 }

@@ -178,7 +178,8 @@ fn wait_no_child(parent: u64) -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
-    let Some(mut gui) = GuiClient::connect(b"Terminal", 636, 394) else { sys_write_raw(b"terminal: gui is not running\r\n"); sys_exit(1); }; let mut terminal = Terminal::new();
+    let Some(mut conn) = GuiConnection::connect() else { sys_write_raw(b"terminal: gui is not running\r\n"); sys_exit(1); };
+    let Some(mut gui) = conn.create_window(b"Terminal", 636, 394) else { sys_write_raw(b"terminal: gui is not running\r\n"); sys_exit(1); }; let mut terminal = Terminal::new();
     if has_arg(argc, argv, b"--test-nested-shell") {
         terminal.send_line(b"clear\r");
         sys_sleep(200);
@@ -221,9 +222,9 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         call(SYS_SIGKILL, terminal.shell, 0, 0);
     }
     let mut redraw = true; let mut running = true;
-    while running { while let Some(event) = gui.poll() { match event { GuiEvent::Key { code, released: false } => { terminal.key(code); }, GuiEvent::Close => running = false, _ => {} } }
+    while running { while let Some(event) = gui.poll(&mut conn) { match event { GuiEvent::Key { code, released: false } => { terminal.key(code); }, GuiEvent::Close => running = false, _ => {} } }
         if terminal.pump() { redraw = true; }
         if !terminal.alive { running = false; }
-        if redraw { if let Some((buffer, address)) = gui.acquire() { let mut ui = UiSurface::new(address, gui.width(), gui.height(), gui.stride(), gui.format()); terminal.draw(&mut ui); redraw = !gui.commit(buffer, 0, 0, gui.width(), gui.height()); } } sys_sleep(8); }
-    terminal.stop(); gui.close(); sys_exit(0);
+        if redraw { if let Some((buffer, address)) = gui.acquire() { let mut ui = UiSurface::new(address, gui.width(), gui.height(), gui.stride(), gui.format()); terminal.draw(&mut ui); redraw = !gui.commit(&conn, buffer, 0, 0, gui.width(), gui.height()); } } sys_sleep(8); }
+    terminal.stop(); gui.close(&conn); sys_exit(0);
 }
