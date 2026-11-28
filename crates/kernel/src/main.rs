@@ -16,6 +16,7 @@ pub mod handlers;
 pub mod ipc;
 pub mod init;
 pub mod log;
+pub mod logbuf;
 pub mod memory;
 pub mod pmm;
 pub mod process;

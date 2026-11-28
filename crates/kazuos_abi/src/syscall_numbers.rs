@@ -1,5 +1,10 @@
 // Console / Display
-pub const SYS_CONSOLE_WRITE:  u64 = 1;
+pub const SYS_LOG_WRITE:      u64 = 1;
+// SYS_LOG_WRITE levels (arg2): normal records go to the kernel log buffer
+// and serial only; urgent records are also shown on the framebuffer
+// console (unless another process owns it).
+pub const LOG_LEVEL_NORMAL: u64 = 0;
+pub const LOG_LEVEL_URGENT: u64 = 1;
 pub const SYS_CURSOR_SAVE:    u64 = 2;
 pub const SYS_CURSOR_DRAW:    u64 = 3;
 pub const SYS_CURSOR_RESTORE: u64 = 4;
@@ -104,6 +109,10 @@ pub const SYS_IRQ_ACK:     u64 = 68;
 // writes an envelope prefixed by the kernel-authenticated sender pid.
 pub const SYS_IPC_TRY_SEND_TO:   u64 = 69;
 pub const SYS_IPC_TRY_RECV_FROM: u64 = 70;
+
+// Kernel log ring buffer. arg0 = offset from the oldest retained byte,
+// arg1 = output buffer (0 queries the retained byte count), arg2 = length.
+pub const SYS_LOG_READ: u64 = 71;
 pub const IPC_PID_PREFIX_SIZE: usize = 8;
 pub const IPC_MAX_MESSAGE_SIZE: usize = 8192;
 pub const IPC_MAX_ENVELOPE_SIZE: usize = IPC_PID_PREFIX_SIZE + IPC_MAX_MESSAGE_SIZE;

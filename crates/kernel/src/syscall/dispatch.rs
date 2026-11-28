@@ -15,13 +15,14 @@ pub(crate) extern "C" fn syscall_dispatch(number: u64, arg0: u64, arg1: u64, arg
         }
     }
     match number {
-        SYS_CONSOLE_WRITE
+        SYS_LOG_WRITE
         | SYS_CURSOR_SAVE
         | SYS_CURSOR_RESTORE
         | SYS_CURSOR_DRAW
         | SYS_FB_ACQUIRE
         | SYS_FB_RELEASE
-        | SYS_CONSOLE_SIZE => crate::syscall::console::handle(number, arg0, arg1, arg2),
+        | SYS_CONSOLE_SIZE
+        | SYS_LOG_READ => crate::syscall::console::handle(number, arg0, arg1, arg2),
         SYS_EXIT
         | SYS_EXEC
         | SYS_THREAD_SPAWN
