@@ -49,8 +49,21 @@ pub fn log(level: Level, file: &str, line: u32, args: fmt::Arguments) {
     let module = basename(file);
     let ticks = crate::handlers::interrupts::timer_ticks();
 
-    crate::serial_print!("[T+{:>10}] [{}] [{:20}:{:>3}] ", ticks, level.as_str(), module, line);
-    crate::serial_println!("{}", args);
+    // Compose the whole record first so it reaches serial and the log
+    // buffer as one piece instead of interleaving with other writers.
+    use fmt::Write;
+    let mut lb = crate::logbuf::LineBuf::new();
+    let _ = write!(
+        lb,
+        "[T+{:>10}] [{}] [{:20}:{:>3}] {}\n",
+        ticks,
+        level.as_str(),
+        module,
+        line,
+        args
+    );
+    crate::serial_print!("{}", lb.as_str());
+    crate::logbuf::push(lb.as_bytes());
 }
 
 /// Log with explicit level. Used by the macros below.

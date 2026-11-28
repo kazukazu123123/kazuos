@@ -13,9 +13,93 @@ pub struct KazuWriter;
 
 impl Write for KazuWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        sys_write_raw(s.as_bytes());
+        print_write(s.as_bytes());
         Ok(())
     }
+}
+
+/// Line buffer for driver print output. fmt::Write fragments are gathered
+/// here and flushed as one SYS_LOG_WRITE per line, so a log record
+/// from this driver reaches the kernel log whole instead of being split
+/// into per-fragment syscalls that other writers can interleave with.
+/// `print!` output stays buffered until a newline, a full buffer, or a
+/// `println!` flush.
+struct PrintBuf {
+    lock: core::sync::atomic::AtomicBool,
+    buf: core::cell::UnsafeCell<[u8; 512]>,
+    len: core::cell::UnsafeCell<usize>,
+}
+
+unsafe impl Sync for PrintBuf {}
+
+impl PrintBuf {
+    const fn new() -> Self {
+        Self {
+            lock: core::sync::atomic::AtomicBool::new(false),
+            buf: core::cell::UnsafeCell::new([0; 512]),
+            len: core::cell::UnsafeCell::new(0),
+        }
+    }
+
+    fn lock(&self) {
+        while self
+            .lock
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn unlock(&self) {
+        self.lock
+            .store(false, core::sync::atomic::Ordering::Release);
+    }
+}
+
+static PRINT_BUF: PrintBuf = PrintBuf::new();
+
+fn print_write(bytes: &[u8]) {
+    print_write_level(bytes, LOG_LEVEL_NORMAL);
+}
+
+fn print_write_level(bytes: &[u8], level: u64) {
+    PRINT_BUF.lock();
+    unsafe {
+        let buf = &mut *PRINT_BUF.buf.get();
+        let len = &mut *PRINT_BUF.len.get();
+        for &b in bytes {
+            buf[*len] = b;
+            *len += 1;
+            if b == b'\n' || *len == buf.len() {
+                sys_write_raw_level(&buf[..*len], level);
+                *len = 0;
+            }
+        }
+    }
+    PRINT_BUF.unlock();
+}
+
+fn print_flush() {
+    print_flush_level(LOG_LEVEL_NORMAL);
+}
+
+fn print_flush_level(level: u64) {
+    PRINT_BUF.lock();
+    unsafe {
+        let buf = &*PRINT_BUF.buf.get();
+        let len = &mut *PRINT_BUF.len.get();
+        if *len > 0 {
+            sys_write_raw_level(&buf[..*len], level);
+            *len = 0;
+        }
+    }
+    PRINT_BUF.unlock();
 }
 
 #[macro_export]
@@ -28,11 +112,27 @@ macro_rules! print {
 
 #[macro_export]
 macro_rules! println {
-    () => { sys_write_raw(b"\r\n") };
+    () => { print_write(b"\r\n"); print_flush(); };
     ($($arg:tt)*) => {{
         use core::fmt::Write;
         let _ = write!(KazuWriter, $($arg)*);
-        sys_write_raw(b"\r\n");
+        print_write(b"\r\n");
+        print_flush();
+    }};
+}
+
+/// Urgent log output: like `println!`, but the record is also shown on
+/// the framebuffer console (unless another process owns it), for driver
+/// errors the user must not miss. Still recorded in the log buffer.
+/// Intended for single-line messages.
+#[macro_export]
+macro_rules! alert {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        print_flush();
+        let _ = write!(KazuWriter, $($arg)*);
+        print_write_level(b"\r\n", LOG_LEVEL_URGENT);
+        print_flush_level(LOG_LEVEL_URGENT);
     }};
 }
 
@@ -92,13 +192,17 @@ unsafe impl core::alloc::GlobalAlloc for KazuAlloc {
 // ── syscall helpers ──────────────────────────────────────────────────────────
 
 fn sys_write_raw(buf: &[u8]) {
+    sys_write_raw_level(buf, LOG_LEVEL_NORMAL);
+}
+
+fn sys_write_raw_level(buf: &[u8], level: u64) {
     unsafe {
         core::arch::asm!(
             "int 0x80",
-            in("rax") SYS_CONSOLE_WRITE,
+            in("rax") SYS_LOG_WRITE,
             in("rdi") buf.as_ptr(),
             in("rsi") buf.len(),
-            in("rdx") 0u64,
+            in("rdx") level,
             lateout("rax") _,
         );
     }

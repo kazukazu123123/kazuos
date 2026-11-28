@@ -586,6 +586,7 @@ pub fn fb_params() -> Option<FbParams> {
 }
 
 pub fn _print(args: fmt::Arguments) {
+    crate::logbuf::push_fmt(args);
     let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {
@@ -595,6 +596,8 @@ pub fn _print(args: fmt::Arguments) {
 }
 
 pub fn _println(args: fmt::Arguments) {
+    crate::logbuf::push_fmt(args);
+    crate::logbuf::push(b"\n");
     let _guard = ConsoleGuard::new();
     unsafe {
         if let Some(console) = &mut *CONSOLE.0.get() {

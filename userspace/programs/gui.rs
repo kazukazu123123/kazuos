@@ -660,7 +660,7 @@ fn syscall(n: u64, a0: u64, a1: u64, a2: u64) -> u64 {
 }
 
 fn sys_write(buf: &[u8]) {
-    syscall(SYS_CONSOLE_WRITE, buf.as_ptr() as u64, buf.len() as u64, 0);
+    syscall(SYS_LOG_WRITE, buf.as_ptr() as u64, buf.len() as u64, 0);
 }
 
 // arrow cursor

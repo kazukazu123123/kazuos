@@ -3,20 +3,52 @@ use crate::{console, ipc, process, syscall};
 #[allow(unused_imports)]
 use crate::syscall::runtime::*;
 
-pub(crate) fn handle(number: u64, arg0: u64, arg1: u64, _arg2: u64) -> u64 {
+pub(crate) fn handle(number: u64, arg0: u64, arg1: u64, arg2: u64) -> u64 {
     match number {
     // Console / Display
-            SYS_CONSOLE_WRITE => {
+            SYS_LOG_WRITE => {
                 if arg0 != 0 && arg1 > 0 {
                     if !crate::memory::uaccess::validate_range(arg0, arg1, false) {
                         return u64::MAX;
                     }
-                    let caller = crate::scheduler::current_user_pid().unwrap_or(0);
-                    let fb_owner = crate::drivers::fb_owner::owner();
-                    let do_fb = fb_owner.is_none() || fb_owner == Some(caller);
-                    print_user_bytes(arg0, arg1, do_fb);
+                    // The log channel: records land in the kernel log buffer
+                    // and on serial. The screen belongs to the interactive
+                    // session (SYS_WRITE), so log output cannot interleave
+                    // with the shell — except urgent records (arg2), which
+                    // are also shown on the console unless another process
+                    // owns the framebuffer.
+                    let to_screen = arg2 >= LOG_LEVEL_URGENT && console_writable();
+                    log_user_bytes(arg0, arg1, to_screen);
                 }
                 0
+            }
+            SYS_LOG_READ => {
+                // arg0 = offset from the oldest retained byte. With
+                // arg1 == 0, returns the retained byte count instead.
+                if arg1 == 0 {
+                    return crate::logbuf::len() as u64;
+                }
+                if arg2 == 0 || !crate::memory::uaccess::validate_range(arg1, arg2, true) {
+                    return u64::MAX;
+                }
+                let mut done = 0usize;
+                let mut tmp = [0u8; 512];
+                while (done as u64) < arg2 {
+                    let want = (arg2 as usize - done).min(tmp.len());
+                    let n = crate::logbuf::read(arg0 as usize + done, &mut tmp[..want]);
+                    if n == 0 {
+                        break;
+                    }
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            tmp.as_ptr(),
+                            (arg1 as usize + done) as *mut u8,
+                            n,
+                        );
+                    }
+                    done += n;
+                }
+                done as u64
             }
             // Console / cursor ops touch the framebuffer, so suppress them when another
             // process owns it (a background console shell must not draw over a GUI).

@@ -876,7 +876,7 @@ pub(crate) fn console_writable() -> bool {
 }
 
 /// Print `len` bytes of already-validated user memory to the console and/or serial.
-/// Shared by SYS_CONSOLE_WRITE and sys_write's ConsoleOut branch.
+/// Used by sys_write's ConsoleOut branch (the interactive session channel).
 ///
 /// The caller must have validated `[ptr, ptr + len)` as readable user memory.
 pub(crate) fn print_user_bytes(ptr: u64, len: u64, do_fb: bool) {
@@ -906,6 +906,44 @@ pub(crate) fn print_user_bytes(ptr: u64, len: u64, do_fb: bool) {
         }
         if verbose {
             crate::serial_print!("{}", chunk);
+        }
+        offset += consumed;
+    }
+}
+
+/// Copy `len` bytes of already-validated user memory into the kernel log
+/// buffer and serial (the SYS_LOG_WRITE path). Same UTF-8 chunk handling
+/// as print_user_bytes. With `to_screen` (urgent records) the text is
+/// also shown on the framebuffer console; normally the screen is left to
+/// the interactive session.
+///
+/// The caller must have validated `[ptr, ptr + len)` as readable user memory.
+pub(crate) fn log_user_bytes(ptr: u64, len: u64, to_screen: bool) {
+    let src = ptr as *const u8;
+    let len = len as usize;
+    const CHUNK: usize = 256;
+    let mut buf = [0u8; CHUNK];
+    let mut offset = 0usize;
+    while offset < len {
+        let n = (len - offset).min(CHUNK);
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.add(offset), buf.as_mut_ptr(), n);
+        }
+        // Same split-sequence handling as print_user_bytes.
+        let (chunk, consumed) = match core::str::from_utf8(&buf[..n]) {
+            Ok(s) => (s, n),
+            Err(e) => match e.valid_up_to() {
+                // Genuinely invalid input rather than a split sequence: skip the chunk.
+                0 => ("", n),
+                valid => (unsafe { core::str::from_utf8_unchecked(&buf[..valid]) }, valid),
+            },
+        };
+        if !chunk.is_empty() {
+            crate::logbuf::push(chunk.as_bytes());
+            crate::serial_print!("{}", chunk);
+            if to_screen {
+                console::screen_print(chunk);
+            }
         }
         offset += consumed;
     }

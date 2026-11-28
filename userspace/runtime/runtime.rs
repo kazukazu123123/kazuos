@@ -320,6 +320,25 @@ pub fn sys_read(fd: u64, buf: &mut [u8]) -> u64 {
     r
 }
 
+/// Read the kernel log ring buffer (kernel records + driver output,
+/// which no longer goes to the screen). With an empty buffer, returns
+/// the number of bytes currently retained; otherwise copies starting at
+/// byte `offset` from the oldest retained byte and returns the count.
+pub fn sys_log_read(offset: u64, buf: &mut [u8]) -> u64 {
+    let r: u64;
+    let ptr = if buf.is_empty() { 0 } else { buf.as_mut_ptr() as u64 };
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") SYS_LOG_READ => r,
+            in("rdi") offset,
+            in("rsi") ptr,
+            in("rdx") buf.len(),
+        );
+    }
+    r
+}
+
 pub fn sys_try_read(fd: u64, buf: &mut [u8]) -> u64 {
     let r: u64;
     unsafe {

@@ -194,6 +194,9 @@ fn execute(cmd: &[u8]) {
     if cmd == b"clear" {
         return cmd_clear();
     }
+    if cmd == b"dmesg" {
+        return cmd_dmesg();
+    }
     if cmd == b"exit" {
         sys_exit(0);
     }
@@ -451,7 +454,7 @@ fn cmd_pipe(cmd1: &[u8], cmd2: &[u8]) {
 }
 
 fn cmd_help() {
-    sys_write(b"commands: help clear exit ls mem ps sysinfo smpinfo shutdown reboot\r\n");
+    sys_write(b"commands: help clear dmesg exit ls mem ps sysinfo smpinfo shutdown reboot\r\n");
 }
 
 fn cmd_clear() {
@@ -459,6 +462,26 @@ fn cmd_clear() {
     // whatever the shell's stdout is — the kernel console and the GUI terminal both
     // interpret it — instead of an out-of-band console-only syscall.
     sys_write(b"\x1b[2J\x1b[H");
+}
+
+fn cmd_dmesg() {
+    // Dump the kernel log ring buffer (kernel records + driver output,
+    // which no longer goes to the screen directly) to stdout.
+    let total = sys_log_read(0, &mut []);
+    if total == 0 || total == u64::MAX {
+        sys_write(b"(log buffer empty)\r\n");
+        return;
+    }
+    let mut offset = 0u64;
+    let mut buf = [0u8; 512];
+    while offset < total {
+        let n = sys_log_read(offset, &mut buf);
+        if n == 0 || n == u64::MAX {
+            break;
+        }
+        sys_write(&buf[..n as usize]);
+        offset += n;
+    }
 }
 
 fn cmd_mem() {
