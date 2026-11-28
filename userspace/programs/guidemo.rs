@@ -16,13 +16,12 @@ struct DemoWindow {
     frame: u64,
     redraw: bool,
     close_requested: bool,
-    esc_pressed: bool,
 }
 
 impl DemoWindow {
     fn new(gui: GuiWindow, mouse: (i32, i32)) -> Self {
         Self { gui, mouse, buttons: 0, key: 0, focused: false, frame: 0,
-               redraw: true, close_requested: false, esc_pressed: false }
+               redraw: true, close_requested: false }
     }
 
     fn on_event(&mut self, event: GuiEvent) {
@@ -31,7 +30,6 @@ impl DemoWindow {
             GuiEvent::Key { code, released: false } => {
                 self.key = code;
                 self.redraw = true;
-                if code == 27 { self.esc_pressed = true; }
             }
             GuiEvent::Focus(value) => { self.focused = value; self.redraw = true; }
             GuiEvent::Close => self.close_requested = true,
@@ -71,30 +69,36 @@ pub extern "C" fn user_main(_argc: u64, _argv: u64) -> ! {
         sys_write_raw(b"guidemo: gui is not running\r\n");
         sys_exit(1);
     };
-    let mut main = DemoWindow::new(gui, (210, 130));
-    // The second window is independent: it can be closed on its own while
-    // the main window (and the process) keeps running.
+    // Both windows are independent: closing one leaves the other (and the
+    // process) running, and the process exits once the last window is gone.
+    let mut main = Some(DemoWindow::new(gui, (210, 130)));
     let mut sub = conn.create_window(b"GUI Demo Sub", 420, 200)
         .map(|gui| DemoWindow::new(gui, (210, 100)));
     let mut running = true;
     while running {
-        while let Some(event) = main.gui.poll(&mut conn) { main.on_event(event); }
-        if main.close_requested || main.esc_pressed { running = false; }
+        let mut close_main = false;
+        if let Some(main) = &mut main {
+            while let Some(event) = main.gui.poll(&mut conn) { main.on_event(event); }
+            close_main = main.close_requested;
+        }
+        if close_main {
+            if let Some(main) = main.take() { main.gui.close(&conn); }
+        }
         let mut close_sub = false;
         if let Some(sub) = &mut sub {
             while let Some(event) = sub.gui.poll(&mut conn) { sub.on_event(event); }
-            if sub.esc_pressed { running = false; }
             close_sub = sub.close_requested;
         }
         if close_sub {
             if let Some(sub) = sub.take() { sub.gui.close(&conn); }
         }
-        main.draw(&conn, b"Main window (ring3 GUI client)");
+        if main.is_none() && sub.is_none() { running = false; }
+        if let Some(main) = &mut main { main.draw(&conn, b"Main window (ring3 GUI client)"); }
         if let Some(sub) = &mut sub { sub.draw(&conn, b"Sub window (same process)"); }
         sys_sleep(8);
     }
+    if let Some(main) = main.take() { main.gui.close(&conn); }
     if let Some(sub) = sub.take() { sub.gui.close(&conn); }
-    main.gui.close(&conn);
     conn.close();
     sys_exit(0);
 }
