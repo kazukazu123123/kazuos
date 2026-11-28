@@ -44,13 +44,27 @@ impl Console {
         } else {
             (bitmap::CHAR_HEIGHT as f32, (bitmap::CHAR_HEIGHT - bitmap::ASCENT) as f32)
         };
+        // Snap the row pitch up to whole pixels. With a fractional pitch the
+        // scroll amount and the row spacing can never both be whole pixels, so
+        // a scrolled-off row leaves a sliver behind or the next row is cut,
+        // depending on how the screen height divides by the pitch. An integer
+        // pitch makes one scroll exactly one row; the leftover strip at the
+        // bottom of the screen (height % pitch) simply stays unused.
+        let truncated = line_height as usize;
+        let line_height = if line_height > truncated as f32 {
+            (truncated + 1) as f32
+        } else {
+            line_height
+        }
+        .max(1.0);
+        let first_baseline = line_height - font_descent;
 
         Self {
             fb,
             font,
             font_size: 24.0,
             cursor_x: 0.0,
-            cursor_y: line_height,
+            cursor_y: first_baseline,
             line_height,
             font_descent,
             text_color: (255, 255, 255),
@@ -65,7 +79,7 @@ impl Console {
             self.fb.clear(0, 0, 0);
         }
         self.cursor_x = 0.0;
-        self.cursor_y = self.line_height;
+        self.cursor_y = self.first_baseline();
     }
 
     pub fn println(&mut self, text: &str) {
@@ -134,7 +148,7 @@ impl Console {
                 if mode == 2 || mode == 3 {
                     unsafe { self.fb.clear(0, 0, 0); }
                     self.cursor_x = 0.0;
-                    self.cursor_y = self.line_height;
+                    self.cursor_y = self.first_baseline();
                 } else if mode == 1 {
                     // clear from top to cursor
                     let ascent = self.line_height - self.font_descent;
@@ -159,12 +173,12 @@ impl Console {
                     bitmap::CHAR_WIDTH as f32
                 };
                 self.cursor_x = col as f32 * char_w;
-                self.cursor_y = self.line_height + row as f32 * self.line_height;
+                self.cursor_y = self.first_baseline() + row as f32 * self.line_height;
             }
             // \x1b[nA — cursor up
             'A' => {
                 let n = p0.max(1.0);
-                self.cursor_y = (self.cursor_y - n * self.line_height).max(self.line_height);
+                self.cursor_y = (self.cursor_y - n * self.line_height).max(self.first_baseline());
             }
             // \x1b[nB — cursor down
             'B' => {
@@ -273,23 +287,26 @@ impl Console {
         }
     }
 
+    /// Baseline of the first row. Anchoring it at line_height - descent puts
+    /// the row's ink at the very top of the screen, so one scroll moves
+    /// exactly one ink row off screen. Anchoring at line_height instead
+    /// shifts every ink row down by font_descent, and each scroll then
+    /// leaves the bottom font_descent pixels of the scrolled-off row
+    /// behind at the top of the screen as a cut-off sliver.
+    fn first_baseline(&self) -> f32 {
+        self.line_height - self.font_descent
+    }
+
     fn newline(&mut self) {
         self.cursor_x = 0.0;
         self.cursor_y += self.line_height;
         let max_y = self.fb.height as f32;
-        if self.cursor_y >= max_y {
-            // Scroll by whole pixels and move the cursor back by exactly that many. The
-            // two must agree: scrolling N pixels while backing the cursor off by the
-            // fractional line_height drifts the baseline a little on every scroll, which
-            // accumulates into overlapping rows for anything that redraws in place
-            // instead of clearing the screen (ktop).
-            let truncated = self.line_height as usize;
-            let scroll_px = if self.line_height > truncated as f32 {
-                truncated + 1
-            } else {
-                truncated
-            }
-            .max(1);
+        if self.cursor_y + self.font_descent > max_y {
+            // line_height is snapped to whole pixels in Console::new, so one
+            // scroll is exactly one row and the cursor backs off by the same
+            // amount: the two always agree, with no fractional drift for
+            // anything that redraws in place instead of clearing (ktop).
+            let scroll_px = (self.line_height as usize).max(1);
             unsafe {
                 self.fb.scroll_up(scroll_px);
             }
