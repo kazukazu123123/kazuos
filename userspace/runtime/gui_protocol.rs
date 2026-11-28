@@ -1,6 +1,6 @@
 pub const GUI_PROTOCOL_MAGIC: u32 = u32::from_le_bytes(*b"KGUI");
-pub const GUI_PROTOCOL_VERSION: u16 = 2;
-pub const GUI_MESSAGE_SIZE: usize = 64;
+pub const GUI_PROTOCOL_VERSION: u16 = 3;
+pub const GUI_MESSAGE_SIZE: usize = 72;
 pub const GUI_BUFFER_COUNT: usize = 2;
 pub const GUI_TITLE_MAX: usize = 32;
 pub const GUI_PIXEL_FORMAT_RGBX8888: u32 = 0;
@@ -124,6 +124,11 @@ impl GuiMessage {
 
     pub fn as_bytes(&self) -> &[u8; GUI_MESSAGE_SIZE] { &self.bytes }
     pub fn kind(&self) -> u16 { self.u16(6) }
+    /// Window the message applies to, carried in a fixed trailer slot so
+    /// every payload layout stays untouched. 0 means connection-scoped
+    /// (STATS traffic, and CONNECT before the compositor assigns an id).
+    pub fn window_id(&self) -> u64 { self.u64(64) }
+    pub fn set_window_id(&mut self, id: u64) { self.put_u64(64, id); }
     pub fn buffer(&self) -> u8 { self.bytes[8] }
     pub fn released(&self) -> bool { self.bytes[9] != 0 }
     pub fn flag(&self) -> bool { self.bytes[8] != 0 }

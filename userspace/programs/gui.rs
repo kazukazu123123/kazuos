@@ -416,6 +416,7 @@ enum InputAction {
 struct ExternalClient {
     pid: u64,
     channel: u64,
+    window_id: u64,
     buffers: [(u64, u64); GUI_BUFFER_COUNT],
     width: i32,
     height: i32,
@@ -428,7 +429,10 @@ struct ExternalClient {
 }
 
 impl ExternalClient {
-    fn send(&mut self, message: GuiMessage) -> bool {
+    fn send(&mut self, mut message: GuiMessage) -> bool {
+        // Compositor-to-client messages carry the window they belong to;
+        // the client demultiplexes its one connection by this id.
+        message.set_window_id(self.window_id);
         let mut envelope = [0u8; IPC_PID_PREFIX_SIZE + GUI_MESSAGE_SIZE];
         envelope[..IPC_PID_PREFIX_SIZE].copy_from_slice(&self.pid.to_le_bytes());
         envelope[IPC_PID_PREFIX_SIZE..].copy_from_slice(message.as_bytes());
@@ -1099,10 +1103,12 @@ fn create_external(pid: u64, channel: u64, width: u32, height: u32, title: &[u8]
             return None;
         }
     }
+    let id = *next_id;
+    *next_id += 1;
     let mut stored_title = [0u8; GUI_TITLE_MAX];
     stored_title[..title.len()].copy_from_slice(title);
     let mut client = ExternalClient {
-        pid, channel, buffers, width: width as i32, height: height as i32,
+        pid, channel, window_id: id, buffers, width: width as i32, height: height as i32,
         front: None, held: [false; GUI_BUFFER_COUNT], title: stored_title,
         title_len: title.len(), close_frames: 0, transport_failed: false,
     };
@@ -1119,8 +1125,6 @@ fn create_external(pid: u64, channel: u64, width: u32, height: u32, title: &[u8]
         w: width as i32 + 2 * BORDER,
         h: height as i32 + TITLE_H + BORDER,
     };
-    let id = *next_id;
-    *next_id += 1;
     Some(Window { id, geo, content: Content::External(alloc::boxed::Box::new(client)),
                   canvas, dirty: Rect::empty() })
 }
@@ -1164,32 +1168,45 @@ fn poll_external(channel: u64, windows: &mut alloc::vec::Vec<Window>, next_id: &
             || received as usize > envelope.len() { break; }
         let sender = u64::from_le_bytes(envelope[..IPC_PID_PREFIX_SIZE].try_into().unwrap());
         let payload_len = received as usize - IPC_PID_PREFIX_SIZE;
-        let existing = windows.iter().position(|window| matches!(
-            &window.content, Content::External(client) if client.pid == sender));
-        if payload_len != GUI_MESSAGE_SIZE {
-            if let Some(index) = existing { remove_external(windows, index, true, dr, &mut result); }
-            continue;
-        }
+        // A malformed message names no window, so it cannot be attributed
+        // to one; drop it instead of punishing one of the sender's windows.
+        if payload_len != GUI_MESSAGE_SIZE { continue; }
         let mut bytes = [0u8; GUI_MESSAGE_SIZE];
         bytes.copy_from_slice(&envelope[IPC_PID_PREFIX_SIZE..IPC_PID_PREFIX_SIZE + GUI_MESSAGE_SIZE]);
-        let Some(message) = GuiMessage::from_bytes(bytes) else {
-            if let Some(index) = existing { remove_external(windows, index, true, dr, &mut result); }
-            continue;
-        };
+        let Some(message) = GuiMessage::from_bytes(bytes) else { continue; };
         if message.kind() == GUI_MSG_CONNECT {
-            if existing.is_none() {
-                if let Some(title) = message.title() {
-                    if let Some(window) = create_external(sender, channel, message.width(), message.height(), title,
-                                                          next_id, cascade, format) {
-                        dr.add(window.geo.x, window.geo.y, window.geo.w, window.geo.h);
-                        result.added = Some(window.id);
-                        windows.push(window);
-                    }
+            // Every CONNECT opens a new window; one process may own many.
+            if let Some(title) = message.title() {
+                if let Some(window) = create_external(sender, channel, message.width(), message.height(), title,
+                                                      next_id, cascade, format) {
+                    dr.add(window.geo.x, window.geo.y, window.geo.w, window.geo.h);
+                    result.added = Some(window.id);
+                    windows.push(window);
                 }
             }
             continue;
         }
-        let Some(index) = existing else { continue; };
+        if message.kind() == GUI_MSG_STATS_REQUEST {
+            // Connection-scoped: answer through any of the sender's windows.
+            if let Some(index) = windows.iter().position(|window| matches!(
+                &window.content, Content::External(client) if client.pid == sender)) {
+                if let Content::External(client) = &mut windows[index].content {
+                    let _ = client.send(GuiMessage::stats_response(
+                        GUI_FRAMES.load(Ordering::Relaxed),
+                        GUI_COMPOSITES.load(Ordering::Relaxed),
+                        GUI_DIRTY_PIXELS.load(Ordering::Relaxed),
+                        GUI_RENDER_TICKS.load(Ordering::Relaxed),
+                        GUI_COMPOSITE_TICKS.load(Ordering::Relaxed),
+                        GUI_PRESENT_TICKS.load(Ordering::Relaxed),
+                        GUI_TICKS_PER_SEC.load(Ordering::Relaxed),
+                    ));
+                }
+            }
+            continue;
+        }
+        // Window-scoped messages must name a window the sender actually owns.
+        let Some(index) = windows.iter().position(|window| window.id == message.window_id() && matches!(
+            &window.content, Content::External(client) if client.pid == sender)) else { continue; };
         let geo = windows[index].geo;
         let client = match &mut windows[index].content {
             Content::External(client) => client,
@@ -1234,17 +1251,6 @@ fn poll_external(channel: u64, windows: &mut alloc::vec::Vec<Window>, next_id: &
                                w as i32, h as i32);
                     }
                 }
-            }
-            GUI_MSG_STATS_REQUEST => {
-                let _ = client.send(GuiMessage::stats_response(
-                    GUI_FRAMES.load(Ordering::Relaxed),
-                    GUI_COMPOSITES.load(Ordering::Relaxed),
-                    GUI_DIRTY_PIXELS.load(Ordering::Relaxed),
-                    GUI_RENDER_TICKS.load(Ordering::Relaxed),
-                    GUI_COMPOSITE_TICKS.load(Ordering::Relaxed),
-                    GUI_PRESENT_TICKS.load(Ordering::Relaxed),
-                    GUI_TICKS_PER_SEC.load(Ordering::Relaxed),
-                ));
             }
             GUI_MSG_DESTROY => { remove = true; destroyed = true; }
             _ => { remove = true; kill = true; }
@@ -1368,6 +1374,7 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
     let mut focused_id: Option<u64> = Some(1);
     let mut tb_page: usize = 0; // current taskbar page when window buttons overflow
     let test_many = has_arg(argc, argv, b"--test-many");
+    let test_client = has_arg(argc, argv, b"--test-client");
     let test_terminal = has_arg(argc, argv, b"--test-terminal");
     let test_path: Option<&[u8]> = if has_arg(argc, argv, b"--test-taskmgr") {
         Some(b"/bin/taskmgr.kxe")
@@ -1375,15 +1382,18 @@ pub extern "C" fn user_main(argc: u64, argv: u64) -> ! {
         Some(b"/bin/terminal.kxe")
     } else if has_arg(argc, argv, b"--test-profiler") {
         Some(b"/bin/profiler.kxe")
-    } else if has_arg(argc, argv, b"--test-client") || test_many {
+    } else if test_client || test_many {
         Some(b"/bin/guidemo.kxe")
     } else {
         None
     };
     let test_mode = test_path.is_some();
-    let test_expected = if test_many { 12usize } else { 1usize };
+    // guidemo opens two windows per process since the multi-window
+    // migration: spawn counts and window expectations now differ.
+    let test_spawn = if test_many { 12usize } else { 1usize };
+    let test_expected = if test_many { 24usize } else if test_client { 2usize } else { 1usize };
     if let Some(path) = test_path {
-        for _ in 0..test_expected {
+        for _ in 0..test_spawn {
             let pid = if test_terminal {
                 sys_exec_with(path, &[b"--test-nested-shell"], 1 << 16)
             } else {
